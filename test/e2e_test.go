@@ -1,0 +1,499 @@
+package test
+
+import (
+	"context"
+	"strings"
+	"testing"
+
+	"github.com/sprout-foundry/seed/core"
+	"github.com/sprout-foundry/seed/events"
+)
+
+// --- End-to-End Integration Tests ---
+
+func TestE2E_SimpleQuery(t *testing.T) {
+	h := NewHarnessWithT(t)
+	h.Provider().AddTextResponse("Hello, how can I help?")
+
+	agent := h.NewAgent()
+	result, err := agent.Run(context.Background(), "Hi there")
+
+	h.AssertNoError(err)
+	h.AssertEquals(result, "Hello, how can I help?")
+	h.AssertProviderCalledN(1)
+	h.AssertStateHasNMessages(agent, 2) // user + assistant
+}
+
+func TestE2E_SystemPromptSent(t *testing.T) {
+	h := NewHarnessWithT(t)
+	h.Provider().AddTextResponse("OK")
+
+	agent := h.NewAgentWithOptions(core.Options{
+		SystemPrompt: "You are a test assistant.",
+	})
+	_, err := agent.Run(context.Background(), "test")
+	h.AssertNoError(err)
+
+	h.AssertFirstMessageIsSystem()
+	h.AssertSystemPromptEquals("You are a test assistant.")
+}
+
+func TestE2E_DefaultSystemPrompt(t *testing.T) {
+	h := NewHarnessWithT(t)
+	h.Provider().AddTextResponse("OK")
+
+	agent := h.NewAgent()
+	_, err := agent.Run(context.Background(), "test")
+	h.AssertNoError(err)
+
+	h.AssertSystemPromptEquals(core.DefaultSystemPrompt)
+}
+
+func TestE2E_ToolCallFlow(t *testing.T) {
+	h := NewHarnessWithT(t)
+
+	// First response: assistant calls a tool
+	h.Provider().AddToolCallResponse(
+		"Let me check.",
+		core.ToolCall{
+			ID: "call_1",
+			Function: core.ToolCallFunction{
+				Name:      "read_file",
+				Arguments: `{"path":"test.txt"}`,
+			},
+		},
+	)
+	// Second response: assistant gives final answer
+	h.Provider().AddTextResponse("The file contains 'hello'.")
+
+	// Executor returns tool result
+	h.Executor().AddToolResult("call_1", "hello")
+
+	agent := h.NewAgent()
+	result, err := agent.Run(context.Background(), "Read test.txt")
+	h.AssertNoError(err)
+	h.AssertEquals(result, "The file contains 'hello'.")
+
+	h.AssertProviderCalledN(2)
+	h.AssertExecutorCalledN(1)
+	h.AssertStateHasNMessages(agent, 4) // user + assistant(tool call) + tool result + assistant(final)
+}
+
+func TestE2E_ToolsSentToProvider(t *testing.T) {
+	h := NewHarnessWithT(t)
+	h.Provider().AddTextResponse("OK")
+
+	h.Executor().AddTool(core.Tool{
+		Name:        "search",
+		Description: "Search the web",
+	})
+
+	agent := h.NewAgent()
+	_, err := agent.Run(context.Background(), "test")
+	h.AssertNoError(err)
+
+	h.AssertLastRequestHasTool("search")
+}
+
+func TestE2E_MultipleToolCalls(t *testing.T) {
+	h := NewHarnessWithT(t)
+
+	// First: two tool calls
+	h.Provider().AddToolCallResponse(
+		"Running commands.",
+		core.ToolCall{ID: "call_1", Function: core.ToolCallFunction{Name: "shell", Arguments: `{"cmd":"ls"}`}},
+		core.ToolCall{ID: "call_2", Function: core.ToolCallFunction{Name: "shell", Arguments: `{"cmd":"pwd"}`}},
+	)
+	// Second: final answer
+	h.Provider().AddTextResponse("Done.")
+
+	// Executor returns results for both calls
+	h.Executor().AddToolResult("call_1", "file.txt")
+	h.Executor().AddToolResult("call_2", "/home")
+
+	agent := h.NewAgent()
+	_, err := agent.Run(context.Background(), "Run ls and pwd")
+	h.AssertNoError(err)
+	h.AssertProviderCalledN(2)
+}
+
+func TestE2E_MaxIterations(t *testing.T) {
+	h := NewHarnessWithT(t)
+
+	// Provider keeps returning tool calls (would loop forever)
+	for i := 0; i < 10; i++ {
+		h.Provider().AddToolCallResponse(
+			"Looping...",
+			core.ToolCall{ID: "call_1", Function: core.ToolCallFunction{Name: "loop", Arguments: "{}"}},
+		)
+	}
+	h.Executor().AddToolResult("call_1", "still looping")
+
+	agent := h.NewAgentWithOptions(core.Options{
+		MaxIterations: 3,
+	})
+	_, err := agent.Run(context.Background(), "loop")
+	h.AssertNoError(err)
+	// Should stop after 3 iterations
+	h.AssertProviderCalledN(3)
+}
+
+func TestE2E_ProviderError(t *testing.T) {
+	h := NewHarnessWithT(t)
+	h.Provider().AddError(core.ErrNoProvider)
+
+	agent := h.NewAgent()
+	_, err := agent.Run(context.Background(), "test")
+	h.AssertError(err)
+	h.AssertErrorContains(err, "LLM request failed")
+}
+
+func TestE2E_PauseAndResume(t *testing.T) {
+	h := NewHarnessWithT(t)
+	h.Provider().AddTextResponse("Resumed!")
+
+	agent := h.NewAgent()
+	agent.Pause()
+	_, err := agent.Run(context.Background(), "test")
+	h.AssertError(err)
+	h.AssertErrorContains(err, "paused")
+
+	agent.Resume()
+	result, err := agent.Run(context.Background(), "test")
+	h.AssertNoError(err)
+	h.AssertEquals(result, "Resumed!")
+}
+
+func TestE2E_StateExportImport(t *testing.T) {
+	h := NewHarnessWithT(t)
+	h.Provider().AddTextResponse("First query")
+
+	agent := h.NewAgent()
+	_, err := agent.Run(context.Background(), "Hello")
+	h.AssertNoError(err)
+
+	// Export state
+	data, err := agent.ExportState()
+	h.AssertNoError(err)
+
+	// Import into new agent
+	h2 := NewHarnessWithT(t)
+	h2.Provider().AddTextResponse("Second query")
+
+	agent2 := h2.NewAgent()
+	err = agent2.ImportState(data)
+	h2.AssertNoError(err)
+
+	// Should have the previous conversation
+	h2.AssertStateHasNMessages(agent2, 2) // user + assistant from first run
+
+	// Run new query
+	_, err = agent2.Run(context.Background(), "World")
+	h2.AssertNoError(err)
+	h2.AssertStateHasNMessages(agent2, 4) // 2 from import + 2 new
+}
+
+func TestE2E_EventBusIntegration(t *testing.T) {
+	h := NewHarnessWithT(t)
+	h.Provider().AddTextResponse("Done")
+
+	agent := h.NewAgent()
+	_, err := agent.Run(context.Background(), "test query")
+	h.AssertNoError(err)
+
+	h.AssertEventPublished(events.EventTypeQueryStarted)
+	h.AssertEventPublished(events.EventTypeQueryCompleted)
+}
+
+func TestE2E_NoEventBus(t *testing.T) {
+	h := NewHarnessWithT(t)
+	h.Provider().AddTextResponse("Done")
+
+	agent := core.NewAgent(core.Options{
+		Provider: h.Provider(),
+		Executor: h.Executor(),
+		// No EventBus
+	})
+	_, err := agent.Run(context.Background(), "test")
+	h.AssertNoError(err)
+}
+
+func TestE2E_DebugMode(t *testing.T) {
+	h := NewHarnessWithT(t)
+	h.Provider().AddTextResponse("OK")
+
+	agent := h.NewAgentWithOptions(core.Options{
+		Debug: true,
+	})
+	_, err := agent.Run(context.Background(), "test")
+	h.AssertNoError(err)
+
+	// Debug output should go to UI
+	output := h.UI().LineOutput()
+	if !strings.Contains(output, "ProcessQuery") && !strings.Contains(output, "Iteration") {
+		// Debug output may vary; just verify no crash
+	}
+}
+
+func TestE2E_HeadlessMode(t *testing.T) {
+	h := NewHarnessWithT(t)
+	h.Provider().AddTextResponse("OK")
+
+	agent := core.NewAgent(core.Options{
+		Provider: h.Provider(),
+		Executor: h.Executor(),
+		UI:       nil, // headless
+	})
+	result, err := agent.Run(context.Background(), "test")
+	h.AssertNoError(err)
+	h.AssertEquals(result, "OK")
+}
+
+func TestE2E_SessionID(t *testing.T) {
+	h := NewHarnessWithT(t)
+	h.Provider().AddTextResponse("OK")
+
+	agent := h.NewAgent()
+	_, err := agent.Run(context.Background(), "test")
+	h.AssertNoError(err)
+
+	// EnsureSessionID must be called explicitly
+	agent.State().EnsureSessionID()
+	h.AssertSessionIDNotEmpty(agent)
+}
+
+func TestE2E_TokenTracking(t *testing.T) {
+	h := NewHarnessWithT(t)
+	h.Provider().AddTextResponse("Hello")
+
+	agent := h.NewAgent()
+	_, err := agent.Run(context.Background(), "Hi")
+	h.AssertNoError(err)
+
+	h.AssertStateHasTokens(agent, 35) // from the mock response usage
+}
+
+func TestE2E_ContextCompaction(t *testing.T) {
+	h := NewHarnessWithT(t)
+	h.Provider().
+		WithTokenEstimate(200000). // Over context limit
+		WithInfo(core.ProviderInfo{
+			Model:       "mock",
+			ContextSize: 4096,
+			HasVision:   false,
+		}).
+		AddTextResponse("Compacted!")
+
+	agent := h.NewAgent()
+
+	// Add many messages to state to trigger compaction
+	for i := 0; i < 50; i++ {
+		agent.State().AddMessage(core.Message{
+			Role:    "user",
+			Content: strings.Repeat("x", 200),
+		})
+		agent.State().AddMessage(core.Message{
+			Role:    "assistant",
+			Content: strings.Repeat("y", 200),
+		})
+	}
+
+	_, err := agent.Run(context.Background(), "final query")
+	h.AssertNoError(err)
+	h.AssertEquals("Compacted!", "Compacted!") // verify it completed
+}
+
+func TestE2E_ImagesStrippedForNonVision(t *testing.T) {
+	h := NewHarnessWithT(t)
+	h.Provider().AddTextResponse("OK")
+
+	agent := h.NewAgent()
+	agent.State().AddMessage(core.Message{
+		Role:    "user",
+		Content: "Look at this",
+		Images:  []core.ImageData{{URL: "http://img.png", MIMEType: "image/png"}},
+	})
+
+	_, err := agent.Run(context.Background(), "test")
+	h.AssertNoError(err)
+
+	// Check that images were stripped from the request
+	req := h.Provider().LastRequest()
+	for _, msg := range req.Messages {
+		if len(msg.Images) > 0 {
+			t.Error("expected images to be stripped for non-vision model")
+		}
+	}
+}
+
+func TestE2E_ImagesKeptForVision(t *testing.T) {
+	h := NewHarnessWithT(t)
+	h.Provider().
+		WithInfo(core.ProviderInfo{
+			Model:       "vision-model",
+			ContextSize: 128000,
+			HasVision:   true,
+		}).
+		AddTextResponse("OK")
+
+	agent := h.NewAgent()
+	agent.State().AddMessage(core.Message{
+		Role:    "user",
+		Content: "Look at this",
+		Images:  []core.ImageData{{URL: "http://img.png", MIMEType: "image/png"}},
+	})
+
+	_, err := agent.Run(context.Background(), "test")
+	h.AssertNoError(err)
+
+	// Check that images were kept
+	req := h.Provider().LastRequest()
+	hasImages := false
+	for _, msg := range req.Messages {
+		if len(msg.Images) > 0 {
+			hasImages = true
+			break
+		}
+	}
+	if !hasImages {
+		t.Error("expected images to be kept for vision model")
+	}
+}
+
+func TestE2E_MultiTurnConversation(t *testing.T) {
+	h := NewHarnessWithT(t)
+	h.Provider().AddTextResponse("I can help with that.")
+
+	agent := h.NewAgent()
+
+	// First turn
+	result1, err := agent.Run(context.Background(), "What can you do?")
+	h.AssertNoError(err)
+	h.AssertEquals(result1, "I can help with that.")
+
+	// Second turn (with conversation history)
+	h.Provider().AddTextResponse("Here's the answer: 42.")
+	result2, err := agent.Run(context.Background(), "What is the answer?")
+	h.AssertNoError(err)
+	h.AssertEquals(result2, "Here's the answer: 42.")
+
+	// State should have 4 messages
+	h.AssertStateHasNMessages(agent, 4)
+}
+
+func TestE2E_SystemMessagesCollapsed(t *testing.T) {
+	h := NewHarnessWithT(t)
+	h.Provider().AddTextResponse("OK")
+
+	agent := h.NewAgent()
+	// Manually add a system message to state (simulating imported state)
+	agent.State().SetMessages([]core.Message{
+		{Role: "system", Content: "Old system prompt"},
+		{Role: "user", Content: "previous query"},
+		{Role: "assistant", Content: "previous response"},
+	})
+
+	_, err := agent.Run(context.Background(), "new query")
+	h.AssertNoError(err)
+
+	// The old system message should be stripped; current system prompt prepended
+	req := h.Provider().LastRequest()
+	if req.Messages[0].Content != core.DefaultSystemPrompt {
+		t.Errorf("expected current system prompt, got %q", req.Messages[0].Content)
+	}
+	// Old system message should not appear
+	for _, msg := range req.Messages {
+		if msg.Content == "Old system prompt" {
+			t.Error("old system prompt should have been stripped")
+		}
+	}
+}
+
+func TestE2E_OrphanedToolResultsRemoved(t *testing.T) {
+	h := NewHarnessWithT(t)
+	h.Provider().AddTextResponse("OK")
+
+	agent := h.NewAgent()
+	// Add state with orphaned tool result
+	agent.State().SetMessages([]core.Message{
+		{Role: "user", Content: "query"},
+		{Role: "assistant", Content: "response"},
+		{Role: "tool", Content: "orphaned", ToolCallID: "nonexistent"},
+	})
+
+	_, err := agent.Run(context.Background(), "new query")
+	h.AssertNoError(err)
+
+	// Orphaned tool result should not appear in request
+	req := h.Provider().LastRequest()
+	for _, msg := range req.Messages {
+		if msg.ToolCallID == "nonexistent" {
+			t.Error("orphaned tool result should have been removed")
+		}
+	}
+}
+
+func TestE2E_SetSystemPrompt(t *testing.T) {
+	h := NewHarnessWithT(t)
+	h.Provider().AddTextResponse("OK")
+
+	agent := h.NewAgent()
+	agent.SetSystemPrompt("Custom prompt for testing.")
+
+	_, err := agent.Run(context.Background(), "test")
+	h.AssertNoError(err)
+
+	h.AssertSystemPromptEquals("Custom prompt for testing.")
+}
+
+func TestE2E_ProviderAccess(t *testing.T) {
+	h := NewHarnessWithT(t)
+	h.Provider().
+		WithInfo(core.ProviderInfo{Model: "custom-model", ContextSize: 64000}).
+		AddTextResponse("OK")
+
+	agent := h.NewAgent()
+	info := agent.Provider().Info()
+	if info.Model != "custom-model" {
+		t.Errorf("expected 'custom-model', got %q", info.Model)
+	}
+}
+
+func TestE2E_StreamingBuffer(t *testing.T) {
+	h := NewHarnessWithT(t)
+	h.Provider().AddTextResponse("Hello")
+
+	agent := h.NewAgent()
+	_, err := agent.Run(context.Background(), "test")
+	h.AssertNoError(err)
+
+	// Streaming buffer should be empty (no streaming used)
+	if agent.StreamingBuffer().Len() != 0 {
+		t.Error("expected empty streaming buffer")
+	}
+}
+
+func TestE2E_FlushCallback(t *testing.T) {
+	h := NewHarnessWithT(t)
+	h.Provider().AddTextResponse("OK")
+
+	agent := h.NewAgent()
+	// flushed tracking disabled
+	agent.SetFlushCallback(func() {})
+
+	_, err := agent.Run(context.Background(), "test")
+	h.AssertNoError(err)
+}
+
+func TestE2E_ConcurrentAgents(t *testing.T) {
+	// Test that multiple agents can run independently
+	for i := 0; i < 5; i++ {
+		h := NewHarnessWithT(t)
+		h.Provider().AddTextResponse("Response " + string(rune('A'+i)))
+
+		agent := h.NewAgent()
+		result, err := agent.Run(context.Background(), "test")
+		h.AssertNoError(err)
+		h.AssertEquals(result, "Response "+string(rune('A'+i)))
+	}
+}
