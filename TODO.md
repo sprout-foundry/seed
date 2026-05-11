@@ -77,6 +77,6 @@
 
 [x] - STRUCTURAL: Break up `conversation.go` (200+ lines) — extract `prepareMessages` pipeline, compaction, and finalize into separate files. `core/`
 [] - STRUCTURAL: Standardize error wrapping — adopt `fmt.Errorf("operation: %w", err)` convention across all error paths. `core/`
-[] - STRUCTURAL: Add `LastAssistantMessage()` to `State` — needed by streaming path to extract final message from state. `core/state.go`
+[x] - STRUCTURAL: Add `LastAssistantMessage()` to `State` — needed by streaming path to extract final message from state. `core/state.go`
 [] - STRUCTURAL: Add `Len()` to `State` — needed by tests and debug logging. `core/state.go`
 [] - STRUCTURAL: Remove unused sentinel errors or wire them — `ErrNoProvider` and `ErrNoExecutor` panic at construction; decide whether to keep as sentinels or remove. `core/errors.go`

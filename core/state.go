@@ -58,6 +58,19 @@ func (s *State) Len() int {
 	return len(s.messages)
 }
 
+// LastAssistantMessage returns the most recent assistant message, or nil if none exists.
+func (s *State) LastAssistantMessage() *Message {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for i := len(s.messages) - 1; i >= 0; i-- {
+		if s.messages[i].Role == "assistant" {
+			msg := s.messages[i]
+			return &msg
+		}
+	}
+	return nil
+}
+
 // SessionID returns the current session ID.
 func (s *State) SessionID() string {
 	s.mu.RLock()

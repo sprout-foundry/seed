@@ -315,3 +315,83 @@ func TestState_EnsureSessionID_WithinTimeout(t *testing.T) {
 		t.Fatal("EnsureSessionID blocked for too long")
 	}
 }
+
+func TestState_LastAssistantMessage_Empty(t *testing.T) {
+	s := NewState()
+	if got := s.LastAssistantMessage(); got != nil {
+		t.Errorf("expected nil for empty state, got %+v", got)
+	}
+}
+
+func TestState_LastAssistantMessage_NoAssistant(t *testing.T) {
+	s := NewState()
+	s.AddMessage(Message{Role: "user", Content: "hello"})
+	s.AddMessage(Message{Role: "system", Content: "be nice"})
+	if got := s.LastAssistantMessage(); got != nil {
+		t.Errorf("expected nil when no assistant messages, got %+v", got)
+	}
+}
+
+func TestState_LastAssistantMessage_ReturnsLast(t *testing.T) {
+	s := NewState()
+	s.AddMessage(Message{Role: "assistant", Content: "first"})
+	s.AddMessage(Message{Role: "user", Content: "reply"})
+	s.AddMessage(Message{Role: "assistant", Content: "second"})
+
+	got := s.LastAssistantMessage()
+	if got == nil {
+		t.Fatal("expected assistant message, got nil")
+	}
+	if got.Content != "second" {
+		t.Errorf("expected 'second', got %q", got.Content)
+	}
+	if got.Role != "assistant" {
+		t.Errorf("expected role 'assistant', got %q", got.Role)
+	}
+}
+
+func TestState_LastAssistantMessage_ReturnsCopy(t *testing.T) {
+	s := NewState()
+	s.AddMessage(Message{Role: "assistant", Content: "original"})
+
+	got := s.LastAssistantMessage()
+	got.Content = "mutated"
+
+	// Verify the internal state is unchanged
+	got2 := s.LastAssistantMessage()
+	if got2.Content != "original" {
+		t.Errorf("LastAssistantMessage should return a copy; expected 'original', got %q", got2.Content)
+	}
+}
+
+func TestState_LastAssistantMessage_Concurrent(t *testing.T) {
+	s := NewState()
+	s.AddMessage(Message{Role: "assistant", Content: "initial"})
+
+	done := make(chan struct{})
+
+	// Concurrent readers
+	go func() {
+		for i := 0; i < 100; i++ {
+			_ = s.LastAssistantMessage()
+		}
+		done <- struct{}{}
+	}()
+
+	// Concurrent writers
+	go func() {
+		for i := 0; i < 100; i++ {
+			s.AddMessage(Message{Role: "assistant", Content: string(rune('a' + i%26))})
+		}
+		done <- struct{}{}
+	}()
+
+	<-done
+	<-done
+
+	// Should not panic; final result should be an assistant message
+	got := s.LastAssistantMessage()
+	if got == nil {
+		t.Fatal("expected assistant message, got nil")
+	}
+}
