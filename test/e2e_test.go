@@ -143,7 +143,7 @@ func TestE2E_MaxIterations(t *testing.T) {
 
 func TestE2E_ProviderError(t *testing.T) {
 	h := NewHarnessWithT(t)
-	h.Provider().AddError(core.ErrNoProvider)
+	h.Provider().AddError(fmt.Errorf("simulated provider error"))
 
 	agent := h.NewAgent()
 	_, err := agent.Run(context.Background(), "test")

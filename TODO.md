@@ -79,4 +79,4 @@
 [] - STRUCTURAL: Standardize error wrapping — adopt `fmt.Errorf("operation: %w", err)` convention across all error paths. `core/`
 [x] - STRUCTURAL: Add `LastAssistantMessage()` to `State` — needed by streaming path to extract final message from state. `core/state.go`
 [x] - STRUCTURAL: Add `Len()` to `State` — needed by tests and debug logging. `core/state.go`
-[] - STRUCTURAL: Remove unused sentinel errors or wire them — `ErrNoProvider` and `ErrNoExecutor` panic at construction; decide whether to keep as sentinels or remove. `core/errors.go`
+[x] - STRUCTURAL: Remove unused sentinel errors or wire them — `ErrNoProvider` and `ErrNoExecutor` panic at construction; decide whether to keep as sentinels or remove. `core/errors.go` (Removed — `NewAgent` panics at construction; errors were never returned.)

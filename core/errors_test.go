@@ -17,8 +17,6 @@ func TestSentinelErrors_NonNil(t *testing.T) {
 	}{
 		{"ErrInterrupted", ErrInterrupted},
 		{"ErrMaxIterations", ErrMaxIterations},
-		{"ErrNoProvider", ErrNoProvider},
-		{"ErrNoExecutor", ErrNoExecutor},
 		{"ErrPaused", ErrPaused},
 	}
 	for _, s := range sentinels {

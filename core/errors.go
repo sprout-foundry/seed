@@ -15,12 +15,6 @@ var (
 	// ErrMaxIterations is returned when the maximum iteration count is exceeded.
 	ErrMaxIterations = errors.New("maximum iterations exceeded")
 
-	// ErrNoProvider is returned when Run is called without a Provider.
-	ErrNoProvider = errors.New("no provider configured")
-
-	// ErrNoExecutor is returned when Run is called without a ToolExecutor.
-	ErrNoExecutor = errors.New("no tool executor configured")
-
 	// ErrPaused is returned when Run is called while the agent is paused.
 	ErrPaused = errors.New("agent is paused")
 )
