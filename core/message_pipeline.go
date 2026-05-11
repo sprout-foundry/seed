@@ -1,0 +1,111 @@
+package core
+
+import "strings"
+
+// prepareMessages assembles the message list for the API request.
+func (ch *ConversationHandler) prepareMessages() []Message {
+	// Get current messages
+	messages := ch.agent.state.Messages()
+
+	// Strip system messages from history (we always prepend current system prompt)
+	filtered := make([]Message, 0, len(messages))
+	for _, m := range messages {
+		if m.Role != "system" {
+			filtered = append(filtered, m)
+		}
+	}
+
+	// Strip images for non-vision models
+	if !ch.agent.provider.Info().HasVision {
+		filtered = ch.stripImages(filtered)
+	}
+
+	// Prepend system prompt
+	allMessages := []Message{{Role: "system", Content: ch.agent.systemPrompt}}
+	allMessages = append(allMessages, filtered...)
+
+	// Append transient messages (one-shot, then discard)
+	ch.transientMu.Lock()
+	if len(ch.transientMsgs) > 0 {
+		allMessages = append(allMessages, ch.transientMsgs...)
+		ch.transientMsgs = nil
+	}
+	ch.transientMu.Unlock()
+
+	// Collapse multiple system messages into one at the front
+	allMessages = collapseSystemMessages(allMessages)
+
+	// Sanitize: remove orphaned tool results
+	allMessages = ch.removeOrphanedToolResults(allMessages)
+
+	return allMessages
+}
+
+// stripImages removes image data from messages for non-vision models.
+func (ch *ConversationHandler) stripImages(messages []Message) []Message {
+	out := make([]Message, len(messages))
+	copy(out, messages)
+	for i := range out {
+		out[i].Images = nil
+	}
+	return out
+}
+
+// removeOrphanedToolResults removes tool messages whose tool_call_id doesn't
+// match any assistant message with tool_calls.
+func (ch *ConversationHandler) removeOrphanedToolResults(messages []Message) []Message {
+	validIDs := make(map[string]struct{})
+	for _, msg := range messages {
+		if msg.Role == "assistant" && len(msg.ToolCalls) > 0 {
+			for _, tc := range msg.ToolCalls {
+				if tc.ID != "" {
+					validIDs[tc.ID] = struct{}{}
+				}
+			}
+		}
+	}
+
+	filtered := make([]Message, 0, len(messages))
+	for _, msg := range messages {
+		if msg.Role == "tool" {
+			if _, ok := validIDs[msg.ToolCallID]; ok {
+				filtered = append(filtered, msg)
+			} else {
+				ch.agent.debugLog("[clean] Removed orphaned tool result: %s\n", msg.ToolCallID)
+			}
+		} else {
+			filtered = append(filtered, msg)
+		}
+	}
+	return filtered
+}
+
+// collapseSystemMessages merges multiple system messages into one at the front.
+func collapseSystemMessages(messages []Message) []Message {
+	if len(messages) <= 1 {
+		return messages
+	}
+
+	var systemParts []string
+	nonSystem := make([]Message, 0, len(messages))
+
+	for _, msg := range messages {
+		if msg.Role == "system" {
+			if content := strings.TrimSpace(msg.Content); content != "" {
+				systemParts = append(systemParts, content)
+			}
+		} else {
+			nonSystem = append(nonSystem, msg)
+		}
+	}
+
+	if len(systemParts) == 0 {
+		return messages
+	}
+
+	merged := Message{Role: "system", Content: strings.Join(systemParts, "\n\n")}
+	result := make([]Message, 0, len(nonSystem)+1)
+	result = append(result, merged)
+	result = append(result, nonSystem...)
+	return result
+}
