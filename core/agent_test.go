@@ -282,8 +282,8 @@ func TestAgent_Run_ProviderError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	if !strings.Contains(err.Error(), "LLM request failed") {
-		t.Errorf("expected 'LLM request failed' in error, got: %v", err)
+	if !strings.Contains(err.Error(), "chat failed") {
+		t.Errorf("expected 'chat failed' in error, got: %v", err)
 	}
 }
 

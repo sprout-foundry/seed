@@ -22,7 +22,7 @@ var (
 	ErrNoExecutor = errors.New("no tool executor configured")
 
 	// ErrPaused is returned when Run is called while the agent is paused.
-	ErrPaused = errors.New("agent is paused; call Resume() before Run()")
+	ErrPaused = errors.New("agent is paused")
 )
 
 // TransientError indicates a temporary failure that may succeed on retry.

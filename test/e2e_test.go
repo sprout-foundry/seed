@@ -148,7 +148,7 @@ func TestE2E_ProviderError(t *testing.T) {
 	agent := h.NewAgent()
 	_, err := agent.Run(context.Background(), "test")
 	h.AssertError(err)
-	h.AssertErrorContains(err, "LLM request failed")
+	h.AssertErrorContains(err, "chat failed")
 }
 
 func TestE2E_ProviderError_PublishesErrorEvent(t *testing.T) {
@@ -158,7 +158,7 @@ func TestE2E_ProviderError_PublishesErrorEvent(t *testing.T) {
 	agent := h.NewAgent()
 	_, err := agent.Run(context.Background(), "test")
 	h.AssertError(err)
-	h.AssertErrorContains(err, "LLM request failed")
+	h.AssertErrorContains(err, "chat failed")
 
 	// Verify the error event was published
 	h.AssertEventPublished(events.EventTypeError)
@@ -180,7 +180,7 @@ func TestE2E_ProviderError_PublishesErrorEvent(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected error event message to be string, got %T", data["message"])
 	}
-	h.AssertEquals(msg, "LLM request failed")
+	h.AssertEquals(msg, "chat failed")
 
 	// Verify the error field contains the simulated error
 	errField, ok := data["error"].(string)
@@ -203,7 +203,7 @@ func TestE2E_ProviderError_NoEventBus(t *testing.T) {
 	})
 	_, err := agent.Run(context.Background(), "test")
 	h.AssertError(err)
-	h.AssertErrorContains(err, "LLM request failed")
+	h.AssertErrorContains(err, "chat failed")
 }
 
 func TestE2E_PauseAndResume(t *testing.T) {

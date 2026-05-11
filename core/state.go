@@ -130,7 +130,7 @@ func (s *State) ExportState() ([]byte, error) {
 func (s *State) ImportState(data []byte) error {
 	var state AgentState
 	if err := json.Unmarshal(data, &state); err != nil {
-		return fmt.Errorf("failed to import state: %w", err)
+		return fmt.Errorf("import state: %w", err)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()

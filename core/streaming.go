@@ -132,6 +132,6 @@ func (h *AgentStreamHandler) Response() *ChatResponse {
 func (h *AgentStreamHandler) OnError(err error) {
 	if h.agent.eventBus != nil {
 		h.agent.eventBus.Publish(events.EventTypeError,
-			events.ErrorEvent("streaming failed", err))
+			events.ErrorEvent("chat stream failed", err))
 	}
 }

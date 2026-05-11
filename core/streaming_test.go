@@ -474,8 +474,8 @@ func TestAgentStreamHandler_OnError_PublishesErrorEvent(t *testing.T) {
 		t.Fatalf("expected data as map[string]interface{}, got %T", event.Data)
 	}
 
-	if data["message"] != "streaming failed" {
-		t.Errorf("expected message 'streaming failed', got %v", data["message"])
+	if data["message"] != "chat stream failed" {
+		t.Errorf("expected message 'chat stream failed', got %v", data["message"])
 	}
 
 	if data["error"] != "streaming connection dropped" {

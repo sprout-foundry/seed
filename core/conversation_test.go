@@ -262,8 +262,8 @@ func TestProcessQuery_ProviderErrorPublishesErrorEvent(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected map data, got %T", evt.Data)
 	}
-	if data["message"] != "LLM request failed" {
-		t.Errorf("expected message 'LLM request failed', got %v", data["message"])
+	if data["message"] != "chat failed" {
+		t.Errorf("expected message 'chat failed', got %v", data["message"])
 	}
 	if data["error"] != "provider down" {
 		t.Errorf("expected error 'provider down', got %v", data["error"])

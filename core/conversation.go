@@ -50,7 +50,7 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 
 	// Check pause
 	if ch.agent.paused {
-		return "", fmt.Errorf("agent is paused; call Resume() before Run()")
+		return "", ErrPaused
 	}
 
 	// Add user message
@@ -102,9 +102,9 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 				return "", fmt.Errorf("%w: %v", ErrInterrupted, err)
 			}
 			if ch.agent.eventBus != nil {
-				ch.agent.eventBus.Publish(events.EventTypeError, events.ErrorEvent("LLM request failed", err))
+				ch.agent.eventBus.Publish(events.EventTypeError, events.ErrorEvent("chat failed", err))
 			}
-			return "", fmt.Errorf("LLM request failed: %w", err)
+			return "", fmt.Errorf("chat failed: %w", err)
 		}
 
 		// State recording (tokens + message) is handled by chatFn
@@ -257,7 +257,7 @@ func (ch *ConversationHandler) ProcessQueryStream(ctx context.Context, query str
 
 		resp := streamHandler.Response()
 		if resp == nil {
-			return nil, errors.New("stream returned no response")
+			return nil, fmt.Errorf("chat stream returned no response")
 		}
 		// Token tracking and assistant message already recorded in OnDone
 		return resp, nil
