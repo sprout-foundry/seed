@@ -3,6 +3,7 @@ package test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -145,6 +146,61 @@ func TestE2E_ProviderError(t *testing.T) {
 	h.Provider().AddError(core.ErrNoProvider)
 
 	agent := h.NewAgent()
+	_, err := agent.Run(context.Background(), "test")
+	h.AssertError(err)
+	h.AssertErrorContains(err, "LLM request failed")
+}
+
+func TestE2E_ProviderError_PublishesErrorEvent(t *testing.T) {
+	h := NewHarnessWithT(t)
+	h.Provider().AddError(fmt.Errorf("simulated provider failure"))
+
+	agent := h.NewAgent()
+	_, err := agent.Run(context.Background(), "test")
+	h.AssertError(err)
+	h.AssertErrorContains(err, "LLM request failed")
+
+	// Verify the error event was published
+	h.AssertEventPublished(events.EventTypeError)
+
+	// Verify the error event data contains the expected fields
+	errorEvents := h.FindEvents(events.EventTypeError)
+	if len(errorEvents) != 1 {
+		t.Fatalf("expected 1 error event, got %d", len(errorEvents))
+	}
+
+	// Check the event payload
+	data, ok := errorEvents[0].Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected error event data to be map[string]interface{}, got %T", errorEvents[0].Data)
+	}
+
+	// Verify the message field
+	msg, ok := data["message"].(string)
+	if !ok {
+		t.Fatalf("expected error event message to be string, got %T", data["message"])
+	}
+	h.AssertEquals(msg, "LLM request failed")
+
+	// Verify the error field contains the simulated error
+	errField, ok := data["error"].(string)
+	if !ok {
+		t.Fatalf("expected error event error field to be string, got %T", data["error"])
+	}
+	h.AssertContains(errField, "simulated provider failure")
+}
+
+func TestE2E_ProviderError_NoEventBus(t *testing.T) {
+	// Regression: provider error should not panic when EventBus is nil
+	h := NewHarnessWithT(t)
+	h.Provider().AddError(fmt.Errorf("provider failure"))
+
+	agent := core.NewAgent(core.Options{
+		Provider: h.Provider(),
+		Executor: h.Executor(),
+		UI:       h.UI(),
+		// No EventBus
+	})
 	_, err := agent.Run(context.Background(), "test")
 	h.AssertError(err)
 	h.AssertErrorContains(err, "LLM request failed")
