@@ -1,82 +1,118 @@
 # TODO
 
-## Event System (SP-001)
+## Event System (SP-001) — ✅ Complete
 
 [x] - EVENT: Wire `tool_start` event before `executor.Execute()` — publish `EventTypeToolStart` with tool_name, tool_call_id, arguments. `core/conversation.go`
 [x] - EVENT: Wire `tool_end` event after `executor.Execute()` returns — publish `EventTypeToolEnd` with tool_call_id, tool_name, status, result, duration. `core/conversation.go`
 [x] - EVENT: Wire `error` event on provider failure path — publish `EventTypeError` when `provider.Chat()` returns an error. `core/conversation.go`
 [x] - EVENT: Wire `metrics_update` event after token tracking — publish `EventTypeMetricsUpdate` after `state.AddTokens()`. `core/conversation.go`
 [x] - EVENT: Wire `agent_message` event in `finalize()` — publish `EventTypeAgentMessage` with final response content. `core/conversation.go`
-[x] - EVENT: Wire `stream_chunk` events per streaming content chunk — publish `EventTypeStreamChunk` and `EventTypeAgentMessage` in `OnContent()`. `core/streaming.go` (depends on SP-003)
-[x] - EVENT: Create `OutputManager` sub-manager interface — add streaming buffer, reasoning buffer, async output channel, output router, flush callback management. `core/output_manager.go` (new file)
-[x] - EVENT: Wire `OutputManager` into `Agent` struct — replace direct `streamBuf`/`reasoningBuf`/`flushCallback` fields with `OutputManager` interface. `core/agent.go`
+[x] - EVENT: Wire `stream_chunk` events per streaming content chunk — publish `EventTypeStreamChunk` and `EventTypeAgentMessage` in `OnContent()`. `core/streaming.go`
+[x] - EVENT: Create `OutputManager` sub-manager interface — streaming buffer, reasoning buffer, async output channel, output router, flush callback management. `core/output_manager.go`
+[x] - EVENT: Wire `OutputManager` into `Agent` struct — replace direct buffer fields with `OutputManager` interface. `core/agent.go`
 
-## Error Handling & Retry (SP-002)
+## Error Handling & Retry (SP-002) — ✅ Complete
 
-[x] - ERROR: Define typed error hierarchy — create `TransientError`, `RateLimitError`, `ContextOverflowError`, `AuthError` types with `Wrapped error` field. `core/errors.go`
-[x] - ERROR: Implement `classifyError(err, provider)` — wrap raw provider errors in typed errors based on error message patterns (timeout, rate limit, auth, context overflow). `core/errors.go` or `core/error_classifier.go`
-[x] - ERROR: Implement exponential backoff — create `ExponentialBackoff` struct with `InitialDelay`, `MaxDelay`, `Multiplier`, `MaxAttempts`, `Jitter`. `core/backoff.go` (new file)
-[x] - ERROR: Add retry logic to `ProcessQuery` — wrap `provider.Chat()` in retry loop with backoff; fail fast on `AuthError`; retry on `TransientError`/`RateLimitError`. `core/conversation.go`
-[] - ERROR: Add retry logic to `ProcessQuery` — wrap `provider.Chat()` in retry loop with backoff; fail fast on `AuthError`; retry on `TransientError`/`RateLimitError`. `core/conversation.go`
-[x] - ERROR: Use `ErrMaxIterations` sentinel — return it when max iterations are exceeded instead of just logging a warning. `core/conversation.go`
-[] - ERROR: Use `ErrMaxIterations` sentinel — return it when max iterations are exceeded instead of just logging a warning. `core/conversation.go`
-[x] - ERROR: Publish `error` events for all error types — every typed error should trigger `EventTypeError` event. `core/conversation.go`
-[] - ERROR: Publish `error` events for all error types — every typed error should trigger `EventTypeError` event. `core/conversation.go`
+[x] - ERROR: Define typed error hierarchy — `TransientError`, `RateLimitError`, `ContextOverflowError`, `AuthError` with `Wrapped error` field. `core/errors.go`
+[x] - ERROR: Implement `classifyError(err, provider)` — wrap raw provider errors in typed errors by message patterns. `core/error_classifier.go`
+[x] - ERROR: Implement exponential backoff — `ExponentialBackoff` struct with InitialDelay, MaxDelay, Multiplier, MaxAttempts, Jitter. `core/backoff.go`
+[x] - ERROR: Add retry logic to `ProcessQuery` — wrap `provider.Chat()` in retry loop with backoff; fail fast on `AuthError`. `core/conversation.go`
+[x] - ERROR: Use `ErrMaxIterations` sentinel — return it when max iterations are exceeded. `core/conversation.go`
+[x] - ERROR: Publish `error` events for all error types — every typed error triggers `EventTypeError` event. `core/conversation.go`
 
-## Streaming & Output (SP-003)
+## Streaming & Output (SP-003) — ✅ Complete
 
-[x] - STREAMING: Implement `AgentStreamHandler` — create concrete `StreamHandler` implementation that writes to `streamBuf`/`reasoningBuf`, publishes events, invokes `flushCallback`. `core/streaming.go`
-[] - STREAMING: Implement `AgentStreamHandler` — create concrete `StreamHandler` implementation that writes to `streamBuf`/`reasoningBuf`, publishes events, invokes `flushCallback`. `core/streaming.go`
-[x] - STREAMING: Add streaming path to `ProcessQuery` — call `provider.ChatStream()` instead of `Chat()` when streaming is supported; fall back to `Chat()` otherwise. `core/conversation.go`
-[] - STREAMING: Add streaming path to `ProcessQuery` — call `provider.ChatStream()` instead of `Chat()` when streaming is supported; fall back to `Chat()` otherwise. `core/conversation.go`
+[x] - STREAMING: Implement `AgentStreamHandler` — concrete `StreamHandler` that writes to buffers, publishes events, invokes flushCallback. `core/streaming.go`
+[x] - STREAMING: Add streaming path to `ProcessQuery` — call `provider.ChatStream()` when streaming is supported; fall back to `Chat()`. `core/conversation.go`
 [x] - STREAMING: Handle tool calls after streaming — streamed response may include `tool_calls`; continue the tool call loop after `OnDone()`. `core/conversation.go`
-[] - STREAMING: Handle tool calls after streaming — streamed response may include `tool_calls`; continue the tool call loop after `OnDone()`. `core/conversation.go`
-[x] - STREAMING: Wire `OnDone` to record assistant message in state — `OnDone` must add the final message to state so `finalize()` can extract it. `core/streaming.go`
-[] - STREAMING: Wire `OnDone` to record assistant message in state — `OnDone` must add the final message to state so `finalize()` can extract it. `core/streaming.go`
-[x] - STREAMING: Wire `OnError` to publish error events — `OnError` must publish `EventTypeError` and return the error to the caller. `core/streaming.go`
-[] - STREAMING: Wire `OnError` to publish error events — `OnError` must publish `EventTypeError` and return the error to the caller. `core/streaming.go`
-[x] - STREAMING: Add streaming simulation to `MockProvider` — `ChatStream` should simulate chunked delivery for e2e tests. `test/mock_provider.go`
-[] - STREAMING: Add streaming simulation to `MockProvider` — `ChatStream` should simulate chunked delivery for e2e tests. `test/mock_provider.go`
-[x] - STREAMING: Add e2e streaming tests — test that streaming callbacks fire, content accumulates in `streamingBuffer`, and buffer content is preferred over choice content. `test/e2e_test.go`
-[x] - STREAMING: Add e2e streaming tests — test that streaming callbacks fire, content accumulates in `streamingBuffer`, and buffer content is preferred over choice content. `test/e2e_test.go`
+[x] - STREAMING: Wire `OnDone` to record assistant message in state. `core/streaming.go`
+[x] - STREAMING: Wire `OnError` to publish error events. `core/streaming.go`
+[x] - STREAMING: Add streaming simulation to `MockProvider`. `test/mock_provider.go`
+[x] - STREAMING: Add e2e streaming tests — callbacks fire, content accumulates in buffer, buffer content preferred over choice content. `test/e2e_test.go`
 
-## Output Routing (SP-004)
+## Output Routing (SP-004) — ✅ Complete
 
-[x] - OUTPUT: Create `OutputManager` interface and implementation — `ContentBuffer()`, `ReasoningBuffer()`, `SetFlushCallback()`, `AsyncOutput()`, `PublishOutput()`, `SetEventMetadata()`, `GetEventMetadata()`. `core/output_manager.go` (new file)
-[] - OUTPUT: Create `OutputManager` interface and implementation — `ContentBuffer()`, `ReasoningBuffer()`, `SetFlushCallback()`, `AsyncOutput()`, `PublishOutput()`, `SetEventMetadata()`, `GetEventMetadata()`. `core/output_manager.go` (new file)
+[x] - OUTPUT: Create `OutputManager` interface and implementation — `ContentBuffer()`, `ReasoningBuffer()`, `SetFlushCallback()`, `AsyncOutput()`, `PublishOutput()`, event metadata. `core/output_manager.go`
 [x] - OUTPUT: Add async output channel — buffered channel for goroutine-safe background output. `core/output_manager.go`
-[] - OUTPUT: Add async output channel — buffered channel for goroutine-safe background output. `core/output_manager.go`
-[x] - OUTPUT: Wire `OutputManager` into `Agent` — replace direct buffer access with manager methods. `core/agent.go`
-[] - OUTPUT: Wire `OutputManager` into `Agent` — replace direct buffer access with manager methods. `core/agent.go`
-[x] - OUTPUT: Add output routing tests — test async output delivery and event metadata. `test/e2e_test.go`
-[] - OUTPUT: Add output routing tests — test async output delivery and event metadata. `test/e2e_test.go`
+[x] - OUTPUT: Wire `OutputManager` into `Agent`. `core/agent.go`
+[x] - OUTPUT: Add output routing tests — async output delivery and event metadata. `test/e2e_test.go`
 
-## Context Cancellation (SP-005)
+## Context Cancellation (SP-005) — ✅ Complete
 
 [x] - CANCELLATION: Check `ctx.Done()` in `ProcessQuery` loop — return `ErrInterrupted` when context is cancelled. `core/conversation.go`
-[] - CANCELLATION: Check `ctx.Done()` in `ProcessQuery` loop — return `ErrInterrupted` when context is cancelled. `core/conversation.go`
 [x] - CANCELLATION: Add `Interrupt()` method to `Agent` — expose `interruptCancel` for external interruption. `core/agent.go`
-[] - CANCELLATION: Add `Interrupt()` method to `Agent` — expose `interruptCancel` for external interruption. `core/agent.go`
-[x] - CANCELLATION: Add `inputInjectionChan` for mid-conversation user input — channel-based input injection with `InjectInput()` method. `core/agent.go`, `core/conversation.go`
-[x] - CANCELLATION: Add e2e cancellation tests — test that `ctx.Cancel()` stops the loop and returns `ErrInterrupted`. `test/e2e_test.go`
-[] - CANCELLATION: Add e2e input injection tests — test that `InjectInput()` injects a user message mid-conversation. `test/e2e_test.go`
+[x] - CANCELLATION: Add `inputInjectionChan` for mid-conversation user input — channel-based injection with `InjectInput()` method. `core/agent.go`, `core/conversation.go`
+[x] - CANCELLATION: Add e2e cancellation tests — `ctx.Cancel()` stops the loop and returns `ErrInterrupted`. `test/e2e_test.go`
+[x] - CANCELLATION: Add e2e input injection tests — `InjectInput()` injects a user message mid-conversation. `test/e2e_test.go`
 
-## Testing
+## Structural — remaining items
 
-[] - TEST: Add e2e test for API retry/error recovery — transient error → retry with backoff → success. `test/e2e_test.go`
-[] - TEST: Add e2e test for rate limit handling — rate limit error → `RateLimitError` path exercised → retry with backoff. `test/e2e_test.go`
-[x] - TEST: Add e2e test for input injection/interrupt mid-conversation — conversation running → user injects input via channel → input becomes new user message → conversation continues. `test/e2e_test.go`
-[x] - TEST: Add e2e test for streaming responses — validate streaming callbacks fire, content accumulates in `streamingBuffer`, and buffer content is preferred over choice content. `test/e2e_test.go`
-[] - TEST: Add e2e test for streaming responses — validate streaming callbacks fire, content accumulates in `streamingBuffer`, and buffer content is preferred over choice content. `test/e2e_test.go`
-[x] - TEST: Add e2e test for context cancellation — `ctx.Cancel()` → `ErrInterrupted` returned. `test/e2e_test.go`
-[x] - TEST: Add e2e test for tool lifecycle events — `tool_start` and `tool_end` events published around `executor.Execute()`. `test/e2e_test.go`
-[x] - TEST: Add e2e test for error events — provider error → `EventTypeError` event published. `test/e2e_test.go`
-[x] - TEST: Add e2e test for metrics events — `metrics_update` event published after token tracking. `test/e2e_test.go`
-
-## Structural
-
-[x] - STRUCTURAL: Break up `conversation.go` (200+ lines) — extract `prepareMessages` pipeline, compaction, and finalize into separate files. `core/`
+[x] - STRUCTURAL: Standardize error wrapping — adopt `fmt.Errorf("operation: %w", err)` convention across all error paths. `core/`
 [] - STRUCTURAL: Standardize error wrapping — adopt `fmt.Errorf("operation: %w", err)` convention across all error paths. `core/`
-[x] - STRUCTURAL: Add `LastAssistantMessage()` to `State` — needed by streaming path to extract final message from state. `core/state.go`
 [x] - STRUCTURAL: Add `Len()` to `State` — needed by tests and debug logging. `core/state.go`
-[x] - STRUCTURAL: Remove unused sentinel errors or wire them — `ErrNoProvider` and `ErrNoExecutor` panic at construction; decide whether to keep as sentinels or remove. `core/errors.go` (Removed — `NewAgent` panics at construction; errors were never returned.)
+[] - STRUCTURAL: Remove unused sentinel errors or wire them — `ErrNoProvider` and `ErrNoExecutor` panic at construction; decide whether to keep as sentinels or remove. `core/errors.go`
+
+## Fallback Parsing (SP-006)
+
+[] - FALLBACK: Create `FallbackParser` struct with `knownToolNames` callback — accept `FallbackParserOptions{KnownToolNames func(string) bool, Debug bool}` so consumers register their tools. `core/fallback_parser.go`
+[] - FALLBACK: Implement JSON code fence extraction — parse tool_calls arrays and single tool call objects from fenced JSON blocks. `core/fallback_parser.go`
+[] - FALLBACK: Implement bare JSON segment extraction — scan for balanced braces/brackets outside code fences containing tool call data. `core/fallback_parser.go`
+[] - FALLBACK: Implement XML function block extraction — parse `<function=name>` with `<parameter=name>value</parameter>` children. `core/fallback_parser.go`
+[] - FALLBACK: Implement function-name pattern extraction — detect `name: tool_name` followed by balanced JSON arguments. `core/fallback_parser.go`
+[] - FALLBACK: Implement named tool block extraction — detect `tool_name { ... }` where tool_name passes `knownToolNames` check. `core/fallback_parser.go`
+[] - FALLBACK: Implement tool call normalization — generate synthetic IDs (`fallback_{name}_{nano}`), normalize `Type` to `"function"`, ensure valid JSON arguments. `core/fallback_parser.go`
+[] - FALLBACK: Implement deduplication and content cleanup — dedupe by name+arguments, remove extracted blocks from content, normalize whitespace. `core/fallback_parser.go`
+[] - FALLBACK: Implement `ShouldUseFallback()` — quick pattern scan for tool-call-like patterns when structured tool_calls is empty. `core/fallback_parser.go`
+[] - FALLBACK: Wire into `ConversationHandler` — when no structured tool calls but content has patterns, run parser and inject extracted calls. `core/conversation.go`
+[] - FALLBACK: Add malformed response simulation to `MockProvider` — return tool calls embedded in content. `test/mock_provider.go`
+[] - FALLBACK: Add e2e test — malformed response -> tool calls extracted -> loop continues -> task completes. `test/e2e_test.go`
+
+## Response Validation (SP-007)
+
+[] - VALIDATE: Create `ResponseValidator` struct with optional `DebugLog` callback — zero deps on Agent or concrete types. `core/response_validator.go`
+[] - VALIDATE: Implement `IsIncomplete()` — check for trailing `...`, abrupt endings, unusually short (<10 words not in complete-short list), unclosed code blocks. `core/response_validator.go`
+[] - VALIDATE: Implement `LooksLikeTentativePostToolResponse()` — detect planning prefixes ("Let me...", "I'll...", "I need to...") under 40 words. `core/response_validator.go`
+[] - VALIDATE: Wire incomplete check into `ConversationHandler` — on incomplete response, enqueue transient continuation message, loop again. `core/conversation.go`
+[] - VALIDATE: Wire tentative check into `ConversationHandler` — on tentative response with no tool calls, continue loop instead of finalizing. `core/conversation.go`
+[] - VALIDATE: Add continuation budget — track consecutive continuations, force-finalize after 3 without progress. `core/conversation.go`
+[] - VALIDATE: Add e2e test for truncated response continuation — provider returns incomplete response -> continuation -> complete response. `test/e2e_test.go`
+[] - VALIDATE: Add e2e test for tentative post-tool response — planning stub -> loop continues -> tool call executes. `test/e2e_test.go`
+
+## Conversation Optimizer (SP-008)
+
+[] - OPTIMIZE: Create `ConversationOptimizer` struct — track file reads by filepath, shell commands by command string, enable/disable flag, `knownToolFn` callback. `core/conversation_optimizer.go`
+[] - OPTIMIZE: Implement file read tracking — hash content, keep only latest read per filepath, replace earlier reads with `[Earlier file read: {path}]`. `core/conversation_optimizer.go`
+[] - OPTIMIZE: Implement shell command tracking — detect transient commands (ls, find, pwd, cat, echo, head, tail, wc), keep only latest output. `core/conversation_optimizer.go`
+[] - OPTIMIZE: Implement `OptimizeConversation()` — lightweight pre-API-call pass that deduplicates redundant reads and commands. `core/conversation_optimizer.go`
+[] - OPTIMIZE: Wire into `prepareMessages()` — run optimizer before static compactor when enabled. `core/conversation.go`
+[] - OPTIMIZE: Add Optimizer option to Agent `Options` — opt-in, zero cost when nil. `core/agent.go`
+[] - OPTIMIZE: Add e2e test for file read dedup — multiple reads of same file -> only latest retained. `test/e2e_test.go`
+
+## Persistence & Sessions (SP-009)
+
+[] - PERSIST: Create `FileSystem` interface — `WriteFile`, `ReadFile`, `ReadDir`, `Remove`, `MkdirAll`, `Stat` for testability. `core/persistence.go`
+[] - PERSIST: Create `osFileSystem` — default implementation wrapping `os` package functions. `core/persistence.go`
+[] - PERSIST: Create `PersistenceManager` — stateDir, scopeHash (SHA-256 of working dir), FileSystem dependency. Consumer calls Save/Load directly. `core/persistence.go`
+[] - PERSIST: Implement scoped session storage — `{stateDir}/scoped/{hash}/session_{id}.json` to prevent cross-project collisions. `core/persistence.go`
+[] - PERSIST: Implement `Save()` — serialize AgentState to JSON with SHA-256 checksum, write to scoped path. `core/persistence.go`
+[] - PERSIST: Implement `Load()` — read JSON, verify checksum, deserialize AgentState. `core/persistence.go`
+[] - PERSIST: Implement `Delete()` and `ListSessions()` — basic session management utilities. `core/persistence.go`
+[] - PERSIST: Add e2e save/load round-trip test — state survives disk serialization and deserialization. `test/e2e_test.go`
+[] - PERSIST: Add e2e checksum integrity test — corrupted file detected on load. `test/e2e_test.go`
+
+## Turn Checkpoints (SP-010)
+
+[] - CHECKPOINT: Define `TurnCheckpoint` struct — `StartIndex`, `EndIndex`, `Summary`, `ActionableSummary` with JSON tags. `core/turn_checkpoints.go`
+[] - CHECKPOINT: Add `[]TurnCheckpoint` to `State` — mutex-protected access with `AddCheckpoint`, `GetCheckpoints`, `SetCheckpoints`, `ClearCheckpoints`. `core/state.go`
+[] - CHECKPOINT: Add checkpoint serialization to ExportState/ImportState — checkpoints round-trip through JSON. `core/state.go`
+[] - CHECKPOINT: Implement Go-only summary builder — extract user question, tool calls, errors, files modified, final status from turn messages. `core/turn_checkpoints.go`
+[] - CHECKPOINT: Implement actionable summary builder — bullet list of accomplishments with file paths and commands. `core/turn_checkpoints.go`
+[] - CHECKPOINT: Implement async `RecordTurnCheckpointAsync()` — snapshot messages, compute summary in background goroutine. `core/turn_checkpoints.go`
+[] - CHECKPOINT: Implement `BuildCheckpointCompactedMessages()` — replace consumed checkpoints with summary messages, shift remaining indices. `core/turn_checkpoints.go`
+[] - CHECKPOINT: Implement index shifting — update checkpoint StartIndex/EndIndex by delta after compaction removes messages. `core/turn_checkpoints.go`
+[] - CHECKPOINT: Handle consecutive-assistant boundary — if summary + next message are both assistant with no tool calls, merge or drop. `core/turn_checkpoints.go`
+[] - CHECKPOINT: Wire recording into ConversationHandler — set `queryStartIndex` when user message added, record checkpoint in `finalize()`. `core/conversation.go`
+[] - CHECKPOINT: Wire checkpoint compaction into `prepareMessages()` — use checkpoint-compacted messages before sending to provider. `core/conversation.go`
+[] - CHECKPOINT: Add e2e checkpoint recording test — completed turn -> checkpoint created with summary and actionable summary. `test/e2e_test.go`
+[] - CHECKPOINT: Add e2e checkpoint compaction test — multiple turns -> checkpoints consumed -> message count reduced. `test/e2e_test.go`
+[] - CHECKPOINT: Add e2e index shifting test — compaction removes messages -> remaining checkpoints have valid indices. `test/e2e_test.go`

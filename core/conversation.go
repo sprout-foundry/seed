@@ -71,7 +71,7 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 		select {
 		case <-ctx.Done():
 			ch.agent.debugLog("[!!] Context cancelled\n")
-			return "", fmt.Errorf("%w: %v", ErrInterrupted, ctx.Err())
+			return "", fmt.Errorf("%w: %w", ErrInterrupted, ctx.Err())
 		default:
 		}
 
@@ -99,7 +99,7 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 			ch.agent.debugLog("[!!] Chat error: %v\n", err)
 			// If the context was cancelled, return ErrInterrupted
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-				return "", fmt.Errorf("%w: %v", ErrInterrupted, err)
+				return "", fmt.Errorf("%w: %w", ErrInterrupted, err)
 			}
 			if ch.agent.eventBus != nil {
 				ch.agent.eventBus.Publish(events.EventTypeError, events.ErrorEvent("chat failed", err))
@@ -133,7 +133,7 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 		select {
 		case <-ctx.Done():
 			ch.agent.debugLog("[!!] Context cancelled before tool execution\n")
-			return "", fmt.Errorf("%w: %v", ErrInterrupted, ctx.Err())
+			return "", fmt.Errorf("%w: %w", ErrInterrupted, ctx.Err())
 		default:
 		}
 
@@ -230,7 +230,7 @@ func (ch *ConversationHandler) ProcessQuery(ctx context.Context, query string) (
 				select {
 				case <-time.After(backoff.Delay()):
 				case <-ctx.Done():
-					return nil, fmt.Errorf("%w: %v", ErrInterrupted, ctx.Err())
+					return nil, fmt.Errorf("%w: %w", ErrInterrupted, ctx.Err())
 				}
 			}
 
