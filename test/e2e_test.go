@@ -1399,6 +1399,194 @@ func TestE2E_Retry_RateLimitErrorRetries(t *testing.T) {
 	h.AssertProviderCalledN(2)
 }
 
+func TestE2E_Retry_RateLimitMultipleRetriesWithBackoff(t *testing.T) {
+	h := NewHarnessWithT(t)
+
+	// Two consecutive rate limit errors, then success.
+	// This exercises the backoff delay between retries.
+	h.Provider().AddError(&core.RateLimitError{
+		Provider: "mock-model",
+		Attempt:  1,
+		Wrapped:  fmt.Errorf("rate limit exceeded"),
+	})
+	h.Provider().AddError(&core.RateLimitError{
+		Provider: "mock-model",
+		Attempt:  2,
+		Wrapped:  fmt.Errorf("rate limit exceeded"),
+	})
+	h.Provider().AddTextResponse("Recovered after rate limits!")
+
+	agent := h.NewAgent()
+	result, err := agent.Run(context.Background(), "test query")
+
+	h.AssertNoError(err)
+	h.AssertEquals(result, "Recovered after rate limits!")
+
+	// Provider called 3 times: 2 rate limit errors + 1 success
+	h.AssertProviderCalledN(3)
+
+	// State should have user + assistant messages (successful path)
+	h.AssertStateHasNMessages(agent, 2)
+}
+
+func TestE2E_Retry_RateLimitErrorEventsPublished(t *testing.T) {
+	h := NewHarnessWithT(t)
+
+	// Two rate limit errors before success.
+	h.Provider().AddError(&core.RateLimitError{
+		Provider: "mock-model",
+		Attempt:  1,
+		Wrapped:  fmt.Errorf("rate limit exceeded"),
+	})
+	h.Provider().AddError(&core.RateLimitError{
+		Provider: "mock-model",
+		Attempt:  2,
+		Wrapped:  fmt.Errorf("rate limit exceeded"),
+	})
+	h.Provider().AddTextResponse("OK")
+
+	agent := h.NewAgent()
+	result, err := agent.Run(context.Background(), "test query")
+
+	h.AssertNoError(err)
+	h.AssertEquals(result, "OK")
+
+	// Error events published for each rate limit failure (from chatFn)
+	h.AssertEventPublished(events.EventTypeError)
+	errorEvents := h.FindEvents(events.EventTypeError)
+	if len(errorEvents) != 2 {
+		t.Errorf("expected 2 error events (one per rate limit retry), got %d", len(errorEvents))
+	}
+
+	// Verify error event payload contains rate limit info
+	data, ok := errorEvents[0].Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected error event data to be map[string]interface{}, got %T", errorEvents[0].Data)
+	}
+	errField, ok := data["error"].(string)
+	if !ok {
+		t.Fatalf("expected error event error field to be string, got %T", data["error"])
+	}
+	h.AssertContains(errField, "rate limit exceeded")
+}
+
+func TestE2E_Retry_RateLimitExhausted(t *testing.T) {
+	h := NewHarnessWithT(t)
+
+	// All 3 attempts fail with rate limit errors (max attempts = 3).
+	h.Provider().AddError(&core.RateLimitError{
+		Provider: "mock-model",
+		Attempt:  1,
+		Wrapped:  fmt.Errorf("rate limit exceeded"),
+	})
+	h.Provider().AddError(&core.RateLimitError{
+		Provider: "mock-model",
+		Attempt:  2,
+		Wrapped:  fmt.Errorf("rate limit exceeded"),
+	})
+	h.Provider().AddError(&core.RateLimitError{
+		Provider: "mock-model",
+		Attempt:  3,
+		Wrapped:  fmt.Errorf("rate limit exceeded"),
+	})
+
+	agent := h.NewAgent()
+	_, err := agent.Run(context.Background(), "test query")
+
+	h.AssertError(err)
+	h.AssertErrorContains(err, "chat failed")
+
+	// The wrapped error should be the last RateLimitError
+	var rateLimitErr *core.RateLimitError
+	if !errors.As(err, &rateLimitErr) {
+		t.Fatalf("expected error chain to contain RateLimitError, got: %v", err)
+	}
+
+	// Provider called 3 times (max attempts exhausted)
+	h.AssertProviderCalledN(3)
+
+	// State should only have the user message — no assistant message recorded
+	h.AssertStateHasNMessages(agent, 1)
+
+	// Error events: 3 from chatFn (one per rate limit attempt) + 1 from runLoop (final error) = 4
+	h.AssertEventPublished(events.EventTypeError)
+	errorEvents := h.FindEvents(events.EventTypeError)
+	if len(errorEvents) != 4 {
+		t.Errorf("expected 4 error events (3 retry + 1 final), got %d", len(errorEvents))
+	}
+}
+
+func TestE2E_Retry_RateLimitMixedWithTransient(t *testing.T) {
+	h := NewHarnessWithT(t)
+
+	// Rate limit on first attempt, transient on second, success on third.
+	h.Provider().AddError(&core.RateLimitError{
+		Provider: "mock-model",
+		Attempt:  1,
+		Wrapped:  fmt.Errorf("rate limit exceeded"),
+	})
+	h.Provider().AddError(fmt.Errorf("connection refused"))
+	h.Provider().AddTextResponse("Recovered from mixed errors!")
+
+	agent := h.NewAgent()
+	result, err := agent.Run(context.Background(), "test query")
+
+	h.AssertNoError(err)
+	h.AssertEquals(result, "Recovered from mixed errors!")
+
+	// Provider called 3 times: 1 rate limit + 1 transient + 1 success
+	h.AssertProviderCalledN(3)
+
+	// Error events published for both retryable errors
+	h.AssertEventPublished(events.EventTypeError)
+	errorEvents := h.FindEvents(events.EventTypeError)
+	if len(errorEvents) != 2 {
+		t.Errorf("expected 2 error events (rate limit + transient), got %d", len(errorEvents))
+	}
+}
+
+func TestE2E_Retry_RateLimitErrorWrapping(t *testing.T) {
+	h := NewHarnessWithT(t)
+
+	// Single rate limit error that exhausts retries.
+	h.Provider().AddError(&core.RateLimitError{
+		Provider: "my-provider",
+		Attempt:  1,
+		Wrapped:  fmt.Errorf("429 too many requests"),
+	})
+	h.Provider().AddError(&core.RateLimitError{
+		Provider: "my-provider",
+		Attempt:  2,
+		Wrapped:  fmt.Errorf("429 too many requests"),
+	})
+	h.Provider().AddError(&core.RateLimitError{
+		Provider: "my-provider",
+		Attempt:  3,
+		Wrapped:  fmt.Errorf("429 too many requests"),
+	})
+
+	agent := h.NewAgent()
+	_, err := agent.Run(context.Background(), "test query")
+
+	h.AssertError(err)
+
+	// Verify the error chain: fmt.Errorf("chat failed: %w") wraps RateLimitError
+	var rateLimitErr *core.RateLimitError
+	if !errors.As(err, &rateLimitErr) {
+		t.Fatalf("expected error chain to contain RateLimitError, got: %v", err)
+	}
+
+	// Verify RateLimitError fields
+	if rateLimitErr.Provider != "my-provider" {
+		t.Errorf("expected provider 'my-provider', got %q", rateLimitErr.Provider)
+	}
+	if rateLimitErr.Wrapped == nil {
+		t.Error("expected wrapped error to be set")
+	} else if !strings.Contains(rateLimitErr.Wrapped.Error(), "429") {
+		t.Errorf("expected wrapped error to contain '429', got: %v", rateLimitErr.Wrapped)
+	}
+}
+
 func TestE2E_Retry_ErrorEventsPublished(t *testing.T) {
 	h := NewHarnessWithT(t)
 
