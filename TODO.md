@@ -14,7 +14,7 @@
 ## Error Handling & Retry (SP-002)
 
 [x] - ERROR: Define typed error hierarchy — create `TransientError`, `RateLimitError`, `ContextOverflowError`, `AuthError` types with `Wrapped error` field. `core/errors.go`
-[] - ERROR: Implement `classifyError(err, provider)` — wrap raw provider errors in typed errors based on error message patterns (timeout, rate limit, auth, context overflow). `core/errors.go` or `core/error_classifier.go`
+[x] - ERROR: Implement `classifyError(err, provider)` — wrap raw provider errors in typed errors based on error message patterns (timeout, rate limit, auth, context overflow). `core/errors.go` or `core/error_classifier.go`
 [] - ERROR: Implement exponential backoff — create `ExponentialBackoff` struct with `InitialDelay`, `MaxDelay`, `Multiplier`, `MaxAttempts`, `Jitter`. `core/backoff.go` (new file)
 [] - ERROR: Add retry logic to `ProcessQuery` — wrap `provider.Chat()` in retry loop with backoff; fail fast on `AuthError`; retry on `TransientError`/`RateLimitError`. `core/conversation.go`
 [] - ERROR: Use `ErrMaxIterations` sentinel — return it when max iterations are exceeded instead of just logging a warning. `core/conversation.go`
