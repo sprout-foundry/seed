@@ -221,6 +221,190 @@ func (ch *ConversationHandler) ProcessQuery(ctx context.Context, query string) (
 	return ch.finalize(query)
 }
 
+// ProcessQueryStream handles a user query through the streaming conversation
+// flow. It uses provider.ChatStream() instead of provider.Chat(), so content
+// is delivered incrementally via StreamHandler callbacks. The streaming buffer
+// is populated as content arrives, and the return value is empty when the
+// buffer contains streamed content (the caller should read from
+// agent.StreamingBuffer() instead).
+func (ch *ConversationHandler) ProcessQueryStream(ctx context.Context, query string) (string, error) {
+	ch.agent.debugLog("[~] ProcessQueryStream: %s\n", query)
+	ch.conversationStart = time.Now()
+
+	// Reset streaming buffers
+	a := ch.agent
+	a.outputMgr.ContentBuffer().Reset()
+	a.outputMgr.ReasoningBuffer().Reset()
+
+	// Check pause
+	if ch.agent.paused {
+		return "", fmt.Errorf("agent is paused; call Resume() before Run()")
+	}
+
+	// Add user message
+	ch.agent.state.AddMessage(Message{Role: "user", Content: query})
+
+	// Publish query started event
+	if ch.agent.eventBus != nil {
+		ch.agent.eventBus.Publish(events.EventTypeQueryStarted, map[string]interface{}{
+			"query": query,
+			"model": ch.agent.provider.Info().Model,
+		})
+	}
+
+	// Main conversation loop
+	completed := false
+	for iter := 0; ch.agent.maxIterations == 0 || iter < ch.agent.maxIterations; iter++ {
+		// Check for context cancellation at the top of each iteration
+		select {
+		case <-ctx.Done():
+			ch.agent.debugLog("[!!] Context cancelled\n")
+			return "", fmt.Errorf("%w: %v", ErrInterrupted, ctx.Err())
+		default:
+		}
+
+		ch.agent.debugLog("[~] Iteration %d - Messages: %d\n", iter, ch.agent.state.Len())
+
+		// Prepare messages
+		messages := ch.prepareMessages()
+
+		// Context management
+		tokenEstimate := ch.agent.provider.EstimateTokens(&ChatRequest{
+			Messages: messages,
+			Tools:    ch.agent.executor.GetTools(),
+		})
+		contextSize := ch.agent.provider.Info().ContextSize
+		if contextSize > 0 && tokenEstimate > contextSize {
+			messages = ch.compactMessages(messages, contextSize)
+		}
+
+		// Send to LLM via streaming
+		streamHandler := NewAgentStreamHandler(ch.agent, ch.agent.state)
+		streamErr := ch.agent.provider.ChatStream(ctx, &ChatRequest{
+			Messages: messages,
+			Tools:    ch.agent.executor.GetTools(),
+		}, streamHandler)
+		if streamErr != nil {
+			ch.agent.debugLog("[!!] ChatStream error: %v\n", streamErr)
+			if errors.Is(streamErr, context.Canceled) || errors.Is(streamErr, context.DeadlineExceeded) {
+				return "", fmt.Errorf("%w: %v", ErrInterrupted, streamErr)
+			}
+			if ch.agent.eventBus != nil {
+				ch.agent.eventBus.Publish(events.EventTypeError, events.ErrorEvent("LLM request failed", streamErr))
+			}
+			return "", fmt.Errorf("LLM request failed: %w", streamErr)
+		}
+
+		// Get the final response from the stream handler
+		resp := streamHandler.Response()
+		if resp == nil {
+			ch.agent.debugLog("[!!] ChatStream returned nil response\n")
+			return "", fmt.Errorf("LLM request failed: stream returned no response")
+		}
+
+		// Token tracking and assistant message already recorded in OnDone
+
+		assistantMsg := resp.ToMessage()
+
+		// No tool calls? Check for injected input before deciding to break.
+		if len(resp.Choices) == 0 || len(assistantMsg.ToolCalls) == 0 {
+			select {
+			case injectedInput := <-ch.agent.inputInjectionChan:
+				ch.agent.state.AddMessage(Message{Role: "user", Content: injectedInput})
+				ch.agent.debugLog("[inject] Received injected input: %s\n", injectedInput)
+				continue
+			default:
+			}
+			ch.agent.debugLog("[OK] Conversation complete\n")
+			completed = true
+			break
+		}
+
+		// Execute tool calls
+		ch.agent.debugLog("[tool] Executing %d tool calls\n", len(assistantMsg.ToolCalls))
+
+		// Check for context cancellation before executing tools
+		select {
+		case <-ctx.Done():
+			ch.agent.debugLog("[!!] Context cancelled before tool execution\n")
+			return "", fmt.Errorf("%w: %v", ErrInterrupted, ctx.Err())
+		default:
+		}
+
+		// Publish tool_start events
+		if ch.agent.eventBus != nil {
+			for i, tc := range assistantMsg.ToolCalls {
+				ch.agent.eventBus.Publish(events.EventTypeToolStart, events.ToolStartEvent(
+					tc.Function.Name,
+					tc.ID,
+					tc.Function.Arguments,
+					"",    // displayName
+					"",    // persona
+					false, // isSubagent
+					"",    // subagentType
+					i,     // toolIndex
+				))
+			}
+		}
+
+		// Measure execution time
+		execStart := time.Now()
+		results := ch.agent.executor.Execute(ctx, assistantMsg.ToolCalls)
+		execDuration := time.Since(execStart)
+
+		// Publish tool_end events
+		if ch.agent.eventBus != nil {
+			toolCallMap := make(map[string]ToolCall)
+			for _, tc := range assistantMsg.ToolCalls {
+				toolCallMap[tc.ID] = tc
+			}
+
+			published := make(map[string]bool)
+			for _, r := range results {
+				tc, ok := toolCallMap[r.ToolCallID]
+				toolName := ""
+				if ok {
+					toolName = tc.Function.Name
+				}
+				ch.agent.eventBus.Publish(events.EventTypeToolEnd, events.ToolEndEvent(
+					r.ToolCallID,
+					toolName,
+					"completed",
+					r.Content,
+					"",           // errorMessage
+					execDuration, // duration
+				))
+				published[r.ToolCallID] = true
+			}
+
+			for _, tc := range assistantMsg.ToolCalls {
+				if !published[tc.ID] {
+					ch.agent.eventBus.Publish(events.EventTypeToolEnd, events.ToolEndEvent(
+						tc.ID,
+						tc.Function.Name,
+						"failed",
+						"",
+						"executor returned no result for this tool call",
+						execDuration,
+					))
+				}
+			}
+		}
+
+		for _, r := range results {
+			ch.agent.state.AddMessage(r)
+		}
+		ch.agent.debugLog("[ok] Added %d tool results\n", len(results))
+	}
+
+	if !completed && ch.agent.maxIterations > 0 {
+		ch.agent.debugLog("[WARN] Max iterations reached\n")
+	}
+
+	// Finalize
+	return ch.finalize(query)
+}
+
 // prepareMessages assembles the message list for the API request.
 func (ch *ConversationHandler) prepareMessages() []Message {
 	// Get current messages

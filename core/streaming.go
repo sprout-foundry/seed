@@ -50,8 +50,9 @@ func (b *StreamingBuffer) Reset() {
 // streamed content to the agent's buffers and publishes events via the
 // agent's EventBus.
 type AgentStreamHandler struct {
-	agent *Agent
-	state *State
+	agent    *Agent
+	state    *State
+	response *ChatResponse
 }
 
 // NewAgentStreamHandler creates a new StreamHandler for the given agent.
@@ -94,20 +95,37 @@ func (h *AgentStreamHandler) OnReasoning(reasoning string) {
 	h.agent.outputMgr.Flush()
 }
 
-// OnDone handles the end of streaming: records token usage and appends the
-// final assistant message to the agent's state.
+// OnDone handles the end of streaming: records token usage, publishes metrics,
+// and appends the final assistant message to the agent's state.
 func (h *AgentStreamHandler) OnDone(resp *ChatResponse) {
 	if resp == nil {
 		return
 	}
+	h.response = resp
 	if resp.Usage.TotalTokens > 0 {
 		h.state.AddTokens(resp.Usage.PromptTokens,
 			resp.Usage.CompletionTokens, resp.Usage.TotalTokens)
+
+		// Publish metrics update event (matches non-streaming path)
+		if h.agent.eventBus != nil {
+			h.agent.eventBus.Publish(events.EventTypeMetricsUpdate, events.MetricsUpdateEvent(
+				h.state.TotalTokens(),
+				resp.Usage.PromptTokens,
+				h.agent.provider.Info().ContextSize,
+				0, // iteration index not tracked in stream handler
+				h.state.TotalCost(),
+			))
+		}
 	}
 	if len(resp.Choices) > 0 {
 		assistantMsg := resp.ToMessage()
 		h.state.AddMessage(assistantMsg)
 	}
+}
+
+// Response returns the final ChatResponse from OnDone, or nil if not yet set.
+func (h *AgentStreamHandler) Response() *ChatResponse {
+	return h.response
 }
 
 // OnError handles streaming errors: publishes an error event via the bus.

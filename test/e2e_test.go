@@ -934,3 +934,189 @@ func TestE2E_Cancellation_NoEffectWithoutCancel(t *testing.T) {
 	h.AssertEquals(result, "Normal response")
 	h.AssertProviderCalledN(1)
 }
+
+// --- Streaming Tests ---
+
+func TestE2E_Streaming_CallbacksFire(t *testing.T) {
+	h := NewHarnessWithT(t)
+
+	// Configure streaming with explicit chunks
+	chunks := []string{"Hello", ", ", "world", "!"}
+	h.Provider().
+		WithStreaming().
+		AddStreamChunks(chunks...).
+		AddTextResponse("Hello, world!")
+
+	agent := h.NewAgent()
+	result, err := agent.RunStream(context.Background(), "test")
+	h.AssertNoError(err)
+
+	// RunStream returns empty because content was streamed (buffer preference)
+	h.AssertEquals(result, "")
+
+	// Streaming buffer should contain the accumulated content
+	buf := agent.StreamingBuffer()
+	h.AssertEquals(buf.String(), "Hello, world!")
+
+	// stream_chunk events should have been published
+	h.AssertEventPublished(events.EventTypeStreamChunk)
+
+	// agent_message events should have been published per chunk
+	h.AssertEventPublished(events.EventTypeAgentMessage)
+
+	// query_started and query_completed should still fire
+	h.AssertEventPublished(events.EventTypeQueryStarted)
+	h.AssertEventPublished(events.EventTypeQueryCompleted)
+}
+
+func TestE2E_Streaming_BufferAccumulation(t *testing.T) {
+	h := NewHarnessWithT(t)
+
+	// Configure streaming with multiple chunks
+	h.Provider().
+		WithStreaming().
+		AddStreamChunks("chunk1", "chunk2", "chunk3").
+		AddTextResponse("chunk1chunk2chunk3")
+
+	agent := h.NewAgent()
+
+	// Track flush invocations
+	flushCount := 0
+	agent.SetFlushCallback(func() {
+		flushCount++
+	})
+
+	result, err := agent.RunStream(context.Background(), "stream test")
+	h.AssertNoError(err)
+
+	// Buffer should contain all chunks concatenated
+	buf := agent.StreamingBuffer()
+	h.AssertEquals(buf.String(), "chunk1chunk2chunk3")
+
+	// Buffer length should match
+	if buf.Len() != 18 {
+		h.fail("expected buffer length 18, got %d", buf.Len())
+	}
+
+	// Flush callback should have been called once per chunk
+	if flushCount != 3 {
+		h.fail("expected flush called 3 times, got %d", flushCount)
+	}
+
+	// RunStream returns empty (buffer content preferred)
+	h.AssertEquals(result, "")
+}
+
+func TestE2E_Streaming_BufferPreferredOverChoice(t *testing.T) {
+	h := NewHarnessWithT(t)
+
+	// Configure streaming — the response has content in Choices,
+	// but the buffer should be preferred (finalize returns empty
+	// when buffer has content)
+	h.Provider().
+		WithStreaming().
+		AddStreamChunks("streamed ", "content").
+		AddTextResponse("streamed content")
+
+	agent := h.NewAgent()
+	result, err := agent.RunStream(context.Background(), "test")
+	h.AssertNoError(err)
+
+	// finalize() returns empty when streaming buffer has content,
+	// so the caller reads from the buffer instead
+	h.AssertEquals(result, "")
+
+	// Buffer has the streamed content
+	h.AssertEquals(agent.StreamingBuffer().String(), "streamed content")
+}
+
+func TestE2E_Streaming_WithToolCalls(t *testing.T) {
+	h := NewHarnessWithT(t)
+
+	// First: streamed tool call response
+	h.Provider().
+		WithStreaming().
+		AddStreamChunks("Let ", "me ", "check.").
+		AddToolCallResponse(
+			"Let me check.",
+			core.ToolCall{
+				ID: "call_1",
+				Function: core.ToolCallFunction{
+					Name:      "read_file",
+					Arguments: `{"path":"test.txt"}`,
+				},
+			},
+		)
+	// Second: streamed final answer
+	h.Provider().
+		AddStreamChunks("File ", "read.").
+		AddTextResponse("File read.")
+
+	h.Executor().AddToolResult("call_1", "file content")
+
+	agent := h.NewAgent()
+	_, err := agent.RunStream(context.Background(), "Read test.txt")
+	h.AssertNoError(err)
+
+	// Buffer accumulates streamed content across all iterations
+	h.AssertEquals(agent.StreamingBuffer().String(), "Let me check.File read.")
+
+	// Provider called twice (tool call iteration + final)
+	h.AssertProviderCalledN(2)
+	h.AssertExecutorCalledN(1)
+
+	// State: user + assistant(tool) + tool result + assistant(final)
+	h.AssertStateHasNMessages(agent, 4)
+}
+
+func TestE2E_Streaming_EventsPublished(t *testing.T) {
+	h := NewHarnessWithT(t)
+
+	h.Provider().
+		WithStreaming().
+		AddStreamChunks("A", "B", "C").
+		AddTextResponse("ABC")
+
+	agent := h.NewAgent()
+	_, err := agent.RunStream(context.Background(), "test")
+	h.AssertNoError(err)
+
+	// stream_chunk events — one per chunk
+	streamChunks := h.FindEvents(events.EventTypeStreamChunk)
+	if len(streamChunks) != 3 {
+		h.fail("expected 3 stream_chunk events, got %d", len(streamChunks))
+	}
+
+	// agent_message events — one per chunk
+	agentMsgs := h.FindEvents(events.EventTypeAgentMessage)
+	if len(agentMsgs) < 3 {
+		h.fail("expected at least 3 agent_message events, got %d", len(agentMsgs))
+	}
+
+	// metrics_update event from OnDone
+	h.AssertEventPublished(events.EventTypeMetricsUpdate)
+}
+
+func TestE2E_Streaming_ReasoningChunks(t *testing.T) {
+	h := NewHarnessWithT(t)
+
+	// We need a custom stream handler that also sends reasoning.
+	// Since MockProvider only sends content chunks, we verify
+	// that the reasoning buffer is separate from the content buffer.
+	h.Provider().
+		WithStreaming().
+		AddStreamChunks("content only").
+		AddTextResponse("content only")
+
+	agent := h.NewAgent()
+	_, err := agent.RunStream(context.Background(), "test")
+	h.AssertNoError(err)
+
+	// Content buffer has the streamed content
+	h.AssertEquals(agent.StreamingBuffer().String(), "content only")
+
+	// Reasoning buffer should be empty (no reasoning chunks sent)
+	if agent.ReasoningBuffer().Len() != 0 {
+		h.fail("expected empty reasoning buffer")
+	}
+}

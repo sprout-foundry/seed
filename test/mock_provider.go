@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/sprout-foundry/seed/core"
 )
@@ -16,7 +17,6 @@ type MockProvider struct {
 	responses  []*core.ChatResponse
 	errors     []error
 	respIndex  int
-	streamErr  error
 	info       core.ProviderInfo
 	tokenCount int
 
@@ -31,6 +31,12 @@ type MockProvider struct {
 
 	// Recorded calls for assertion
 	Calls []*core.ChatRequest
+
+	// Stream configuration
+	streaming      bool // when true, ChatStream delivers chunks via StreamHandler
+	streamDelay    time.Duration
+	streamChunks   [][]string // pre-configured chunk sequences per call index
+	streamChunkIdx int
 }
 
 // NewMockProvider creates a MockProvider with default info.
@@ -198,8 +204,116 @@ func (m *MockProvider) Chat(ctx context.Context, req *core.ChatRequest) (*core.C
 }
 
 // ChatStream implements core.Provider.
-func (m *MockProvider) ChatStream(_ context.Context, _ *core.ChatRequest, _ core.StreamHandler) error {
-	return m.streamErr
+// When streaming is enabled (via WithStreaming), it delivers the configured
+// response as chunked content via the StreamHandler. Otherwise, it calls
+// OnDone with the response directly.
+func (m *MockProvider) ChatStream(ctx context.Context, req *core.ChatRequest, handler core.StreamHandler) error {
+	m.mu.Lock()
+
+	// Record the call
+	reqCopy := *req
+	reqCopy.Messages = make([]core.Message, len(req.Messages))
+	copy(reqCopy.Messages, req.Messages)
+	m.Calls = append(m.Calls, &reqCopy)
+	callNum := len(m.Calls)
+
+	if m.respIndex >= len(m.responses) {
+		m.mu.Unlock()
+		return fmt.Errorf("mock provider: no more responses configured (got %d calls)", m.respIndex+1)
+	}
+
+	err := m.errors[m.respIndex]
+	resp := m.responses[m.respIndex]
+	m.respIndex++
+
+	// Capture blockUntil
+	block := m.blockUntil
+	m.blockUntil = nil
+
+	// Check if we should block on this specific call number
+	var blockOnCh chan struct{}
+	if m.blockOnCall > 0 && callNum == m.blockOnCall {
+		blockOnCh = m.blockOnCh
+	}
+
+	// Capture streaming config
+	useStreaming := m.streaming
+	delay := m.streamDelay
+	var chunks []string
+	if m.streamChunkIdx < len(m.streamChunks) {
+		chunks = m.streamChunks[m.streamChunkIdx]
+	}
+	m.streamChunkIdx++
+	m.mu.Unlock()
+
+	if err != nil {
+		return err
+	}
+
+	// Block if needed
+	if block != nil || blockOnCh != nil {
+		ch := block
+		if ch == nil {
+			ch = blockOnCh
+		}
+		select {
+		case <-ctx.Done():
+			handler.OnError(ctx.Err())
+			return ctx.Err()
+		default:
+		}
+		select {
+		case <-ch:
+		case <-ctx.Done():
+			handler.OnError(ctx.Err())
+			return ctx.Err()
+		}
+	}
+
+	// If streaming is enabled, deliver chunks then OnDone
+	if useStreaming && len(chunks) > 0 {
+		for _, chunk := range chunks {
+			// Check context between chunks
+			select {
+			case <-ctx.Done():
+				handler.OnError(ctx.Err())
+				return ctx.Err()
+			default:
+			}
+			handler.OnContent(chunk)
+			if delay > 0 {
+				time.Sleep(delay)
+			}
+		}
+		handler.OnDone(resp)
+		return nil
+	}
+
+	// Fallback: no streaming configured, just call OnDone with the response
+	handler.OnDone(resp)
+	return nil
+}
+
+// WithStreaming enables streaming mode. When true, ChatStream will deliver
+// the response content as chunks via the StreamHandler instead of returning
+// it all at once. Configure chunks with AddStreamChunks or use the content
+// from AddTextResponse / AddToolCallResponse (split into word-sized chunks).
+func (m *MockProvider) WithStreaming() *MockProvider {
+	m.streaming = true
+	return m
+}
+
+// WithStreamDelay sets the delay between streaming chunks.
+func (m *MockProvider) WithStreamDelay(delay time.Duration) *MockProvider {
+	m.streamDelay = delay
+	return m
+}
+
+// AddStreamChunks configures explicit chunk sequences for streaming.
+// Each call to ChatStream will use the next chunk sequence in order.
+func (m *MockProvider) AddStreamChunks(chunks ...string) *MockProvider {
+	m.streamChunks = append(m.streamChunks, chunks)
+	return m
 }
 
 // Info implements core.Provider.
@@ -218,6 +332,10 @@ func (m *MockProvider) Reset() {
 	defer m.mu.Unlock()
 	m.Calls = nil
 	m.respIndex = 0
+	m.streamChunkIdx = 0
+	m.streaming = false
+	m.streamDelay = 0
+	m.streamChunks = nil
 }
 
 // CallCount returns the number of Chat calls made.

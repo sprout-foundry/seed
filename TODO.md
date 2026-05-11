@@ -38,7 +38,7 @@
 [x] - STREAMING: Add streaming simulation to `MockProvider` — `ChatStream` should simulate chunked delivery for e2e tests. `test/mock_provider.go`
 [] - STREAMING: Add streaming simulation to `MockProvider` — `ChatStream` should simulate chunked delivery for e2e tests. `test/mock_provider.go`
 [x] - STREAMING: Add e2e streaming tests — test that streaming callbacks fire, content accumulates in `streamingBuffer`, and buffer content is preferred over choice content. `test/e2e_test.go`
-[] - STREAMING: Add e2e streaming tests — test that streaming callbacks fire, content accumulates in `streamingBuffer`, and buffer content is preferred over choice content. `test/e2e_test.go`
+[x] - STREAMING: Add e2e streaming tests — test that streaming callbacks fire, content accumulates in `streamingBuffer`, and buffer content is preferred over choice content. `test/e2e_test.go`
 
 ## Output Routing (SP-004)
 
