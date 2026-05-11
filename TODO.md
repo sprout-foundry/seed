@@ -69,7 +69,7 @@
 [x] - TEST: Add e2e test for streaming responses — validate streaming callbacks fire, content accumulates in `streamingBuffer`, and buffer content is preferred over choice content. `test/e2e_test.go`
 [] - TEST: Add e2e test for streaming responses — validate streaming callbacks fire, content accumulates in `streamingBuffer`, and buffer content is preferred over choice content. `test/e2e_test.go`
 [x] - TEST: Add e2e test for context cancellation — `ctx.Cancel()` → `ErrInterrupted` returned. `test/e2e_test.go`
-[] - TEST: Add e2e test for tool lifecycle events — `tool_start` and `tool_end` events published around `executor.Execute()`. `test/e2e_test.go`
+[x] - TEST: Add e2e test for tool lifecycle events — `tool_start` and `tool_end` events published around `executor.Execute()`. `test/e2e_test.go`
 [] - TEST: Add e2e test for error events — provider error → `EventTypeError` event published. `test/e2e_test.go`
 [] - TEST: Add e2e test for metrics events — `metrics_update` event published after token tracking. `test/e2e_test.go`
 
