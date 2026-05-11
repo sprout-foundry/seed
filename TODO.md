@@ -58,7 +58,7 @@
 [x] - CANCELLATION: Add `Interrupt()` method to `Agent` — expose `interruptCancel` for external interruption. `core/agent.go`
 [] - CANCELLATION: Add `Interrupt()` method to `Agent` — expose `interruptCancel` for external interruption. `core/agent.go`
 [x] - CANCELLATION: Add `inputInjectionChan` for mid-conversation user input — channel-based input injection with `InjectInput()` method. `core/agent.go`, `core/conversation.go`
-[] - CANCELLATION: Add e2e cancellation tests — test that `ctx.Cancel()` stops the loop and returns `ErrInterrupted`. `test/e2e_test.go`
+[x] - CANCELLATION: Add e2e cancellation tests — test that `ctx.Cancel()` stops the loop and returns `ErrInterrupted`. `test/e2e_test.go`
 [] - CANCELLATION: Add e2e input injection tests — test that `InjectInput()` injects a user message mid-conversation. `test/e2e_test.go`
 
 ## Testing

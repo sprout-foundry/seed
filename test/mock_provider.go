@@ -20,6 +20,15 @@ type MockProvider struct {
 	info       core.ProviderInfo
 	tokenCount int
 
+	// blockUntil, when non-nil, causes the next Chat call to block
+	// until the channel is closed (useful for cancellation tests).
+	blockUntil chan struct{}
+
+	// blockOnCall, when set, blocks on the Nth call (1-indexed).
+	// blockOnCh is the channel to wait on; close it to unblock.
+	blockOnCall int
+	blockOnCh   chan struct{}
+
 	// Recorded calls for assertion
 	Calls []*core.ChatRequest
 }
@@ -46,6 +55,29 @@ func (m *MockProvider) WithInfo(info core.ProviderInfo) *MockProvider {
 func (m *MockProvider) WithTokenEstimate(count int) *MockProvider {
 	m.tokenCount = count
 	return m
+}
+
+// BlockUntil causes the next Chat call to block until the returned channel
+// is closed. Use this in cancellation tests: cancel the channel to unblock
+// the provider so the context cancellation is observed.
+func (m *MockProvider) BlockUntil() chan struct{} {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ch := make(chan struct{})
+	m.blockUntil = ch
+	return ch
+}
+
+// BlockOnCallN causes the Nth Chat call (1-indexed) to block until the
+// returned channel is closed. This is useful for cancellation tests where
+// you want the first N-1 calls to succeed normally.
+func (m *MockProvider) BlockOnCallN(n int) chan struct{} {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ch := make(chan struct{})
+	m.blockOnCall = n
+	m.blockOnCh = ch
+	return ch
 }
 
 // AddResponse appends a response to the sequence.
@@ -109,23 +141,55 @@ func (m *MockProvider) AddTextResponse(content string) *MockProvider {
 }
 
 // Chat implements core.Provider.
-func (m *MockProvider) Chat(_ context.Context, req *core.ChatRequest) (*core.ChatResponse, error) {
+func (m *MockProvider) Chat(ctx context.Context, req *core.ChatRequest) (*core.ChatResponse, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 
 	// Deep-copy the request for recording
 	reqCopy := *req
 	reqCopy.Messages = make([]core.Message, len(req.Messages))
 	copy(reqCopy.Messages, req.Messages)
 	m.Calls = append(m.Calls, &reqCopy)
+	callNum := len(m.Calls)
 
 	if m.respIndex >= len(m.responses) {
+		m.mu.Unlock()
 		return nil, fmt.Errorf("mock provider: no more responses configured (got %d calls)", m.respIndex+1)
 	}
 
 	err := m.errors[m.respIndex]
 	resp := m.responses[m.respIndex]
 	m.respIndex++
+
+	// Capture blockUntil and clear it before releasing the lock
+	block := m.blockUntil
+	m.blockUntil = nil
+
+	// Check if we should block on this specific call number
+	var blockOnCh chan struct{}
+	if m.blockOnCall > 0 && callNum == m.blockOnCall {
+		blockOnCh = m.blockOnCh
+	}
+	m.mu.Unlock()
+
+	// Block until the channel is closed or context is cancelled
+	if block != nil || blockOnCh != nil {
+		ch := block
+		if ch == nil {
+			ch = blockOnCh
+		}
+		// Check context first to avoid race with channel close
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+		select {
+		case <-ch:
+			// Channel closed — proceed normally
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
 
 	if err != nil {
 		return nil, err

@@ -2,8 +2,10 @@ package test
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sprout-foundry/seed/core"
 	"github.com/sprout-foundry/seed/events"
@@ -594,4 +596,341 @@ func TestE2E_InjectInput_NoInputLoopCompletes(t *testing.T) {
 	h.AssertProviderCalledN(2)
 	h.AssertExecutorCalledN(1)
 	h.AssertStateHasNMessages(agent, 4) // user + assistant(tool) + tool result + assistant(final)
+}
+
+func TestE2E_InjectInput_MidConversation_Running(t *testing.T) {
+	// Realistic mid-conversation injection:
+	// 1. Conversation starts with a tool call (loop continues)
+	// 2. Tool executes, second provider call is blocked
+	// 3. User injects input while blocked
+	// 4. Provider returns text — loop finds injected input and continues
+	// 5. Third provider call returns final response — loop completes
+	h := NewHarnessWithT(t)
+
+	// First response: tool call (loop continues for tool execution)
+	h.Provider().AddToolCallResponse(
+		"Let me check that.",
+		core.ToolCall{
+			ID: "call_1",
+			Function: core.ToolCallFunction{
+				Name:      "read_file",
+				Arguments: `{"path":"test.txt"}`,
+			},
+		},
+	)
+	h.Executor().AddToolResult("call_1", "file content here")
+
+	// Second response: block so we can inject input while the conversation is running
+	blockCh := h.Provider().BlockOnCallN(2)
+	h.Provider().AddTextResponse("I checked the file.")
+
+	// Third response: after injected input is processed, this is the final answer
+	h.Provider().AddTextResponse("Done with everything.")
+
+	agent := h.NewAgent()
+
+	type runResult struct {
+		result string
+		err    error
+	}
+	done := make(chan runResult, 1)
+	go func() {
+		result, err := agent.Run(context.Background(), "Read test.txt")
+		done <- runResult{result, err}
+	}()
+
+	// Wait for the first iteration to complete (provider call + tool execution)
+	for i := 0; i < 100; i++ {
+		if h.Provider().CallCount() >= 1 && h.Executor().CallCount() >= 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// At this point the conversation is blocked on the second provider call.
+	// Inject input while the conversation is actively running.
+	accepted := agent.InjectInput("Also summarize the content")
+	if !accepted {
+		t.Fatal("expected InjectInput to return true while conversation is running")
+	}
+
+	// Unblock the provider so the second call returns
+	close(blockCh)
+
+	// Wait for the conversation to complete
+	var res runResult
+	select {
+	case res = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("conversation did not complete within timeout")
+	}
+
+	// Assert in main goroutine so failures report correctly
+	h.AssertNoError(res.err)
+	h.AssertEquals(res.result, "Done with everything.")
+
+	// Provider called 3 times:
+	//  1. Original query → tool call response
+	//  2. After tool result → text response (injected input found, loop continues)
+	//  3. After injected input → final text response (no injection, loop completes)
+	h.AssertProviderCalledN(3)
+	h.AssertExecutorCalledN(1)
+
+	// State messages:
+	//  1. user: "Read test.txt"
+	//  2. assistant: "Let me check that." (with tool call)
+	//  3. tool: "file content here"
+	//  4. assistant: "I checked the file."
+	//  5. user: "Also summarize the content" (injected)
+	//  6. assistant: "Done with everything."
+	h.AssertStateHasNMessages(agent, 6)
+
+	// Verify the injected message is in state
+	messages := agent.State().Messages()
+	if messages[4].Role != "user" {
+		t.Errorf("expected message 5 to be user role, got %q", messages[4].Role)
+	}
+	if messages[4].Content != "Also summarize the content" {
+		t.Errorf("expected injected content, got %q", messages[4].Content)
+	}
+	// Verify the final assistant message content
+	if messages[5].Role != "assistant" {
+		t.Errorf("expected message 6 to be assistant role, got %q", messages[5].Role)
+	}
+	if messages[5].Content != "Done with everything." {
+		t.Errorf("expected final content 'Done with everything.', got %q", messages[5].Content)
+	}
+}
+
+func TestE2E_InjectInput_MidConversation_RejectedWhenPending(t *testing.T) {
+	// If a prior injection is still pending (channel full), a second injection is rejected.
+	h := NewHarnessWithT(t)
+
+	// First response: tool call (loop continues)
+	h.Provider().AddToolCallResponse(
+		"Running...",
+		core.ToolCall{
+			ID: "call_1",
+			Function: core.ToolCallFunction{
+				Name:      "run",
+				Arguments: `{}`,
+			},
+		},
+	)
+	h.Executor().AddToolResult("call_1", "ok")
+
+	// Block on second call so we can test injection timing
+	blockCh := h.Provider().BlockOnCallN(2)
+	h.Provider().AddTextResponse("After injection.")
+	h.Provider().AddTextResponse("Final.")
+
+	agent := h.NewAgent()
+
+	type runResult struct {
+		err error
+	}
+	done := make(chan runResult, 1)
+	go func() {
+		_, err := agent.Run(context.Background(), "Start")
+		done <- runResult{err}
+	}()
+
+	// Wait for first iteration
+	for i := 0; i < 100; i++ {
+		if h.Provider().CallCount() >= 1 && h.Executor().CallCount() >= 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// First injection succeeds (channel empty)
+	accepted1 := agent.InjectInput("first injection")
+	if !accepted1 {
+		t.Fatal("expected first injection to succeed")
+	}
+
+	// Second injection fails (channel buffer is 1, now full)
+	accepted2 := agent.InjectInput("second injection")
+	if accepted2 {
+		t.Error("expected second injection to fail (channel full)")
+	}
+
+	// Unblock and let conversation complete
+	close(blockCh)
+	var res runResult
+	select {
+	case res = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("conversation did not complete within timeout")
+	}
+
+	// Assert in main goroutine
+	h.AssertNoError(res.err)
+
+	// Only the first injection was consumed
+	h.AssertStateHasNMessages(agent, 6) // user + assistant(tool) + tool + assistant + injected user + assistant
+
+	// Verify the injected message content
+	messages := agent.State().Messages()
+	if messages[4].Role != "user" {
+		t.Errorf("expected message 5 to be user role, got %q", messages[4].Role)
+	}
+	if messages[4].Content != "first injection" {
+		t.Errorf("expected injected content 'first injection', got %q", messages[4].Content)
+	}
+	// Verify the final assistant message content
+	if messages[5].Role != "assistant" {
+		t.Errorf("expected message 6 to be assistant role, got %q", messages[5].Role)
+	}
+	if messages[5].Content != "Final." {
+		t.Errorf("expected final content 'Final.', got %q", messages[5].Content)
+	}
+}
+
+// --- Cancellation Tests ---
+
+func TestE2E_Cancellation_StopsLoop(t *testing.T) {
+	h := NewHarnessWithT(t)
+
+	// Configure the provider to block so we can cancel the context mid-request.
+	blockCh := h.Provider().BlockUntil()
+	h.Provider().AddTextResponse("Should not reach this")
+
+	agent := h.NewAgent()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := agent.Run(ctx, "test query")
+		done <- err
+	}()
+
+	// Give the goroutine time to enter the blocking Chat call
+	time.Sleep(50 * time.Millisecond)
+
+	// Cancel the context — this should cause the provider to return ctx.Err()
+	cancel()
+
+	// Unblock the provider so it can observe the cancelled context
+	close(blockCh)
+
+	// Wait for Run to complete
+	err := <-done
+
+	h.AssertError(err)
+	h.AssertErrorContains(err, "conversation interrupted")
+}
+
+func TestE2E_Cancellation_ReturnsErrInterrupted(t *testing.T) {
+	h := NewHarnessWithT(t)
+
+	blockCh := h.Provider().BlockUntil()
+	h.Provider().AddTextResponse("Should not reach this")
+
+	agent := h.NewAgent()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := agent.Run(ctx, "test query")
+		done <- err
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+	close(blockCh)
+
+	err := <-done
+
+	// Verify the error wraps ErrInterrupted
+	if !errors.Is(err, core.ErrInterrupted) {
+		t.Errorf("expected error to wrap ErrInterrupted, got: %v", err)
+	}
+}
+
+func TestE2E_Cancellation_DuringToolCalls(t *testing.T) {
+	h := NewHarnessWithT(t)
+
+	// First response: tool call (loop continues)
+	h.Provider().AddToolCallResponse(
+		"Running tool...",
+		core.ToolCall{
+			ID: "call_1",
+			Function: core.ToolCallFunction{
+				Name:      "slow_tool",
+				Arguments: `{}`,
+			},
+		},
+	)
+	h.Executor().AddToolResult("call_1", "result")
+
+	// Second response: block on the 2nd call so we can cancel on the next iteration
+	_ = h.Provider().BlockOnCallN(2)
+	h.Provider().AddTextResponse("Should not reach this")
+
+	agent := h.NewAgent()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := agent.Run(ctx, "test query")
+		done <- err
+	}()
+
+	// Wait for the first iteration to complete (provider + executor called)
+	for i := 0; i < 50; i++ {
+		if h.Provider().CallCount() >= 1 && h.Executor().CallCount() >= 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Give the goroutine time to enter the second iteration and hit the block
+	time.Sleep(50 * time.Millisecond)
+
+	// Cancel the context — the provider will observe ctx.Done() and return
+	// Do NOT close blockCh; let ctx.Done() be the only exit path
+	cancel()
+
+	err := <-done
+
+	h.AssertError(err)
+	h.AssertErrorContains(err, "conversation interrupted")
+
+	// Provider was called twice: first iteration succeeded, second call returned ctx.Err()
+	h.AssertProviderCalledN(2)
+	h.AssertExecutorCalledN(1)
+}
+
+func TestE2E_Cancellation_ContextExpired(t *testing.T) {
+	h := NewHarnessWithT(t)
+
+	// Use a context with a very short timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	blockCh := h.Provider().BlockUntil()
+	h.Provider().AddTextResponse("Should not reach this")
+
+	agent := h.NewAgent()
+
+	_, err := agent.Run(ctx, "test query")
+
+	// Unblock the provider so it can observe the expired context
+	close(blockCh)
+
+	h.AssertError(err)
+	h.AssertErrorContains(err, "conversation interrupted")
+}
+
+func TestE2E_Cancellation_NoEffectWithoutCancel(t *testing.T) {
+	// Regression: normal flow without cancellation should still work.
+	h := NewHarnessWithT(t)
+	h.Provider().AddTextResponse("Normal response")
+
+	agent := h.NewAgent()
+	result, err := agent.Run(context.Background(), "test")
+	h.AssertNoError(err)
+	h.AssertEquals(result, "Normal response")
+	h.AssertProviderCalledN(1)
 }

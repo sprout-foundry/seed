@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -57,6 +58,14 @@ func (ch *ConversationHandler) ProcessQuery(ctx context.Context, query string) (
 	// Main conversation loop
 	completed := false
 	for iter := 0; ch.agent.maxIterations == 0 || iter < ch.agent.maxIterations; iter++ {
+		// Check for context cancellation at the top of each iteration
+		select {
+		case <-ctx.Done():
+			ch.agent.debugLog("[!!] Context cancelled\n")
+			return "", fmt.Errorf("%w: %v", ErrInterrupted, ctx.Err())
+		default:
+		}
+
 		ch.agent.debugLog("[~] Iteration %d - Messages: %d\n", iter, ch.agent.state.Len())
 
 		// Prepare messages
@@ -79,6 +88,10 @@ func (ch *ConversationHandler) ProcessQuery(ctx context.Context, query string) (
 		})
 		if err != nil {
 			ch.agent.debugLog("[!!] Chat error: %v\n", err)
+			// If the context was cancelled, return ErrInterrupted
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return "", fmt.Errorf("%w: %v", ErrInterrupted, err)
+			}
 			if ch.agent.eventBus != nil {
 				ch.agent.eventBus.Publish(events.EventTypeError, events.ErrorEvent("LLM request failed", err))
 			}
@@ -122,6 +135,14 @@ func (ch *ConversationHandler) ProcessQuery(ctx context.Context, query string) (
 
 		// Execute tool calls
 		ch.agent.debugLog("[tool] Executing %d tool calls\n", len(assistantMsg.ToolCalls))
+
+		// Check for context cancellation before executing tools
+		select {
+		case <-ctx.Done():
+			ch.agent.debugLog("[!!] Context cancelled before tool execution\n")
+			return "", fmt.Errorf("%w: %v", ErrInterrupted, ctx.Err())
+		default:
+		}
 
 		// Publish tool_start events
 		if ch.agent.eventBus != nil {
