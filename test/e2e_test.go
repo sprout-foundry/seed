@@ -497,3 +497,101 @@ func TestE2E_ConcurrentAgents(t *testing.T) {
 		h.AssertEquals(result, "Response "+string(rune('A'+i)))
 	}
 }
+
+// --- InjectInput Tests ---
+
+func TestE2E_InjectInput_Accepted(t *testing.T) {
+	h := NewHarnessWithT(t)
+	h.Provider().AddTextResponse("Hello")
+
+	agent := h.NewAgent()
+
+	// Inject input before Run when channel is empty — should be accepted
+	accepted := agent.InjectInput("test injection")
+	if !accepted {
+		t.Error("expected InjectInput to return true (channel has space)")
+	}
+}
+
+func TestE2E_InjectInput_RejectedWhenFull(t *testing.T) {
+	h := NewHarnessWithT(t)
+	h.Provider().AddTextResponse("Hello")
+
+	agent := h.NewAgent()
+
+	// First injection succeeds (channel is empty)
+	accepted1 := agent.InjectInput("first message")
+	if !accepted1 {
+		t.Error("expected first InjectInput to return true")
+	}
+
+	// Second injection fails (channel buffer is 1, now full)
+	accepted2 := agent.InjectInput("second message")
+	if accepted2 {
+		t.Error("expected second InjectInput to return false (channel full)")
+	}
+}
+
+func TestE2E_InjectInput_MidConversation(t *testing.T) {
+	h := NewHarnessWithT(t)
+
+	// Provider returns text responses — no tool calls, so the loop would
+	// normally break after the first response. By injecting input before
+	// Run, the channel is full when the "no tool calls" check runs.
+	// The injected input is consumed, causing the loop to continue.
+	h.Provider().AddTextResponse("First response")
+	h.Provider().AddTextResponse("Second response after injection")
+
+	agent := h.NewAgent()
+
+	// Pre-inject input so it's in the channel before Run starts.
+	// The loop will consume it when it reaches the "no tool calls" check.
+	accepted := agent.InjectInput("injected mid-conversation message")
+	if !accepted {
+		t.Fatal("expected InjectInput to return true")
+	}
+
+	result, err := agent.Run(context.Background(), "Original query")
+	h.AssertNoError(err)
+
+	// The injected input caused the loop to continue, so the second
+	// provider response is the final one.
+	h.AssertEquals(result, "Second response after injection")
+
+	// Provider called twice: original query + after injection
+	h.AssertProviderCalledN(2)
+
+	// State: user query, assistant (first), injected user, assistant (second)
+	h.AssertStateHasNMessages(agent, 4)
+}
+
+func TestE2E_InjectInput_NoInputLoopCompletes(t *testing.T) {
+	// Regression test: normal conversation without injection completes normally.
+	h := NewHarnessWithT(t)
+
+	// Provider returns tool calls (loop continues), then text (loop completes).
+	h.Provider().AddToolCallResponse(
+		"Running tool.",
+		core.ToolCall{
+			ID: "call_1",
+			Function: core.ToolCallFunction{
+				Name:      "execute",
+				Arguments: `{"cmd":"ls"}`,
+			},
+		},
+	)
+	h.Provider().AddTextResponse("All done.")
+
+	h.Executor().AddToolResult("call_1", "file1 file2")
+
+	agent := h.NewAgent()
+
+	result, err := agent.Run(context.Background(), "Run ls")
+	h.AssertNoError(err)
+	h.AssertEquals(result, "All done.")
+
+	// Provider called twice: tool call iteration + final text iteration.
+	h.AssertProviderCalledN(2)
+	h.AssertExecutorCalledN(1)
+	h.AssertStateHasNMessages(agent, 4) // user + assistant(tool) + tool result + assistant(final)
+}

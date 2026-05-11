@@ -105,8 +105,16 @@ func (ch *ConversationHandler) ProcessQuery(ctx context.Context, query string) (
 		assistantMsg := resp.ToMessage()
 		ch.agent.state.AddMessage(assistantMsg)
 
-		// No tool calls = done
+		// No tool calls? Check for injected input before deciding to break.
+		// If injected input is found, continue so the LLM processes it.
 		if len(resp.Choices) == 0 || len(assistantMsg.ToolCalls) == 0 {
+			select {
+			case injectedInput := <-ch.agent.inputInjectionChan:
+				ch.agent.state.AddMessage(Message{Role: "user", Content: injectedInput})
+				ch.agent.debugLog("[inject] Received injected input: %s\n", injectedInput)
+				continue
+			default:
+			}
 			ch.agent.debugLog("[OK] Conversation complete\n")
 			completed = true
 			break

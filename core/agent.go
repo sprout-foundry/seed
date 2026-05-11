@@ -35,7 +35,8 @@ type Agent struct {
 	state     *State
 	outputMgr OutputManager
 
-	paused bool
+	paused             bool
+	inputInjectionChan chan string
 }
 
 // NewAgent creates a new Agent from the given options.
@@ -53,15 +54,16 @@ func NewAgent(opts Options) *Agent {
 	}
 
 	return &Agent{
-		provider:      opts.Provider,
-		executor:      opts.Executor,
-		ui:            opts.UI,
-		systemPrompt:  systemPrompt,
-		maxIterations: opts.MaxIterations,
-		debug:         opts.Debug,
-		eventBus:      opts.EventBus,
-		state:         NewState(),
-		outputMgr:     NewOutputManager(opts.EventBus),
+		provider:           opts.Provider,
+		executor:           opts.Executor,
+		ui:                 opts.UI,
+		systemPrompt:       systemPrompt,
+		maxIterations:      opts.MaxIterations,
+		debug:              opts.Debug,
+		eventBus:           opts.EventBus,
+		state:              NewState(),
+		outputMgr:          NewOutputManager(opts.EventBus),
+		inputInjectionChan: make(chan string, 1),
 	}
 }
 
@@ -124,6 +126,20 @@ func (a *Agent) IsPaused() bool {
 // Provider returns the provider (for accessing Info, etc.).
 func (a *Agent) Provider() Provider {
 	return a.provider
+}
+
+// InjectInput injects a user message into the conversation via a buffered
+// channel. Returns true if the input was accepted (queued for the next loop
+// iteration), false if a prior injection is still pending. The injection is
+// fire-and-forget with backpressure: a true return means the input is queued,
+// but the caller has no guarantee it was consumed yet.
+func (a *Agent) InjectInput(input string) bool {
+	select {
+	case a.inputInjectionChan <- input:
+		return true
+	default:
+		return false
+	}
 }
 
 // debugLog logs a debug message if debug mode is enabled.

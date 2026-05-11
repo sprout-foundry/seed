@@ -16,32 +16,48 @@
 [x] - ERROR: Define typed error hierarchy — create `TransientError`, `RateLimitError`, `ContextOverflowError`, `AuthError` types with `Wrapped error` field. `core/errors.go`
 [x] - ERROR: Implement `classifyError(err, provider)` — wrap raw provider errors in typed errors based on error message patterns (timeout, rate limit, auth, context overflow). `core/errors.go` or `core/error_classifier.go`
 [x] - ERROR: Implement exponential backoff — create `ExponentialBackoff` struct with `InitialDelay`, `MaxDelay`, `Multiplier`, `MaxAttempts`, `Jitter`. `core/backoff.go` (new file)
+[x] - ERROR: Add retry logic to `ProcessQuery` — wrap `provider.Chat()` in retry loop with backoff; fail fast on `AuthError`; retry on `TransientError`/`RateLimitError`. `core/conversation.go`
 [] - ERROR: Add retry logic to `ProcessQuery` — wrap `provider.Chat()` in retry loop with backoff; fail fast on `AuthError`; retry on `TransientError`/`RateLimitError`. `core/conversation.go`
+[x] - ERROR: Use `ErrMaxIterations` sentinel — return it when max iterations are exceeded instead of just logging a warning. `core/conversation.go`
 [] - ERROR: Use `ErrMaxIterations` sentinel — return it when max iterations are exceeded instead of just logging a warning. `core/conversation.go`
+[x] - ERROR: Publish `error` events for all error types — every typed error should trigger `EventTypeError` event. `core/conversation.go`
 [] - ERROR: Publish `error` events for all error types — every typed error should trigger `EventTypeError` event. `core/conversation.go`
 
 ## Streaming & Output (SP-003)
 
+[x] - STREAMING: Implement `AgentStreamHandler` — create concrete `StreamHandler` implementation that writes to `streamBuf`/`reasoningBuf`, publishes events, invokes `flushCallback`. `core/streaming.go`
 [] - STREAMING: Implement `AgentStreamHandler` — create concrete `StreamHandler` implementation that writes to `streamBuf`/`reasoningBuf`, publishes events, invokes `flushCallback`. `core/streaming.go`
+[x] - STREAMING: Add streaming path to `ProcessQuery` — call `provider.ChatStream()` instead of `Chat()` when streaming is supported; fall back to `Chat()` otherwise. `core/conversation.go`
 [] - STREAMING: Add streaming path to `ProcessQuery` — call `provider.ChatStream()` instead of `Chat()` when streaming is supported; fall back to `Chat()` otherwise. `core/conversation.go`
+[x] - STREAMING: Handle tool calls after streaming — streamed response may include `tool_calls`; continue the tool call loop after `OnDone()`. `core/conversation.go`
 [] - STREAMING: Handle tool calls after streaming — streamed response may include `tool_calls`; continue the tool call loop after `OnDone()`. `core/conversation.go`
+[x] - STREAMING: Wire `OnDone` to record assistant message in state — `OnDone` must add the final message to state so `finalize()` can extract it. `core/streaming.go`
 [] - STREAMING: Wire `OnDone` to record assistant message in state — `OnDone` must add the final message to state so `finalize()` can extract it. `core/streaming.go`
+[x] - STREAMING: Wire `OnError` to publish error events — `OnError` must publish `EventTypeError` and return the error to the caller. `core/streaming.go`
 [] - STREAMING: Wire `OnError` to publish error events — `OnError` must publish `EventTypeError` and return the error to the caller. `core/streaming.go`
+[x] - STREAMING: Add streaming simulation to `MockProvider` — `ChatStream` should simulate chunked delivery for e2e tests. `test/mock_provider.go`
 [] - STREAMING: Add streaming simulation to `MockProvider` — `ChatStream` should simulate chunked delivery for e2e tests. `test/mock_provider.go`
+[x] - STREAMING: Add e2e streaming tests — test that streaming callbacks fire, content accumulates in `streamingBuffer`, and buffer content is preferred over choice content. `test/e2e_test.go`
 [] - STREAMING: Add e2e streaming tests — test that streaming callbacks fire, content accumulates in `streamingBuffer`, and buffer content is preferred over choice content. `test/e2e_test.go`
 
 ## Output Routing (SP-004)
 
+[x] - OUTPUT: Create `OutputManager` interface and implementation — `ContentBuffer()`, `ReasoningBuffer()`, `SetFlushCallback()`, `AsyncOutput()`, `PublishOutput()`, `SetEventMetadata()`, `GetEventMetadata()`. `core/output_manager.go` (new file)
 [] - OUTPUT: Create `OutputManager` interface and implementation — `ContentBuffer()`, `ReasoningBuffer()`, `SetFlushCallback()`, `AsyncOutput()`, `PublishOutput()`, `SetEventMetadata()`, `GetEventMetadata()`. `core/output_manager.go` (new file)
+[x] - OUTPUT: Add async output channel — buffered channel for goroutine-safe background output. `core/output_manager.go`
 [] - OUTPUT: Add async output channel — buffered channel for goroutine-safe background output. `core/output_manager.go`
+[x] - OUTPUT: Wire `OutputManager` into `Agent` — replace direct buffer access with manager methods. `core/agent.go`
 [] - OUTPUT: Wire `OutputManager` into `Agent` — replace direct buffer access with manager methods. `core/agent.go`
+[x] - OUTPUT: Add output routing tests — test async output delivery and event metadata. `test/e2e_test.go`
 [] - OUTPUT: Add output routing tests — test async output delivery and event metadata. `test/e2e_test.go`
 
 ## Context Cancellation (SP-005)
 
+[x] - CANCELLATION: Check `ctx.Done()` in `ProcessQuery` loop — return `ErrInterrupted` when context is cancelled. `core/conversation.go`
 [] - CANCELLATION: Check `ctx.Done()` in `ProcessQuery` loop — return `ErrInterrupted` when context is cancelled. `core/conversation.go`
+[x] - CANCELLATION: Add `Interrupt()` method to `Agent` — expose `interruptCancel` for external interruption. `core/agent.go`
 [] - CANCELLATION: Add `Interrupt()` method to `Agent` — expose `interruptCancel` for external interruption. `core/agent.go`
-[] - CANCELLATION: Add `inputInjectionChan` for mid-conversation user input — channel-based input injection with `InjectInput()` method. `core/agent.go`, `core/conversation.go`
+[x] - CANCELLATION: Add `inputInjectionChan` for mid-conversation user input — channel-based input injection with `InjectInput()` method. `core/agent.go`, `core/conversation.go`
 [] - CANCELLATION: Add e2e cancellation tests — test that `ctx.Cancel()` stops the loop and returns `ErrInterrupted`. `test/e2e_test.go`
 [] - CANCELLATION: Add e2e input injection tests — test that `InjectInput()` injects a user message mid-conversation. `test/e2e_test.go`
 
