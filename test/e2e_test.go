@@ -331,6 +331,124 @@ func TestE2E_TokenTracking(t *testing.T) {
 	h.AssertStateHasTokens(agent, 35) // from the mock response usage
 }
 
+func TestE2E_MetricsUpdateEvent(t *testing.T) {
+	h := NewHarnessWithT(t)
+	h.Provider().AddTextResponse("Hello")
+
+	agent := h.NewAgent()
+	_, err := agent.Run(context.Background(), "Hi")
+	h.AssertNoError(err)
+
+	// Verify the metrics_update event was published
+	h.AssertEventPublished(events.EventTypeMetricsUpdate)
+
+	// Find the metrics events and verify the payload fields
+	metricsEvents := h.FindEvents(events.EventTypeMetricsUpdate)
+	if len(metricsEvents) != 1 {
+		t.Fatalf("expected 1 metrics_update event, got %d", len(metricsEvents))
+	}
+
+	// Check the event payload
+	data, ok := metricsEvents[0].Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected metrics event data to be map[string]interface{}, got %T", metricsEvents[0].Data)
+	}
+
+	// total_tokens: 35 (prompt 20 + completion 15 from mock AddTextResponse)
+	totalTokens, ok := data["total_tokens"].(int)
+	if !ok {
+		t.Fatalf("expected total_tokens to be int, got %T", data["total_tokens"])
+	}
+	if totalTokens != 35 {
+		t.Errorf("expected total_tokens 35, got %v", totalTokens)
+	}
+
+	// prompt_tokens: 20 (prompt tokens from mock AddTextResponse)
+	// Note: the event field is named "context_tokens" but carries prompt token count
+	promptTokens, ok := data["context_tokens"].(int)
+	if !ok {
+		t.Fatalf("expected context_tokens to be int, got %T", data["context_tokens"])
+	}
+	if promptTokens != 20 {
+		t.Errorf("expected context_tokens 20, got %v", promptTokens)
+	}
+
+	// max_context_tokens: 128000 (mock provider default context size)
+	maxContextTokens, ok := data["max_context_tokens"].(int)
+	if !ok {
+		t.Fatalf("expected max_context_tokens to be int, got %T", data["max_context_tokens"])
+	}
+	if maxContextTokens != 128000 {
+		t.Errorf("expected max_context_tokens 128000, got %v", maxContextTokens)
+	}
+
+	// iteration: 0 (first iteration)
+	iteration, ok := data["iteration"].(int)
+	if !ok {
+		t.Fatalf("expected iteration to be int, got %T", data["iteration"])
+	}
+	if iteration != 0 {
+		t.Errorf("expected iteration 0, got %v", iteration)
+	}
+
+	// total_cost: 0 (mock provider default cost)
+	totalCost, ok := data["total_cost"].(float64)
+	if !ok {
+		t.Fatalf("expected total_cost to be float64, got %T", data["total_cost"])
+	}
+	if totalCost != 0 {
+		t.Errorf("expected total_cost 0, got %v", totalCost)
+	}
+}
+
+func TestE2E_MetricsUpdateEvent_MultiIteration(t *testing.T) {
+	h := NewHarnessWithT(t)
+
+	// First: tool call (iteration 0)
+	h.Provider().AddToolCallResponse(
+		"Checking...",
+		core.ToolCall{ID: "call_1", Function: core.ToolCallFunction{Name: "read", Arguments: `{}`}},
+	)
+	// Second: final answer (iteration 1)
+	h.Provider().AddTextResponse("Done.")
+	h.Executor().AddToolResult("call_1", "content")
+
+	agent := h.NewAgent()
+	_, err := agent.Run(context.Background(), "Read file")
+	h.AssertNoError(err)
+
+	// Two iterations should produce two metrics_update events
+	metricsEvents := h.FindEvents(events.EventTypeMetricsUpdate)
+	if len(metricsEvents) != 2 {
+		t.Fatalf("expected 2 metrics_update events, got %d", len(metricsEvents))
+	}
+
+	// Verify iteration increments correctly
+	for i, evt := range metricsEvents {
+		data, ok := evt.Data.(map[string]interface{})
+		if !ok {
+			t.Fatalf("event %d: expected data to be map[string]interface{}, got %T", i, evt.Data)
+		}
+		it, ok := data["iteration"].(int)
+		if !ok {
+			t.Fatalf("event %d: expected iteration to be int, got %T", i, data["iteration"])
+		}
+		if it != i {
+			t.Errorf("event %d: expected iteration %d, got %d", i, i, it)
+		}
+	}
+
+	// Verify total_tokens accumulates across iterations
+	// Iteration 0 (tool call): 80 tokens (50 prompt + 30 completion from AddToolCallResponse)
+	// Iteration 1 (final): 35 tokens (20 prompt + 15 completion from AddTextResponse)
+	// Accumulated total: 80 + 35 = 115
+	lastData := metricsEvents[1].Data.(map[string]interface{})
+	totalTokens := lastData["total_tokens"].(int)
+	if totalTokens != 115 {
+		t.Errorf("expected total_tokens 115 (accumulated), got %d", totalTokens)
+	}
+}
+
 func TestE2E_ContextCompaction(t *testing.T) {
 	h := NewHarnessWithT(t)
 	h.Provider().
