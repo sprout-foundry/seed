@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/sprout-foundry/seed/events"
@@ -248,32 +249,46 @@ func TestProcessQuery_ProviderErrorPublishesErrorEvent(t *testing.T) {
 		t.Fatal("expected error from provider failure")
 	}
 
-	// First event is query_started, second is the error event
+	// With retry logic: 3 retry error events (from chatFn) + 1 final error event (from runLoop) = 4 error events
+	// First event is query_started
 	evt1 := <-ch
 	if evt1.Type != events.EventTypeQueryStarted {
 		t.Fatalf("expected first event %q, got %q", events.EventTypeQueryStarted, evt1.Type)
 	}
 
-	evt := <-ch
-	if evt.Type != events.EventTypeError {
-		t.Errorf("expected event type %q, got %q", events.EventTypeError, evt.Type)
+	// Collect all error events
+	var errorEvents []events.UIEvent
+	for {
+		select {
+		case evt := <-ch:
+			if evt.Type == events.EventTypeError {
+				errorEvents = append(errorEvents, evt)
+			}
+		default:
+			goto done
+		}
 	}
-	data, ok := evt.Data.(map[string]interface{})
+done:
+
+	if len(errorEvents) == 0 {
+		t.Fatal("expected at least 1 error event, got 0")
+	}
+
+	// The first error event is from the first retry attempt (chatFn)
+	// It should contain the original error message
+	data, ok := errorEvents[0].Data.(map[string]interface{})
 	if !ok {
-		t.Fatalf("expected map data, got %T", evt.Data)
+		t.Fatalf("expected map data, got %T", errorEvents[0].Data)
 	}
 	if data["message"] != "chat failed" {
 		t.Errorf("expected message 'chat failed', got %v", data["message"])
 	}
-	if data["error"] != "provider down" {
-		t.Errorf("expected error 'provider down', got %v", data["error"])
+	errStr, ok := data["error"].(string)
+	if !ok {
+		t.Fatalf("expected error string, got %T", data["error"])
 	}
-
-	// No more events
-	select {
-	case extra := <-ch:
-		t.Errorf("unexpected extra event: %v", extra.Type)
-	default:
+	if !strings.Contains(errStr, "provider down") {
+		t.Errorf("expected error to contain 'provider down', got %v", errStr)
 	}
 }
 

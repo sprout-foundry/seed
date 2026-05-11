@@ -213,29 +213,80 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 
 // ProcessQuery handles a user query through the complete conversation flow.
 func (ch *ConversationHandler) ProcessQuery(ctx context.Context, query string) (string, error) {
+	providerName := ch.agent.provider.Info().Model
 	chatFn := func(ctx context.Context, req *ChatRequest, iter int) (*ChatResponse, error) {
-		resp, err := ch.agent.provider.Chat(ctx, req)
-		if err != nil {
-			return nil, err
-		}
-		// Record token usage and assistant message inline
-		if resp.Usage.TotalTokens > 0 {
-			ch.agent.state.AddTokens(resp.Usage.PromptTokens, resp.Usage.CompletionTokens, resp.Usage.TotalTokens)
+		// Retry loop for transient/rate-limit errors
+		backoff := NewExponentialBackoff(
+			100*time.Millisecond, // initial delay
+			5*time.Second,        // max delay
+			2.0,                  // multiplier
+			3,                    // max attempts (1 initial + 2 retries)
+			0.0,                  // no jitter (deterministic for tests)
+		)
+		var lastErr error
+		for backoff.NextAttempt() {
+			if backoff.attempt > 1 {
+				ch.agent.debugLog("[retry] Attempt %d, waiting %v\n", backoff.attempt, backoff.Delay())
+				select {
+				case <-time.After(backoff.Delay()):
+				case <-ctx.Done():
+					return nil, fmt.Errorf("%w: %v", ErrInterrupted, ctx.Err())
+				}
+			}
 
-			// Publish metrics update event
-			if ch.agent.eventBus != nil {
-				ch.agent.eventBus.Publish(events.EventTypeMetricsUpdate, events.MetricsUpdateEvent(
-					ch.agent.state.TotalTokens(),
-					resp.Usage.PromptTokens,
-					ch.agent.provider.Info().ContextSize,
-					iter,
-					ch.agent.state.TotalCost(),
-				))
+			resp, err := ch.agent.provider.Chat(ctx, req)
+			if err == nil {
+				// Record token usage and assistant message inline
+				if resp.Usage.TotalTokens > 0 {
+					ch.agent.state.AddTokens(resp.Usage.PromptTokens, resp.Usage.CompletionTokens, resp.Usage.TotalTokens)
+
+					// Publish metrics update event
+					if ch.agent.eventBus != nil {
+						ch.agent.eventBus.Publish(events.EventTypeMetricsUpdate, events.MetricsUpdateEvent(
+							ch.agent.state.TotalTokens(),
+							resp.Usage.PromptTokens,
+							ch.agent.provider.Info().ContextSize,
+							iter,
+							ch.agent.state.TotalCost(),
+						))
+					}
+				}
+
+				ch.agent.state.AddMessage(resp.ToMessage())
+				return resp, nil
+			}
+
+			// Classify the error
+			classifiedErr := ClassifyError(err, providerName)
+			lastErr = classifiedErr
+
+			// Fail fast on auth errors — retry won't help
+			if IsAuthError(classifiedErr) {
+				ch.agent.debugLog("[!!] Auth error, failing fast: %v\n", classifiedErr)
+				return nil, classifiedErr
+			}
+
+			// Fail fast on context overflow — retry won't help
+			if IsContextOverflow(classifiedErr) {
+				ch.agent.debugLog("[!!] Context overflow, failing fast: %v\n", classifiedErr)
+				return nil, classifiedErr
+			}
+
+			// Retry on transient/rate-limit errors.
+			// (ClassifyError defaults to TransientError for unknown errors, so this
+			// path always matches after auth/context-overflow are handled above.)
+			if IsTransient(classifiedErr) || IsRateLimit(classifiedErr) {
+				ch.agent.debugLog("[retry] Retryable error: %v\n", classifiedErr)
+				// Publish error event for each retry attempt (observability).
+				if ch.agent.eventBus != nil {
+					ch.agent.eventBus.Publish(events.EventTypeError, events.ErrorEvent("chat failed", classifiedErr))
+				}
+				continue
 			}
 		}
 
-		ch.agent.state.AddMessage(resp.ToMessage())
-		return resp, nil
+		// All retries exhausted — return the last classified error
+		return nil, lastErr
 	}
 
 	return ch.runLoop(ctx, query, "ProcessQuery", chatFn)

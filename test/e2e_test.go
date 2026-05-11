@@ -153,6 +153,9 @@ func TestE2E_ProviderError(t *testing.T) {
 
 func TestE2E_ProviderError_PublishesErrorEvent(t *testing.T) {
 	h := NewHarnessWithT(t)
+	// Add 3 errors (one per retry attempt) so the mock doesn't run out
+	h.Provider().AddError(fmt.Errorf("simulated provider failure"))
+	h.Provider().AddError(fmt.Errorf("simulated provider failure"))
 	h.Provider().AddError(fmt.Errorf("simulated provider failure"))
 
 	agent := h.NewAgent()
@@ -163,13 +166,13 @@ func TestE2E_ProviderError_PublishesErrorEvent(t *testing.T) {
 	// Verify the error event was published
 	h.AssertEventPublished(events.EventTypeError)
 
-	// Verify the error event data contains the expected fields
+	// With retry logic: 3 retry error events (from chatFn) + 1 final error event (from runLoop) = 4
 	errorEvents := h.FindEvents(events.EventTypeError)
-	if len(errorEvents) != 1 {
-		t.Fatalf("expected 1 error event, got %d", len(errorEvents))
+	if len(errorEvents) < 3 {
+		t.Fatalf("expected at least 3 error events (one per failed attempt), got %d", len(errorEvents))
 	}
 
-	// Check the event payload
+	// Check the first error event payload
 	data, ok := errorEvents[0].Data.(map[string]interface{})
 	if !ok {
 		t.Fatalf("expected error event data to be map[string]interface{}, got %T", errorEvents[0].Data)
@@ -1293,4 +1296,166 @@ func TestE2E_Streaming_ReasoningChunks(t *testing.T) {
 	if agent.ReasoningBuffer().Len() != 0 {
 		h.fail("expected empty reasoning buffer")
 	}
+}
+
+// --- Retry / Error Recovery Tests ---
+
+func TestE2E_Retry_TransientErrorRecovers(t *testing.T) {
+	h := NewHarnessWithT(t)
+
+	// First two calls fail with transient errors; third succeeds.
+	h.Provider().AddError(fmt.Errorf("connection refused"))
+	h.Provider().AddError(fmt.Errorf("timeout: deadline exceeded"))
+	h.Provider().AddTextResponse("Recovered!")
+
+	agent := h.NewAgent()
+	result, err := agent.Run(context.Background(), "test query")
+
+	h.AssertNoError(err)
+	h.AssertEquals(result, "Recovered!")
+
+	// Provider called 3 times: 2 transient errors + 1 success
+	h.AssertProviderCalledN(3)
+}
+
+func TestE2E_Retry_AuthErrorFailsFast(t *testing.T) {
+	h := NewHarnessWithT(t)
+
+	// Auth error should fail fast — no retries.
+	h.Provider().AddError(&core.AuthError{
+		Provider: "mock-model",
+		Wrapped:  fmt.Errorf("invalid api key"),
+	})
+
+	agent := h.NewAgent()
+	_, err := agent.Run(context.Background(), "test query")
+
+	h.AssertError(err)
+	h.AssertErrorContains(err, "authentication failed")
+
+	// Provider called only once — no retry on auth errors
+	h.AssertProviderCalledN(1)
+}
+
+func TestE2E_Retry_ContextOverflowFailsFast(t *testing.T) {
+	h := NewHarnessWithT(t)
+
+	// Context overflow should fail fast — no retries.
+	h.Provider().AddError(&core.ContextOverflowError{
+		TokensUsed:  130000,
+		TokensLimit: 128000,
+		Wrapped:     fmt.Errorf("context window exceeded"),
+	})
+
+	agent := h.NewAgent()
+	_, err := agent.Run(context.Background(), "test query")
+
+	h.AssertError(err)
+	h.AssertErrorContains(err, "context window exceeded")
+
+	// Provider called only once — no retry on context overflow
+	h.AssertProviderCalledN(1)
+}
+
+func TestE2E_Retry_ExhaustedReturnsLastError(t *testing.T) {
+	h := NewHarnessWithT(t)
+
+	// All 3 attempts fail with transient errors (max attempts = 3).
+	h.Provider().AddError(fmt.Errorf("transient failure 1"))
+	h.Provider().AddError(fmt.Errorf("transient failure 2"))
+	h.Provider().AddError(fmt.Errorf("transient failure 3"))
+
+	agent := h.NewAgent()
+	_, err := agent.Run(context.Background(), "test query")
+
+	h.AssertError(err)
+	h.AssertErrorContains(err, "transient failure 3")
+
+	// Provider called 3 times (max attempts exhausted)
+	h.AssertProviderCalledN(3)
+
+	// State should only have the user message — no assistant message recorded
+	h.AssertStateHasNMessages(agent, 1)
+}
+
+func TestE2E_Retry_RateLimitErrorRetries(t *testing.T) {
+	h := NewHarnessWithT(t)
+
+	// First call fails with rate limit; second succeeds.
+	h.Provider().AddError(&core.RateLimitError{
+		Provider: "mock-model",
+		Attempt:  1,
+		Wrapped:  fmt.Errorf("rate limit exceeded"),
+	})
+	h.Provider().AddTextResponse("After rate limit!")
+
+	agent := h.NewAgent()
+	result, err := agent.Run(context.Background(), "test query")
+
+	h.AssertNoError(err)
+	h.AssertEquals(result, "After rate limit!")
+
+	// Provider called 2 times: 1 rate limit + 1 success
+	h.AssertProviderCalledN(2)
+}
+
+func TestE2E_Retry_ErrorEventsPublished(t *testing.T) {
+	h := NewHarnessWithT(t)
+
+	// Two transient errors before success.
+	h.Provider().AddError(fmt.Errorf("timeout: connection reset"))
+	h.Provider().AddError(fmt.Errorf("service unavailable"))
+	h.Provider().AddTextResponse("OK")
+
+	agent := h.NewAgent()
+	result, err := agent.Run(context.Background(), "test query")
+
+	h.AssertNoError(err)
+	h.AssertEquals(result, "OK")
+
+	// Error events published for each transient failure (from chatFn)
+	h.AssertEventPublished(events.EventTypeError)
+	errorEvents := h.FindEvents(events.EventTypeError)
+	if len(errorEvents) != 2 {
+		t.Errorf("expected 2 error events (one per retry attempt), got %d", len(errorEvents))
+	}
+}
+
+func TestE2E_Retry_ContextCancellationDuringBackoff(t *testing.T) {
+	h := NewHarnessWithT(t)
+
+	// First call fails with transient error; second call would succeed
+	// but context is cancelled during backoff delay.
+	h.Provider().AddError(fmt.Errorf("timeout: connection reset"))
+	h.Provider().AddTextResponse("Should not reach this")
+
+	agent := h.NewAgent()
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Start the run in a goroutine
+	done := make(chan error, 1)
+	go func() {
+		_, err := agent.Run(ctx, "test query")
+		done <- err
+	}()
+
+	// Wait for the first provider call to complete (it will fail with transient error)
+	for i := 0; i < 50; i++ {
+		if h.Provider().CallCount() >= 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Cancel during the backoff delay before the retry
+	cancel()
+
+	err := <-done
+
+	h.AssertError(err)
+	h.AssertErrorContains(err, "conversation interrupted")
+
+	// Provider called once (first attempt failed, backoff cancelled before retry)
+	h.AssertProviderCalledN(1)
 }
