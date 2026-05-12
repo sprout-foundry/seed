@@ -740,16 +740,10 @@ func BuildCheckpointCompactedMessages(messages []Message, checkpoints []TurnChec
 		msgIdx++
 	}
 
-	// Phase 3: Defensive consecutive-assistant check.
-	// Since we insert summaries with role "user", this should rarely fire,
-	// but guard against edge cases (e.g. ranges containing only assistant msgs).
-	for i := 1; i < len(newMsgs); i++ {
-		if newMsgs[i-1].Role == "assistant" && newMsgs[i].Role == "assistant" {
-			newMsgs[i-1].Content += "\n" + newMsgs[i].Content
-			newMsgs = append(newMsgs[:i], newMsgs[i+1:]...)
-			i--
-		}
-	}
+	// Phase 3: Resolve consecutive-assistant boundaries.
+	// Since summaries are inserted with role "user", this should rarely fire,
+	// but it guards against edge cases (e.g., ranges containing only assistant msgs).
+	newMsgs = resolveConsecutiveAssistantMessages(newMsgs)
 
 	// Phase 4: Compute new indices for remaining (unconsumed) checkpoints.
 	//
@@ -760,6 +754,12 @@ func BuildCheckpointCompactedMessages(messages []Message, checkpoints []TurnChec
 	//     were removed, shifting the checkpoint left by (msgCount-1).
 	//  2. A consumed range overlaps the start of the checkpoint — the consumed
 	//     messages are gone, so the checkpoint's start advances past them.
+	//
+	// Note: Phase 4 shift calculations are based on consumed checkpoint ranges
+	// only. If Phase 3 removed additional messages (consecutive assistant merges),
+	// remaining checkpoint indices may be off by the number of messages merged.
+	// In practice this is rare since summaries are inserted with role "user",
+	// making consecutive assistant boundaries uncommon.
 	//
 	for i := range remaining {
 		s := remaining[i].StartIndex
@@ -811,6 +811,59 @@ func BuildCheckpointCompactedMessages(messages []Message, checkpoints []TurnChec
 	}
 
 	return newMsgs, remaining
+}
+
+// resolveConsecutiveAssistantMessages fixes consecutive assistant messages in the
+// compacted result. This can happen when checkpoint ranges are replaced and the
+// boundary messages happen to be assistant role.
+//
+// Strategy (applied left-to-right):
+//  1. Both messages have no tool calls → merge content into the first, drop the second.
+//  2. First has tool calls, second does not → merge content, drop the second.
+//  3. First has no tool calls, second does → merge content into the first and
+//     transfer the tool calls, then drop the second.
+//  4. Both have tool calls → merge content, drop the second.
+//
+// Note: Images and ToolCallID from the dropped (second) message are not preserved.
+// In well-formed OpenAI-format conversations, assistant messages never carry
+// ToolCallID (that field belongs to tool-result messages), so this is not a
+// practical concern.
+//
+// The function works on a copy of the input slice so it never mutates the caller's
+// data. After each merge/drop the loop index is decremented so the next pair is checked.
+func resolveConsecutiveAssistantMessages(msgs []Message) []Message {
+	// Work on a copy so we never mutate the caller's slice.
+	out := make([]Message, len(msgs))
+	copy(out, msgs)
+
+	for i := 1; i < len(out); i++ {
+		if out[i-1].Role != "assistant" || out[i].Role != "assistant" {
+			continue
+		}
+
+		prevHasTools := len(out[i-1].ToolCalls) > 0
+		currHasTools := len(out[i].ToolCalls) > 0
+
+		switch {
+		case !prevHasTools && !currHasTools:
+			// Both plain — merge content.
+			out[i-1].Content += "\n" + out[i].Content
+
+		case !prevHasTools && currHasTools:
+			// Second carries tool calls — merge content and transfer them.
+			out[i-1].Content += "\n" + out[i].Content
+			out[i-1].ToolCalls = out[i].ToolCalls
+
+		default:
+			// First already has tool calls (or both do) — merge content and drop the second.
+			out[i-1].Content += "\n" + out[i].Content
+		}
+
+		// Remove the second message and re-check this index.
+		out = append(out[:i], out[i+1:]...)
+		i--
+	}
+	return out
 }
 
 // ShiftCheckpointIndices updates checkpoint StartIndex/EndIndex values

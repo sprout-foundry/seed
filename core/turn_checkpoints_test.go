@@ -1319,7 +1319,7 @@ func TestShiftCheckpointIndices_EmptyInputs(t *testing.T) {
 
 	result1 := ShiftCheckpointIndices([]Message{}, msgs, checkpoints)
 	if len(result1) != 1 {
-		t.Errorf("empty oldMessages: expected 1 checkpoint, got %d", len(result1))
+		t.Fatalf("expected 1 checkpoint, got %d", len(result1))
 	}
 	if result1[0].StartIndex != 0 || result1[0].EndIndex != 1 {
 		t.Errorf("empty oldMessages: expected [0,1], got [%d,%d]", result1[0].StartIndex, result1[0].EndIndex)
@@ -1328,16 +1328,16 @@ func TestShiftCheckpointIndices_EmptyInputs(t *testing.T) {
 	// Empty newMessages → checkpoints returned unchanged.
 	result2 := ShiftCheckpointIndices(msgs, []Message{}, checkpoints)
 	if len(result2) != 1 {
-		t.Errorf("empty newMessages: expected 1 checkpoint, got %d", len(result2))
+		t.Fatalf("expected 1 checkpoint, got %d", len(result2))
 	}
 	if result2[0].StartIndex != 0 || result2[0].EndIndex != 1 {
 		t.Errorf("empty newMessages: expected [0,1], got [%d,%d]", result2[0].StartIndex, result2[0].EndIndex)
 	}
 
-	// Empty checkpoints → empty result.
+	// Empty checkpoints → result unchanged.
 	result3 := ShiftCheckpointIndices(msgs, msgs, []TurnCheckpoint{})
 	if len(result3) != 0 {
-		t.Errorf("empty checkpoints: expected 0, got %d", len(result3))
+		t.Fatalf("expected 0 checkpoints, got %d", len(result3))
 	}
 
 	// All three empty → empty result.
@@ -1347,11 +1347,37 @@ func TestShiftCheckpointIndices_EmptyInputs(t *testing.T) {
 	}
 }
 
-// TestShiftCheckpointIndices_WithToolCalls verifies that matching considers
-// tool_call_id for tool result messages and tool calls for assistant messages.
-// Note: The greedy matching in matchMessages uses score 0 for content mismatches,
-// and since 0 > -1, it will match by role even when content differs. This test
-// uses unique content to demonstrate correct behavior with no false matches.
+// TestShiftCheckpointIndices_SameRoleDifferentContent verifies that messages
+// with matching roles but different content are not matched, so their
+// checkpoint indices are marked as removed.
+func TestShiftCheckpointIndices_SameRoleDifferentContent(t *testing.T) {
+	oldMessages := []Message{
+		{Role: "user", Content: "original question"},
+		{Role: "assistant", Content: "original answer"},
+	}
+	// Different content — messages shouldn't match.
+	newMessages := []Message{
+		{Role: "user", Content: "different question"},
+		{Role: "assistant", Content: "different answer"},
+	}
+	checkpoints := []TurnCheckpoint{
+		{StartIndex: 0, EndIndex: 1, Summary: "old turn"},
+	}
+
+	result := ShiftCheckpointIndices(oldMessages, newMessages, checkpoints)
+
+	if len(result) != 1 {
+		t.Fatalf("expected 1 checkpoint, got %d", len(result))
+	}
+	// Greedy matching: both old messages will not find a match with the new
+	// messages (content differs), so both indices map to -1.
+	if result[0].StartIndex != -1 || result[0].EndIndex != -1 {
+		t.Errorf("expected [-1,-1], got [%d,%d]", result[0].StartIndex, result[0].EndIndex)
+	}
+}
+
+// TestShiftCheckpointIndices_WithToolCalls verifies correct shifting when
+// checkpoint ranges include tool-call messages whose tool_call_ids differ.
 func TestShiftCheckpointIndices_WithToolCalls(t *testing.T) {
 	oldMessages := []Message{
 		{Role: "system", Content: "system prompt"},
@@ -1438,88 +1464,56 @@ func TestShiftCheckpointIndices_DuplicateContent(t *testing.T) {
 	}
 }
 
-// TestShiftCheckpointIndices_OutOfBoundsIndices verifies that checkpoints
-// with invalid indices (out of bounds or negative) are preserved as-is.
-func TestShiftCheckpointIndices_OutOfBoundsIndices(t *testing.T) {
-	oldMessages := []Message{
-		{Role: "user", Content: "Question 1"},
-		{Role: "assistant", Content: "Answer 1"},
-	}
-	newMessages := []Message{
-		{Role: "user", Content: "Question 1"},
+// TestShiftCheckpointIndices_NegativeIndices verifies that checkpoints with
+// already-invalid indices (StartIndex or EndIndex < 0) are returned unchanged.
+func TestShiftCheckpointIndices_NegativeIndices(t *testing.T) {
+	msgs := []Message{
+		{Role: "user", Content: "question"},
+		{Role: "assistant", Content: "answer"},
 	}
 	checkpoints := []TurnCheckpoint{
-		{StartIndex: 5, EndIndex: 6, Summary: "out of bounds start"},
-		{StartIndex: -1, EndIndex: 0, Summary: "negative start"},
-		{StartIndex: 0, EndIndex: 0, Summary: "valid"},
+		{StartIndex: -1, EndIndex: 0, Summary: "invalid start"},
+		{StartIndex: 0, EndIndex: -1, Summary: "invalid end"},
 	}
 
-	result := ShiftCheckpointIndices(oldMessages, newMessages, checkpoints)
+	result := ShiftCheckpointIndices(msgs, msgs, checkpoints)
 
-	if len(result) != 3 {
-		t.Fatalf("expected 3 checkpoints, got %d", len(result))
+	if len(result) != 2 {
+		t.Fatalf("expected 2 checkpoints, got %d", len(result))
 	}
-	// CP0: start index 5 >= len(oldMessages)=2, preserved as-is.
-	if result[0].StartIndex != 5 || result[0].EndIndex != 6 {
-		t.Errorf("CP0: expected [5,6], got [%d,%d]", result[0].StartIndex, result[0].EndIndex)
+	// Already-invalid checkpoints should be kept as-is.
+	if result[0].StartIndex != -1 || result[0].EndIndex != 0 {
+		t.Errorf("CP1: expected [-1,0], got [%d,%d]", result[0].StartIndex, result[0].EndIndex)
 	}
-	// CP1: negative start, preserved as-is.
-	if result[1].StartIndex != -1 || result[1].EndIndex != 0 {
-		t.Errorf("CP1: expected [-1,0], got [%d,%d]", result[1].StartIndex, result[1].EndIndex)
-	}
-	// CP2: valid → [0,0] → [0,0] (survived).
-	if result[2].StartIndex != 0 || result[2].EndIndex != 0 {
-		t.Errorf("CP2: expected [0,0], got [%d,%d]", result[2].StartIndex, result[2].EndIndex)
+	if result[1].StartIndex != 0 || result[1].EndIndex != -1 {
+		t.Errorf("CP2: expected [0,-1], got [%d,%d]", result[1].StartIndex, result[1].EndIndex)
 	}
 }
 
-// TestShiftCheckpointIndices_AllMessagesRemoved verifies that when all
-// old messages in a checkpoint range are replaced by new messages with
-// completely different structure, all checkpoint indices are marked invalid.
-//
-// With bestScore = 0, only scores > 0 are accepted, meaning role AND content
-// must agree for a match. If no old message matches any new message, all
-// map to -1.
-func TestShiftCheckpointIndices_AllMessagesRemoved(t *testing.T) {
-	// Old has 4 messages, new has only 2. Content differs across all messages,
-	// so no old message matches any new message (score 0 is not accepted).
-	oldMessages := []Message{
-		{Role: "user", Content: "question one"},
-		{Role: "assistant", Content: "answer one"},
-		{Role: "tool", Content: "tool result 1"},
-		{Role: "tool", Content: "tool result 2"},
+// TestShiftCheckpointIndices_OutOfBoundsIndices verifies that checkpoints
+// whose indices are outside the range of oldMessages are returned unchanged.
+func TestShiftCheckpointIndices_OutOfBoundsIndices(t *testing.T) {
+	msgs := []Message{
+		{Role: "user", Content: "question"},
+		{Role: "assistant", Content: "answer"},
 	}
-	newMessages := []Message{
-		{Role: "user", Content: "summary user"},
-		{Role: "assistant", Content: "summary assistant"},
-	}
-	// Greedy matching (score > 0 required):
-	//   old[0] user "question one" → new[0] user "summary user" score=0 (content differs) → skip
-	//     new[1] assistant "summary assistant" score=0 (role differs) → skip
-	//     no match → -1
-	//   old[1] assistant "answer one" → no match → -1
-	//   old[2] tool "tool result 1" → no match → -1
-	//   old[3] tool "tool result 2" → no match → -1
-	//   matched = [-1, -1, -1, -1]
-	//
-	// Checkpoint [2,3]: both boundaries unmatched → [-1,-1]
 	checkpoints := []TurnCheckpoint{
-		{StartIndex: 2, EndIndex: 3, Summary: "Sum for tool results"},
+		{StartIndex: 10, EndIndex: 20, Summary: "out of bounds"},
 	}
 
-	result := ShiftCheckpointIndices(oldMessages, newMessages, checkpoints)
+	result := ShiftCheckpointIndices(msgs, msgs, checkpoints)
 
 	if len(result) != 1 {
 		t.Fatalf("expected 1 checkpoint, got %d", len(result))
 	}
-	// All old messages have no match → fully consumed
-	if result[0].StartIndex != -1 || result[0].EndIndex != -1 {
-		t.Errorf("expected [-1,-1], got [%d,%d]", result[0].StartIndex, result[0].EndIndex)
+	// Out-of-bounds checkpoint should be kept as-is.
+	if result[0].StartIndex != 10 || result[0].EndIndex != 20 {
+		t.Errorf("expected [10,20], got [%d,%d]", result[0].StartIndex, result[0].EndIndex)
 	}
 }
 
-// TestShiftCheckpointIndices_CheckpointNotMutated verifies that the
-// input checkpoints slice is not mutated by the function.
+// TestShiftCheckpointIndices_CheckpointNotMutated verifies that ShiftCheckpointIndices
+// does not mutate its input checkpoints slice.
 func TestShiftCheckpointIndices_CheckpointNotMutated(t *testing.T) {
 	oldMessages := []Message{
 		{Role: "user", Content: "Question 1"},
@@ -1667,5 +1661,335 @@ func TestShiftCheckpointIndices_CheckpointSpanningMultipleNewMessages(t *testing
 	// All messages survived, indices unchanged.
 	if result[0].StartIndex != 0 || result[0].EndIndex != 3 {
 		t.Errorf("expected [0,3], got [%d,%d]", result[0].StartIndex, result[0].EndIndex)
+	}
+}
+
+// --- resolveConsecutiveAssistantMessages tests ---
+
+func TestResolveConsecutiveAssistantMessages_both_plain_merge_content(t *testing.T) {
+	msgs := []Message{
+		{Role: "user", Content: "hello"},
+		{Role: "assistant", Content: "first thought"},
+		{Role: "assistant", Content: "second thought"},
+		{Role: "user", Content: "next question"},
+	}
+
+	result := resolveConsecutiveAssistantMessages(msgs)
+
+	// Should have 3 messages: user, merged assistant, user.
+	if len(result) != 3 {
+		t.Fatalf("expected 3 messages, got %d", len(result))
+	}
+	if result[0].Role != "user" || result[0].Content != "hello" {
+		t.Errorf("first message wrong: %+v", result[0])
+	}
+	if result[1].Role != "assistant" {
+		t.Errorf("expected assistant at index 1, got %s", result[1].Role)
+	}
+	if !strings.Contains(result[1].Content, "first thought") {
+		t.Errorf("merged content missing 'first thought': %q", result[1].Content)
+	}
+	if !strings.Contains(result[1].Content, "second thought") {
+		t.Errorf("merged content missing 'second thought': %q", result[1].Content)
+	}
+	if result[2].Role != "user" || result[2].Content != "next question" {
+		t.Errorf("third message wrong: %+v", result[2])
+	}
+}
+
+func TestResolveConsecutiveAssistantMessages_first_has_tools_second_plain_drop_second(t *testing.T) {
+	msgs := []Message{
+		{Role: "user", Content: "hello"},
+		{Role: "assistant", Content: "let me do something", ToolCalls: []ToolCall{
+			{ID: "call_1", Type: "function", Function: ToolCallFunction{Name: "shell", Arguments: `{}`}},
+		}},
+		{Role: "assistant", Content: "just a plain note"},
+		{Role: "user", Content: "next"},
+	}
+
+	result := resolveConsecutiveAssistantMessages(msgs)
+
+	// Should have 3 messages: user, assistant(with tools), user. Second assistant dropped.
+	if len(result) != 3 {
+		t.Fatalf("expected 3 messages, got %d", len(result))
+	}
+	if result[1].Role != "assistant" {
+		t.Errorf("expected assistant at index 1, got %s", result[1].Role)
+	}
+	// First assistant retains its tool calls.
+	if len(result[1].ToolCalls) != 1 {
+		t.Errorf("expected 1 tool call on first assistant, got %d", len(result[1].ToolCalls))
+	}
+	// Second assistant content IS merged (preserved for context).
+	if !strings.Contains(result[1].Content, "just a plain note") {
+		t.Error("second assistant content was not merged")
+	}
+	// Input slice was not mutated.
+	if msgs[1].Content != "let me do something" {
+		t.Error("input slice was mutated")
+	}
+}
+
+func TestResolveConsecutiveAssistantMessages_first_plain_second_has_tools_merge_and_transfer(t *testing.T) {
+	msgs := []Message{
+		{Role: "user", Content: "hello"},
+		{Role: "assistant", Content: "initial response"},
+		{Role: "assistant", Content: "follow-up with action", ToolCalls: []ToolCall{
+			{ID: "call_2", Type: "function", Function: ToolCallFunction{Name: "read_file", Arguments: `{}`}},
+		}},
+		{Role: "user", Content: "next"},
+	}
+
+	result := resolveConsecutiveAssistantMessages(msgs)
+
+	// Should have 3 messages: user, merged assistant, user.
+	if len(result) != 3 {
+		t.Fatalf("expected 3 messages, got %d", len(result))
+	}
+	if result[1].Role != "assistant" {
+		t.Errorf("expected assistant at index 1, got %s", result[1].Role)
+	}
+	// Content from both messages should be merged.
+	if !strings.Contains(result[1].Content, "initial response") {
+		t.Errorf("merged content missing 'initial response': %q", result[1].Content)
+	}
+	if !strings.Contains(result[1].Content, "follow-up with action") {
+		t.Errorf("merged content missing 'follow-up with action': %q", result[1].Content)
+	}
+	// Tool calls from the second message should be transferred to the first.
+	if len(result[1].ToolCalls) != 1 {
+		t.Errorf("expected 1 tool call transferred, got %d", len(result[1].ToolCalls))
+	}
+	if result[1].ToolCalls[0].Function.Name != "read_file" {
+		t.Errorf("expected tool call name 'read_file', got %q", result[1].ToolCalls[0].Function.Name)
+	}
+}
+
+func TestResolveConsecutiveAssistantMessages_both_have_tools_drop_second(t *testing.T) {
+	msgs := []Message{
+		{Role: "user", Content: "hello"},
+		{Role: "assistant", Content: "first with tools", ToolCalls: []ToolCall{
+			{ID: "call_1", Type: "function", Function: ToolCallFunction{Name: "shell", Arguments: `{}`}},
+		}},
+		{Role: "assistant", Content: "second with tools", ToolCalls: []ToolCall{
+			{ID: "call_2", Type: "function", Function: ToolCallFunction{Name: "read_file", Arguments: `{}`}},
+		}},
+		{Role: "user", Content: "next"},
+	}
+
+	result := resolveConsecutiveAssistantMessages(msgs)
+
+	// Should have 3 messages: user, first assistant (with tools), user. Second dropped.
+	if len(result) != 3 {
+		t.Fatalf("expected 3 messages, got %d", len(result))
+	}
+	if result[1].Role != "assistant" {
+		t.Errorf("expected assistant at index 1, got %s", result[1].Role)
+	}
+	// First assistant's tool calls should be preserved.
+	if len(result[1].ToolCalls) != 1 {
+		t.Errorf("expected 1 tool call, got %d", len(result[1].ToolCalls))
+	}
+	if result[1].ToolCalls[0].Function.Name != "shell" {
+		t.Errorf("expected tool call name 'shell', got %q", result[1].ToolCalls[0].Function.Name)
+	}
+	// Second assistant's content IS merged (preserved for context).
+	if !strings.Contains(result[1].Content, "second with tools") {
+		t.Error("second assistant content was not merged")
+	}
+	// Second assistant's tool calls should NOT be present (only first's are kept).
+	if len(result[1].ToolCalls) != 1 {
+		t.Errorf("expected 1 tool call, got %d", len(result[1].ToolCalls))
+	}
+	if result[1].ToolCalls[0].Function.Name != "shell" {
+		t.Errorf("expected tool call name 'shell', got %q", result[1].ToolCalls[0].Function.Name)
+	}
+	// Input slice was not mutated.
+	if msgs[1].Content != "first with tools" {
+		t.Error("input slice was mutated")
+	}
+}
+
+func TestResolveConsecutiveAssistantMessages_no_consecutive_unchanged(t *testing.T) {
+	msgs := []Message{
+		{Role: "user", Content: "hello"},
+		{Role: "assistant", Content: "answer"},
+		{Role: "user", Content: "follow-up"},
+		{Role: "assistant", Content: "another answer"},
+		{Role: "user", Content: "final"},
+	}
+
+	result := resolveConsecutiveAssistantMessages(msgs)
+
+	// No consecutive assistant messages, so result should be identical.
+	if len(result) != len(msgs) {
+		t.Fatalf("expected %d messages, got %d", len(msgs), len(result))
+	}
+	for i := range msgs {
+		if result[i].Role != msgs[i].Role || result[i].Content != msgs[i].Content {
+			t.Errorf("message %d changed: expected %+v, got %+v", i, msgs[i], result[i])
+		}
+	}
+}
+
+func TestResolveConsecutiveAssistantMessages_three_consecutive_merged_pairwise(t *testing.T) {
+	msgs := []Message{
+		{Role: "user", Content: "hello"},
+		{Role: "assistant", Content: "thought 1"},
+		{Role: "assistant", Content: "thought 2"},
+		{Role: "assistant", Content: "thought 3"},
+		{Role: "user", Content: "next"},
+	}
+
+	result := resolveConsecutiveAssistantMessages(msgs)
+
+	// All three consecutive assistants should be merged into one.
+	if len(result) != 3 {
+		t.Fatalf("expected 3 messages, got %d", len(result))
+	}
+	if result[1].Role != "assistant" {
+		t.Errorf("expected assistant at index 1, got %s", result[1].Role)
+	}
+	// All three contents should be merged.
+	for _, expected := range []string{"thought 1", "thought 2", "thought 3"} {
+		if !strings.Contains(result[1].Content, expected) {
+			t.Errorf("merged content missing %q: %q", expected, result[1].Content)
+		}
+	}
+}
+
+func TestResolveConsecutiveAssistantMessages_mixed_roles_unchanged(t *testing.T) {
+	msgs := []Message{
+		{Role: "user", Content: "hello"},
+		{Role: "assistant", Content: "answer"},
+		{Role: "user", Content: "follow-up"},
+		{Role: "assistant", Content: "another"},
+		{Role: "assistant", Content: "more"}, // consecutive
+		{Role: "assistant", Content: "last"}, // consecutive
+		{Role: "user", Content: "final"},
+	}
+
+	result := resolveConsecutiveAssistantMessages(msgs)
+
+	// Should have: user, assistant, user, merged assistant, user = 5 messages.
+	if len(result) != 5 {
+		t.Fatalf("expected 5 messages, got %d", len(result))
+	}
+	// Verify no consecutive assistant messages remain.
+	for i := 1; i < len(result); i++ {
+		if result[i-1].Role == "assistant" && result[i].Role == "assistant" {
+			t.Errorf("consecutive assistants at indices %d and %d: %+v, %+v", i-1, i, result[i-1], result[i])
+		}
+	}
+	// Verify merged content has both messages.
+	if !strings.Contains(result[3].Content, "more") || !strings.Contains(result[3].Content, "last") {
+		t.Errorf("merged assistant content wrong: %q", result[3].Content)
+	}
+}
+
+func TestResolveConsecutiveAssistantMessages_empty_input(t *testing.T) {
+	result := resolveConsecutiveAssistantMessages([]Message{})
+	if len(result) != 0 {
+		t.Errorf("expected empty result, got %d messages", len(result))
+	}
+}
+
+func TestResolveConsecutiveAssistantMessages_single_message(t *testing.T) {
+	msgs := []Message{
+		{Role: "user", Content: "only message"},
+	}
+	result := resolveConsecutiveAssistantMessages(msgs)
+
+	if len(result) != 1 {
+		t.Errorf("expected 1 message, got %d", len(result))
+	}
+	if result[0].Content != "only message" {
+		t.Errorf("unexpected content: %q", result[0].Content)
+	}
+}
+
+// --- BuildCheckpointCompactedMessages consecutive-assistant boundary tests ---
+
+func TestBuildCheckpointCompactedMessages_consecutive_assistant_boundary(t *testing.T) {
+	// Scenario: checkpoint [0,0] consumes the user message, leaving two consecutive
+	// assistant messages (indices 1 and 2) that must be merged.
+	msgs := []Message{
+		{Role: "user", Content: "initial query"},
+		{Role: "assistant", Content: "first assistant response"},
+		{Role: "assistant", Content: "second assistant response"},
+		{Role: "user", Content: "follow-up query"},
+		{Role: "assistant", Content: "final answer"},
+	}
+	checkpoints := []TurnCheckpoint{
+		{StartIndex: 0, EndIndex: 0, Summary: "User asked: initial query."},
+	}
+
+	outMsgs, outCps := BuildCheckpointCompactedMessages(msgs, checkpoints)
+
+	// Checkpoint [0,0] consumed → 1 summary replaces 1 msg (delta=0).
+	// Result: summary(user), assistant1, assistant2, user, assistant = 5 messages.
+	// resolveConsecutiveAssistantMessages should merge the two assistants.
+	// Final: summary(user), merged_assistant, user, assistant = 4 messages.
+	if len(outMsgs) != 4 {
+		t.Fatalf("expected 4 messages, got %d: %+v", len(outMsgs), outMsgs)
+	}
+	// No consecutive assistants should remain.
+	for i := 1; i < len(outMsgs); i++ {
+		if outMsgs[i-1].Role == "assistant" && outMsgs[i].Role == "assistant" {
+			t.Errorf("consecutive assistants at indices %d and %d", i-1, i)
+		}
+	}
+	// The merged assistant should contain both responses.
+	if !strings.Contains(outMsgs[1].Content, "first assistant response") {
+		t.Errorf("merged content missing 'first assistant response': %q", outMsgs[1].Content)
+	}
+	if !strings.Contains(outMsgs[1].Content, "second assistant response") {
+		t.Errorf("merged content missing 'second assistant response': %q", outMsgs[1].Content)
+	}
+	// Checkpoint consumed, no remaining.
+	if len(outCps) != 0 {
+		t.Errorf("expected 0 remaining checkpoints, got %d", len(outCps))
+	}
+}
+
+func TestBuildCheckpointCompactedMessages_normal_compaction_no_consecutive(t *testing.T) {
+	// Scenario: normal checkpoint compaction with alternating user/assistant
+	// turns — this should NOT produce consecutive assistant messages.
+	msgs := []Message{
+		{Role: "system", Content: "You are helpful."},
+		{Role: "user", Content: "Question 1"},
+		{Role: "assistant", Content: "Answer 1"},
+		{Role: "user", Content: "Question 2"},
+		{Role: "assistant", Content: "Answer 2"},
+		{Role: "user", Content: "Question 3"},
+		{Role: "assistant", Content: "Answer 3"},
+	}
+	checkpoints := []TurnCheckpoint{
+		{StartIndex: 1, EndIndex: 2, Summary: "Turn 1 summary"},
+		{StartIndex: 3, EndIndex: 4, Summary: "Turn 2 summary"},
+	}
+
+	outMsgs, outCps := BuildCheckpointCompactedMessages(msgs, checkpoints)
+
+	// System + 2 summaries + last turn = 5 messages.
+	if len(outMsgs) != 5 {
+		t.Fatalf("expected 5 messages, got %d", len(outMsgs))
+	}
+	// Verify the structure: system, summary, summary, user3, assistant3
+	expectedRoles := []string{"system", "user", "user", "user", "assistant"}
+	for i, role := range expectedRoles {
+		if outMsgs[i].Role != role {
+			t.Errorf("expected role %s at index %d, got %s", role, i, outMsgs[i].Role)
+		}
+	}
+	// No consecutive assistant messages.
+	for i := 1; i < len(outMsgs); i++ {
+		if outMsgs[i-1].Role == "assistant" && outMsgs[i].Role == "assistant" {
+			t.Errorf("unexpected consecutive assistants at indices %d and %d", i-1, i)
+		}
+	}
+	// Both checkpoints consumed.
+	if len(outCps) != 0 {
+		t.Errorf("expected 0 remaining checkpoints, got %d", len(outCps))
 	}
 }
