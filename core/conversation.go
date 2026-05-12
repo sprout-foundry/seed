@@ -117,7 +117,18 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 		})
 		contextSize := ch.agent.provider.Info().ContextSize
 		if contextSize > 0 && tokenEstimate > contextSize {
-			messages = ch.compactMessages(messages, contextSize)
+			beforeCount := len(messages)
+			result := ch.compactMessages(messages, contextSize)
+			messages = result.Messages
+			// Publish compaction event
+			if ch.agent.eventBus != nil && result.Strategy != "none" {
+				ch.agent.eventBus.Publish(events.EventTypeCompaction, events.CompactionEvent(
+					result.Strategy,
+					beforeCount,
+					len(result.Messages),
+					result.TokensSaved(),
+				))
+			}
 		}
 
 		// Send to LLM
@@ -403,7 +414,7 @@ func (ch *ConversationHandler) ProcessQueryStream(ctx context.Context, query str
 }
 
 // compactMessages reduces the message list to fit within the context window.
-func (ch *ConversationHandler) compactMessages(messages []Message, limit int) []Message {
+func (ch *ConversationHandler) compactMessages(messages []Message, limit int) CompactionResult {
 	compactor := NewCompactor()
 	return compactor.Compact(messages, limit)
 }

@@ -7,6 +7,28 @@ import (
 	"unicode/utf8"
 )
 
+// CompactionResult holds the output of a compaction operation along with
+// metadata about what strategy was used and how much was saved.
+type CompactionResult struct {
+	Messages     []Message
+	Strategy     string // "none", "checkpoint", "structural", "emergency"
+	TokensBefore int
+	TokensAfter  int
+}
+
+// TokensSaved returns the estimated tokens saved by compaction.
+func (r CompactionResult) TokensSaved() int {
+	if r.TokensBefore > r.TokensAfter {
+		return r.TokensBefore - r.TokensAfter
+	}
+	return 0
+}
+
+// MessageCountDelta returns how many messages were removed.
+func (r CompactionResult) MessageCountDelta(before int) int {
+	return before - len(r.Messages)
+}
+
 // Compactor reduces a message list to fit within a context window.
 // It implements the strategy from sprout: checkpoint compaction,
 // structural compaction, and emergency truncation.
@@ -31,26 +53,48 @@ func NewCompactor() *Compactor {
 // Compact reduces messages to fit within the token limit.
 // It applies strategies in order: checkpoint compaction,
 // structural compaction, emergency truncation.
-func (c *Compactor) Compact(messages []Message, tokenLimit int) []Message {
+func (c *Compactor) Compact(messages []Message, tokenLimit int) CompactionResult {
+	tokensBefore := c.roughTokens(messages)
+
 	if len(messages) <= c.minMessages {
-		return messages
+		return CompactionResult{
+			Messages:     messages,
+			Strategy:     "none",
+			TokensBefore: tokensBefore,
+			TokensAfter:  tokensBefore,
+		}
 	}
 
 	// Phase 1: Checkpoint compaction — replace completed turns with summaries
 	result := c.checkpointCompact(messages, tokenLimit)
 	if c.roughTokens(result) <= tokenLimit {
-		return result
+		return CompactionResult{
+			Messages:     result,
+			Strategy:     "checkpoint",
+			TokensBefore: tokensBefore,
+			TokensAfter:  c.roughTokens(result),
+		}
 	}
 
 	// Phase 2: Structural compaction — summarize middle messages
 	result = c.structuralCompact(result, tokenLimit)
 	if c.roughTokens(result) <= tokenLimit {
-		return result
+		return CompactionResult{
+			Messages:     result,
+			Strategy:     "structural",
+			TokensBefore: tokensBefore,
+			TokensAfter:  c.roughTokens(result),
+		}
 	}
 
 	// Phase 3: Emergency truncation — aggressively trim content
 	result = c.emergencyTruncate(result, tokenLimit)
-	return result
+	return CompactionResult{
+		Messages:     result,
+		Strategy:     "emergency",
+		TokensBefore: tokensBefore,
+		TokensAfter:  c.roughTokens(result),
+	}
 }
 
 // checkpointCompact replaces older completed user-assistant turn pairs

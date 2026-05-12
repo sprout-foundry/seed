@@ -15,8 +15,8 @@ func TestCompactor_NoOpWhenUnderLimit(t *testing.T) {
 		{Role: "assistant", Content: "Hello!"},
 	}
 	result := c.Compact(messages, 10000)
-	if len(result) != len(messages) {
-		t.Errorf("expected no compaction, got %d messages", len(result))
+	if len(result.Messages) != len(messages) {
+		t.Errorf("expected no compaction, got %d messages", len(result.Messages))
 	}
 }
 
@@ -27,8 +27,8 @@ func TestCompactor_NoOpWhenTooFewMessages(t *testing.T) {
 		{Role: "assistant", Content: "Hello"},
 	}
 	result := c.Compact(messages, 10)
-	if len(result) != len(messages) {
-		t.Errorf("expected no compaction for < minMessages, got %d", len(result))
+	if len(result.Messages) != len(messages) {
+		t.Errorf("expected no compaction for < minMessages, got %d", len(result.Messages))
 	}
 }
 
@@ -53,18 +53,18 @@ func TestCompactor_CheckpointCompaction(t *testing.T) {
 	result := c.Compact(messages, 500)
 
 	// Should be fewer messages than original
-	if len(result) >= len(messages) {
-		t.Errorf("expected compaction, got %d messages (was %d)", len(result), len(messages))
+	if len(result.Messages) >= len(messages) {
+		t.Errorf("expected compaction, got %d messages (was %d)", len(result.Messages), len(messages))
 	}
 
 	// System message should be preserved
-	if result[0].Role != "system" {
+	if result.Messages[0].Role != "system" {
 		t.Error("system message should be preserved")
 	}
 
 	// Token count should be reduced
 	origTokens := c.roughTokens(messages)
-	newTokens := c.roughTokens(result)
+	newTokens := c.roughTokens(result.Messages)
 	if newTokens >= origTokens {
 		t.Errorf("expected token reduction: %d -> %d", origTokens, newTokens)
 	}
@@ -91,13 +91,13 @@ func TestCompactor_StructuralCompaction(t *testing.T) {
 	result := c.Compact(messages, 200)
 
 	// Should be significantly reduced
-	if len(result) >= len(messages)-10 {
-		t.Errorf("expected significant compaction, got %d messages (was %d)", len(result), len(messages))
+	if len(result.Messages) >= len(messages)-10 {
+		t.Errorf("expected significant compaction, got %d messages (was %d)", len(result.Messages), len(messages))
 	}
 
 	// Token count should be reduced
 	origTokens := c.roughTokens(messages)
-	newTokens := c.roughTokens(result)
+	newTokens := c.roughTokens(result.Messages)
 	if newTokens >= origTokens {
 		t.Errorf("expected token reduction: %d -> %d", origTokens, newTokens)
 	}
@@ -125,18 +125,18 @@ func TestCompactor_EmergencyTruncation(t *testing.T) {
 	result := c.Compact(messages, 100)
 
 	// Should have fewer messages
-	if len(result) >= len(messages) {
-		t.Errorf("expected message reduction, got %d (was %d)", len(result), len(messages))
+	if len(result.Messages) >= len(messages) {
+		t.Errorf("expected message reduction, got %d (was %d)", len(result.Messages), len(messages))
 	}
 
 	// Should preserve system message
-	if result[0].Role != "system" {
+	if result.Messages[0].Role != "system" {
 		t.Error("system message should be preserved")
 	}
 
 	// Token count should be significantly reduced
 	origTokens := c.roughTokens(messages)
-	newTokens := c.roughTokens(result)
+	newTokens := c.roughTokens(result.Messages)
 	if newTokens >= origTokens {
 		t.Errorf("expected token reduction: %d -> %d", origTokens, newTokens)
 	}
@@ -248,5 +248,133 @@ func TestCompactor_SummarizeTurn(t *testing.T) {
 	}
 	if !strings.Contains(summary, "read_file") {
 		t.Error("expected tool name in summary")
+	}
+}
+
+// --- CompactionResult metadata tests ---
+
+func TestCompactor_ResultMetadata_NoOp(t *testing.T) {
+	c := NewCompactor()
+	messages := []Message{
+		{Role: "system", Content: "You are helpful."},
+		{Role: "user", Content: "Hi"},
+		{Role: "assistant", Content: "Hello!"},
+	}
+	result := c.Compact(messages, 10000)
+
+	if result.Strategy != "none" {
+		t.Errorf("expected strategy 'none', got %q", result.Strategy)
+	}
+	if result.TokensBefore != result.TokensAfter {
+		t.Errorf("expected TokensBefore (%d) == TokensAfter (%d)", result.TokensBefore, result.TokensAfter)
+	}
+	if result.TokensSaved() != 0 {
+		t.Errorf("expected 0 tokens saved for no-op, got %d", result.TokensSaved())
+	}
+	if result.MessageCountDelta(len(messages)) != 0 {
+		t.Errorf("expected 0 message delta for no-op, got %d", result.MessageCountDelta(len(messages)))
+	}
+}
+
+func TestCompactor_ResultMetadata_Checkpoint(t *testing.T) {
+	c := NewCompactor()
+
+	messages := []Message{
+		{Role: "system", Content: "You are helpful."},
+	}
+	for i := 0; i < 30; i++ {
+		messages = append(messages, Message{
+			Role:    "user",
+			Content: "Question " + strings.Repeat("X", 200),
+		})
+		messages = append(messages, Message{
+			Role:    "assistant",
+			Content: "Answer " + strings.Repeat("Y", 200),
+		})
+	}
+
+	result := c.Compact(messages, 3000)
+
+	if result.Strategy != "checkpoint" {
+		t.Errorf("expected strategy 'checkpoint', got %q", result.Strategy)
+	}
+	if result.TokensSaved() <= 0 {
+		t.Errorf("expected positive tokens saved, got %d", result.TokensSaved())
+	}
+	if result.MessageCountDelta(len(messages)) <= 0 {
+		t.Errorf("expected positive message count delta, got %d", result.MessageCountDelta(len(messages)))
+	}
+}
+
+func TestCompactor_ResultMetadata_Emergency(t *testing.T) {
+	c := NewCompactor()
+
+	messages := []Message{
+		{Role: "system", Content: "You are helpful."},
+	}
+	for i := 0; i < 30; i++ {
+		messages = append(messages, Message{
+			Role:    "user",
+			Content: "User " + strings.Repeat("a", 5000),
+		})
+		messages = append(messages, Message{
+			Role:    "assistant",
+			Content: "Assistant " + strings.Repeat("b", 5000),
+		})
+	}
+
+	result := c.Compact(messages, 100)
+
+	if result.Strategy != "emergency" {
+		t.Errorf("expected strategy 'emergency', got %q", result.Strategy)
+	}
+	if result.TokensSaved() <= 0 {
+		t.Errorf("expected positive tokens saved, got %d", result.TokensSaved())
+	}
+	if result.MessageCountDelta(len(messages)) <= 0 {
+		t.Errorf("expected positive message count delta, got %d", result.MessageCountDelta(len(messages)))
+	}
+}
+
+func TestCompactor_ResultMetadata_TokensSaved(t *testing.T) {
+	// Test TokensSaved() helper
+	noneResult := CompactionResult{
+		Messages:     []Message{{Role: "user", Content: "hi"}},
+		Strategy:     "none",
+		TokensBefore: 100,
+		TokensAfter:  100,
+	}
+	if noneResult.TokensSaved() != 0 {
+		t.Errorf("expected 0 tokens saved when before == after, got %d", noneResult.TokensSaved())
+	}
+
+	// TokensAfter > TokensBefore should also return 0
+	invalidResult := CompactionResult{
+		Messages:     []Message{{Role: "user", Content: "hi"}},
+		Strategy:     "none",
+		TokensBefore: 100,
+		TokensAfter:  150,
+	}
+	if invalidResult.TokensSaved() != 0 {
+		t.Errorf("expected 0 tokens saved when after > before, got %d", invalidResult.TokensSaved())
+	}
+
+	// Normal reduction case
+	reduceResult := CompactionResult{
+		Messages:     []Message{{Role: "user", Content: "hi"}},
+		Strategy:     "checkpoint",
+		TokensBefore: 500,
+		TokensAfter:  300,
+	}
+	if reduceResult.TokensSaved() != 200 {
+		t.Errorf("expected 200 tokens saved, got %d", reduceResult.TokensSaved())
+	}
+
+	// Test MessageCountDelta() helper
+	if noneResult.MessageCountDelta(1) != 0 {
+		t.Errorf("expected 0 message delta, got %d", noneResult.MessageCountDelta(1))
+	}
+	if reduceResult.MessageCountDelta(10) != 9 {
+		t.Errorf("expected 9 message delta, got %d", reduceResult.MessageCountDelta(10))
 	}
 }

@@ -37,6 +37,7 @@ const (
 	EventTypeAgentMessage            = "agent_message"
 	EventTypeWorkspaceChanged        = "workspace_changed"
 	EventTypeSessionTerminated       = "session_terminated"
+	EventTypeCompaction              = "compaction"
 )
 
 // EventBus manages event distribution between CLI and Web UI
@@ -361,4 +362,16 @@ func AskUserRequestEvent(requestID, question, clientID string) map[string]interf
 		payload["client_id"] = clientID
 	}
 	return payload
+}
+
+// CompactionEvent creates a compaction event with strategy name, message count delta,
+// and estimated tokens saved.
+func CompactionEvent(strategy string, messagesBefore, messagesAfter, tokensSaved int) map[string]interface{} {
+	return map[string]interface{}{
+		"strategy":         strategy,
+		"messages_before":  messagesBefore,
+		"messages_after":   messagesAfter,
+		"message_count_delta": messagesBefore - messagesAfter,
+		"tokens_saved":     tokensSaved,
+	}
 }
