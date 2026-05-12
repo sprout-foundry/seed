@@ -12,17 +12,18 @@ architectural area, its current state, and open work.
 | SP-003 | [Streaming & Output](./SP-003-streaming-output.md) | ✅ Complete |
 | SP-004 | [Output Routing](./SP-004-output-routing.md) | ✅ Complete |
 | SP-005 | [Context Cancellation](./SP-005-context-cancellation.md) | ✅ Complete |
+| SP-006 | [Fallback Parsing](./SP-006-fallback-parsing.md) | ✅ Complete |
+| SP-007 | [Response Validation](./SP-007-response-validation.md) | ✅ Complete |
+| SP-008 | [Conversation Optimizer](./SP-008-conversation-optimizer.md) | ✅ Complete |
+| SP-009 | [Configuration, Steering & Extensibility](./SP-009-configuration-steering.md) | ✅ Complete |
+| SP-010 | [Turn Checkpoints](./SP-010-turn-checkpoints.md) | ✅ Complete |
+| SP-012 | [Library Integrability](./SP-012-library-integrability.md) | ✅ Complete |
 
 ## Active
 
 | Spec | Title | Status |
 |------|-------|--------|
-| SP-006 | [Fallback Parsing](./SP-006-fallback-parsing.md) | 📋 Spec |
-| SP-007 | [Response Validation](./SP-007-response-validation.md) | 📋 Spec |
-| SP-008 | [Conversation Optimizer](./SP-008-conversation-optimizer.md) | 📋 Spec |
-| SP-009 | [Configuration, Steering & Extensibility](./SP-009-configuration-steering.md) | 📋 Spec |
-| SP-010 | [Turn Checkpoints](./SP-010-turn-checkpoints.md) | 📋 Spec |
-| SP-011 | [Response Processing Hardening](./SP-011-response-processing-hardening.md) | 📋 Spec |
+| SP-011 | [Response Processing Hardening](./SP-011-response-processing-hardening.md) | ⚠️ Partial — `ToolCallNormalizer` exists but not wired; finish reason dispatch, blank/repetitive detection, and ANSI sanitization are absent |
 
 ## Out of Scope
 
@@ -34,5 +35,5 @@ application-level or consumer-side concerns, not portable library features:
 | Persistence / Sessions | `State.ExportState()` / `ImportState()` are already exposed — the consumer handles file I/O, scoping, naming, retention |
 | Security & Approval | Consumer implements `ToolExecutor` — approval gates belong inside their `Execute()`, not around it |
 | Circuit Breaker | Same — consumer's executor controls repetition handling |
-| Scripted Client | Test utility, not library functionality; existing MockProvider suffices |
+| Scripted Client | Test utility, not library functionality; existing `MockProvider` suffices |
 | Agent Lifecycle / Debug Logger | Seed has no long-lived goroutines; logging is an integration concern (consumer wires `UI`) |

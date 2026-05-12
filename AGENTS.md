@@ -68,18 +68,9 @@
 
 ---
 
-## 🗺 Roadmap & Current State
+## 🗺 Roadmap
 
-| Area | Status | Notes |
-|------|--------|-------|
-| Event System | ✅ Complete | All events wired; tests pass. |
-| Core Agent & Loop | ✅ Complete | Chat + tool-call loop works. |
-| Output Manager | ✅ Complete | Buffers, async channel, flush callback implemented. |
-| Streaming Path | ⏳ Pending | `ChatStream` not wired into `ProcessQuery` yet. |
-| Error Handling & Retry | ⏳ Pending | No typed errors, backoff, or retry logic. |
-| Context Cancellation | ⏳ Pending | `ctx.Done()` checks & `Interrupt()` missing. |
-| Structural Refactors | ⏳ Pending | `conversation.go` monolithic; helpers not split. |
-| Async Output Tests | ⏳ Pending | Channel & metadata untested. |
+See [roadmap/README.md](./roadmap/README.md) for current spec status and open work.
 
 ---
 
