@@ -62,7 +62,7 @@ type defaultOutputManager struct {
 }
 
 // NewOutputManager creates a new OutputManager with the given optional event publisher.
-func NewOutputManager(eventBus EventPublisher) *defaultOutputManager {
+func NewOutputManager(eventBus EventPublisher) OutputManager {
 	return &defaultOutputManager{
 		contentBuf:     NewStreamingBuffer(),
 		reasoningBuf:   NewStreamingBuffer(),

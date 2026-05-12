@@ -1,3 +1,23 @@
+// Package core provides a conversation engine for LLM-powered agents.
+//
+// Core concepts:
+//
+//   - Agent: the main entry point. Create with NewAgent(), run queries with Run().
+//   - Provider: interface for LLM backends. Implement Chat() and ChatStream().
+//   - ToolExecutor: interface for tool execution. Implement GetTools() and Execute().
+//   - UI: optional interface for interactive output. Use NoopUI for headless mode.
+//   - EventPublisher: optional interface for event-driven output.
+//
+// Quick start:
+//
+//	agent, err := core.NewAgent(core.Options{
+//	    Provider: &myProvider{},
+//	    Executor: core.NoopExecutor,
+//	})
+//	result, err := agent.Run(ctx, "Hello")
+//
+// The core package has zero external dependencies. The events and internal/test
+// packages are optional.
 package core
 
 import (
