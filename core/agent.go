@@ -4,12 +4,79 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/sprout-foundry/seed/events"
 )
 
 // DefaultSystemPrompt is the minimal system prompt used when none is provided.
 const DefaultSystemPrompt = "You are a helpful assistant that can execute tools to complete tasks."
+
+// RetryConfig configures retry behavior for transient provider errors.
+// Zero values use sensible defaults.
+type RetryConfig struct {
+	// MaxAttempts is the total number of attempts (initial + retries).
+	// Zero means use the default of 3. Setting to 1 means no retries
+	// (only the initial attempt).
+	MaxAttempts int
+
+	// InitialDelay is the delay before the first retry.
+	// Zero means use the default of 100ms.
+	InitialDelay time.Duration
+
+	// MaxDelay caps the exponential backoff growth.
+	// Zero means use the default of 5s.
+	MaxDelay time.Duration
+
+	// Multiplier is the exponential growth factor.
+	// Zero means use the default of 2.0.
+	Multiplier float64
+
+	// Jitter adds randomness to delays. 0 = none, (0,1) = partial, >=1 = full.
+	// Zero means use the default of 0.0 (no jitter).
+	Jitter float64
+}
+
+// MaxAttemptsOrDefault returns MaxAttempts or the default (3).
+func (rc RetryConfig) MaxAttemptsOrDefault() int {
+	if rc.MaxAttempts > 0 {
+		return rc.MaxAttempts
+	}
+	return 3
+}
+
+// InitialDelayOrDefault returns InitialDelay or the default (100ms).
+func (rc RetryConfig) InitialDelayOrDefault() time.Duration {
+	if rc.InitialDelay > 0 {
+		return rc.InitialDelay
+	}
+	return 100 * time.Millisecond
+}
+
+// MaxDelayOrDefault returns MaxDelay or the default (5s).
+func (rc RetryConfig) MaxDelayOrDefault() time.Duration {
+	if rc.MaxDelay > 0 {
+		return rc.MaxDelay
+	}
+	return 5 * time.Second
+}
+
+// MultiplierOrDefault returns Multiplier or the default (2.0).
+func (rc RetryConfig) MultiplierOrDefault() float64 {
+	if rc.Multiplier > 0 {
+		return rc.Multiplier
+	}
+	return 2.0
+}
+
+// JitterOrDefault returns Jitter or the default (0.0).
+// Unlike other *OrDefault methods, zero is a meaningful value here:
+// Jitter 0.0 means "no jitter" (deterministic retries), so it is not
+// replaced by a default. Negative values are not expected and are
+// returned as-is.
+func (rc RetryConfig) JitterOrDefault() float64 {
+	return rc.Jitter
+}
 
 // Options configures an Agent.
 type Options struct {
@@ -21,6 +88,7 @@ type Options struct {
 	Debug         bool
 	EventBus      *events.EventBus // nil = no events
 	Optimizer     *ConversationOptimizer
+	RetryConfig   RetryConfig      // retry behavior for transient errors; zero values use defaults
 }
 
 // Agent is the main entry point for the conversation engine.
@@ -42,6 +110,7 @@ type Agent struct {
 	fallbackParser *FallbackParser
 	validator      *ResponseValidator
 	optimizer      *ConversationOptimizer
+	retryConfig    RetryConfig
 }
 
 // NewAgent creates a new Agent from the given options. Returns an error if
@@ -79,6 +148,7 @@ func NewAgent(opts Options) (*Agent, error) {
 		fallbackParser:     NewFallbackParser(FallbackParserOptions{KnownToolNames: func(name string) bool { return knownTools[name] }}),
 		validator:          NewResponseValidator(ResponseValidatorOptions{DebugLog: func(format string, args ...interface{}) { if opts.Debug { fmt.Printf(format, args...) }} }),
 		optimizer:          opts.Optimizer,
+		retryConfig:        opts.RetryConfig,
 	}, nil
 }
 
