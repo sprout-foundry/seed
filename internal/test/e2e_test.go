@@ -4258,3 +4258,108 @@ func TestIsBlankResponse(t *testing.T) {
 		t.Error("expected IsBlankResponse(false) for nil")
 	}
 }
+
+// --- ANSI Sanitization Tests ---
+
+func TestE2E_ANSISanitization(t *testing.T) {
+	// ANSI escape codes in tool results must be stripped before messages
+	// are sent to the LLM provider. This prevents terminal formatting codes
+	// (colors, cursor moves, etc.) from polluting the conversation context.
+	h := NewHarnessWithT(t)
+
+	// ANSI codes to test stripping:
+	// - \x1b[31m ... \x1b[0m — ANSI color (red)
+	// - \x1b[1m ... \x1b[0m — bold
+	// - \x1b[32m ... \x1b[0m — ANSI color (green)
+	// - \x1b[K — clear to end of line
+	ansiColorRed := "\x1b[31m"
+	ansiReset := "\x1b[0m"
+	ansiBold := "\x1b[1m"
+	ansiColorGreen := "\x1b[32m"
+	ansiClearLine := "\x1b[K"
+
+	toolResult := fmt.Sprintf("%s%sERROR%s%s%s: some problem%s", ansiBold, ansiColorRed, ansiReset, ansiColorGreen, "success", ansiClearLine)
+
+	// First provider response: assistant calls a tool
+	h.Provider().AddToolCallResponse(
+		"Checking the output.",
+		core.ToolCall{
+			ID: "call_1",
+			Function: core.ToolCallFunction{
+				Name:      "read_file",
+				Arguments: `{"path":"output.txt"}`,
+			},
+		},
+	)
+	// Second provider response: assistant gives final answer
+	h.Provider().AddTextResponse("The output has been analyzed.")
+
+	// Executor returns tool result with ANSI codes
+	h.Executor().AddToolResult("call_1", toolResult)
+
+	agent := h.NewAgent()
+	_, err := agent.Run(context.Background(), "Check the output")
+	h.AssertNoError(err)
+
+	// Verify the provider received clean messages (no ANSI codes)
+	// The tool result message appears in the SECOND provider request
+	// (after the tool executed, before the provider is called again).
+	h.AssertProviderCalledN(2)
+	lastReq := h.Provider().LastRequest()
+	if lastReq == nil {
+		t.Fatal("expected provider to have been called")
+	}
+
+	foundToolResult := false
+	for _, msg := range lastReq.Messages {
+		if msg.Role == "tool" {
+			foundToolResult = true
+			// The tool result content should NOT contain any ANSI codes
+			if strings.Contains(msg.Content, "\x1b") {
+				t.Errorf("expected tool result content to be ANSI-free, but found escape codes in: %q", msg.Content)
+			}
+			// Verify the actual text content (minus ANSI) is preserved
+			wantContent := "ERRORsuccess: some problem"
+			if msg.Content != wantContent {
+				t.Errorf("expected tool result content %q, got %q", wantContent, msg.Content)
+			}
+		}
+	}
+	if !foundToolResult {
+		t.Error("expected tool result message in last provider request")
+	}
+
+	// Verify the FIRST provider request did NOT contain the tool result
+	// (since the tool hadn't executed yet)
+	firstReq := h.Provider().Calls[0]
+	for _, msg := range firstReq.Messages {
+		if msg.Role == "tool" {
+			t.Error("expected no tool result in first provider request")
+		}
+	}
+}
+
+func TestE2E_ANSISanitization_PreservesNonANSIContent(t *testing.T) {
+	// Sanitization should not alter content that lacks ANSI codes.
+	h := NewHarnessWithT(t)
+
+	h.Provider().AddTextResponse("OK")
+	agent := h.NewAgent()
+	_, err := agent.Run(context.Background(), "simple query")
+	h.AssertNoError(err)
+
+	req := h.Provider().LastRequest()
+	if req == nil {
+		t.Fatal("expected provider to have been called")
+	}
+
+	// The user query should be preserved exactly
+	userMsg := ""
+	for _, msg := range req.Messages {
+		if msg.Role == "user" && msg.Content == "simple query" {
+			userMsg = msg.Content
+			break
+		}
+	}
+	h.AssertEquals(userMsg, "simple query")
+}

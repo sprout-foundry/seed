@@ -1102,3 +1102,93 @@ func TestIsRepetitiveContent_MultipleToolMessagesBetween(t *testing.T) {
 		t.Error("isRepetitiveContent(multiple tools between) = false, want true")
 	}
 }
+
+// --- sanitizeANSI tests ---
+
+func TestSanitizeANSI(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "no ANSI codes",
+			input: "hello world",
+			want:  "hello world",
+		},
+		{
+			name:  "simple color codes",
+			input: "\x1b[31mred\x1b[0m",
+			want:  "red",
+		},
+		{
+			name:  "multiple codes stripped",
+			input: "\x1b[31mred\x1b[0m and \x1b[32mgreen\x1b[0m",
+			want:  "red and green",
+		},
+		{
+			name:  "OSC sequence stripped",
+			input: "\x1b]0;title\x07content",
+			want:  "content",
+		},
+		{
+			name:  "complex sequence",
+			input: "\x1b[1;32mbold green\x1b[0m",
+			want:  "bold green",
+		},
+		{
+			name:  "empty string",
+			input: "",
+			want:  "",
+		},
+		{
+			name:  "only ANSI codes",
+			input: "\x1b[31m\x1b[0m\x1b[1m",
+			want:  "",
+		},
+		{
+			name:  "CSI cursor movement",
+			input: "\x1b[2K\x1b[1;1Hcontent\x1b[0K",
+			want:  "content",
+		},
+		{
+			name:  "single char control",
+			input: "hello\x1b(B world",
+			want:  "hello world",
+		},
+		{
+			name:  "mixed content and ANSI",
+			input: "\x1b[33mWarning:\x1b[0m file not found",
+			want:  "Warning: file not found",
+		},
+		{
+			name:  "ANSI codes only - whitespace",
+			input: "\x1b[2K\n\x1b[2K",
+			want:  "\n",
+		},
+		{
+			name:  "real world shell output",
+			input: "\x1b[1;34m$ \x1b[0m\x1b[1mgit\x1b[0m \x1b[33mstatus\x1b[0m\n\x1b[32mon\x1b[0m \x1b[33mmain\x1b[0m \x1b[36m~1\x1b[0m\x1b[31m!\x1b[0m",
+			want:  "$ git status\non main ~1!",
+		},
+		{
+			name:  "DEC private mode sequence",
+			input: "\x1b[?25lhidden\x1b[?25h",
+			want:  "hidden",
+		},
+		{
+			name:  "ST-terminated OSC sequence",
+			input: "\x1b]0;title\x1b\\content",
+			want:  "content",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := sanitizeANSI(tt.input)
+			if got != tt.want {
+				t.Errorf("sanitizeANSI(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}

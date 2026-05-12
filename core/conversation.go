@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -847,4 +848,20 @@ func (ch *ConversationHandler) followsRecentToolResults() bool {
 		foundTool = true
 	}
 	return foundTool
+}
+
+// ansiRegex matches common ANSI escape sequences:
+// CSI sequences (e.g. \x1b[31m), OSC sequences (e.g. \x1b]...;\x07),
+// set-charset sequences (e.g. \x1b(B), and device control strings
+// (e.g. \x1bP...\\).
+var ansiRegex = regexp.MustCompile(`\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b\][^\x1b]*\x1b\\|\x1b\([A-Za-z0-9]|\x1bP[\x20-\x7E]*\x1b\\`)
+
+// sanitizeANSI strips ANSI escape codes from content. This prevents terminal
+// formatting codes (colors, cursor moves, etc.) from polluting LLM context
+// when they leak through tool results.
+func sanitizeANSI(content string) string {
+	if !strings.ContainsRune(content, '\x1b') {
+		return content
+	}
+	return ansiRegex.ReplaceAllString(content, "")
 }

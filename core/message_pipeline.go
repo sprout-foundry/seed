@@ -46,6 +46,10 @@ func (ch *ConversationHandler) prepareMessages() []Message {
 	// Sanitize: remove orphaned tool results
 	allMessages = ch.removeOrphanedToolResults(allMessages)
 
+	// Sanitize: strip ANSI escape codes from message content to prevent
+	// terminal formatting codes from polluting LLM context.
+	allMessages = sanitizeMessages(allMessages)
+
 	// Optimize: deduplicate redundant file reads and shell commands
 	if ch.agent.optimizer != nil {
 		allMessages = ch.agent.optimizer.OptimizeConversation(allMessages)
@@ -121,4 +125,24 @@ func collapseSystemMessages(messages []Message) []Message {
 	result = append(result, merged)
 	result = append(result, nonSystem...)
 	return result
+}
+
+// sanitizeMessages applies sanitizeANSI to every message's content.
+func sanitizeMessages(messages []Message) []Message {
+	changed := false
+	for i := range messages {
+		if messages[i].Content != sanitizeANSI(messages[i].Content) {
+			changed = true
+		}
+	}
+	if !changed {
+		return messages
+	}
+	// Only copy if something changed to avoid unnecessary allocation.
+	out := make([]Message, len(messages))
+	copy(out, messages)
+	for i := range out {
+		out[i].Content = sanitizeANSI(out[i].Content)
+	}
+	return out
 }
