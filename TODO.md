@@ -54,43 +54,32 @@
 ## Fallback Parsing (SP-006)
 
 [x] - FALLBACK: Create `FallbackParser` struct with `knownToolNames` callback — accept `FallbackParserOptions{KnownToolNames func(string) bool, Debug bool}` so consumers register their tools. `core/fallback_parser.go`
-[] - FALLBACK: Create `FallbackParser` struct with `knownToolNames` callback — accept `FallbackParserOptions{KnownToolNames func(string) bool, Debug bool}` so consumers register their tools. `core/fallback_parser.go`
 [x] - FALLBACK: Implement JSON code fence extraction — parse tool_calls arrays and single tool call objects from fenced JSON blocks. `core/fallback_parser.go`
 [x] - FALLBACK: Implement bare JSON segment extraction — scan for balanced braces/brackets outside code fences containing tool call data. `core/fallback_parser.go`
 [x] - FALLBACK: Implement XML function block extraction — parse `<function=name>` with `<parameter=name>value</parameter>` children. `core/fallback_parser.go`
-[] - FALLBACK: Implement XML function block extraction — parse `<function=name>` with `<parameter=name>value</parameter>` children. `core/fallback_parser.go`
 [x] - FALLBACK: Implement function-name pattern extraction — detect `name: tool_name` followed by balanced JSON arguments. `core/fallback_parser.go`
-[] - FALLBACK: Implement function-name pattern extraction — detect `name: tool_name` followed by balanced JSON arguments. `core/fallback_parser.go`
 [x] - FALLBACK: Implement named tool block extraction — detect `tool_name { ... }` where tool_name passes `knownToolNames` check. `core/fallback_parser.go`
 [x] - FALLBACK: Implement tool call normalization — generate synthetic IDs (`fallback_{name}_{nano}`), normalize `Type` to `"function"`, ensure valid JSON arguments. `core/fallback_parser.go`
 [x] - FALLBACK: Implement deduplication and content cleanup — dedupe by name+arguments, remove extracted blocks from content, normalize whitespace. `core/fallback_parser.go`
 [x] - FALLBACK: Implement `ShouldUseFallback()` — quick pattern scan for tool-call-like patterns when structured tool_calls is empty. `core/fallback_parser.go`
 [x] - FALLBACK: Wire into `ConversationHandler` — when no structured tool calls but content has patterns, run parser and inject extracted calls. `core/conversation.go`
-[] - FALLBACK: Wire into `ConversationHandler` — when no structured tool calls but content has patterns, run parser and inject extracted calls. `core/conversation.go`
 [x] - FALLBACK: Add malformed response simulation to `MockProvider` — return tool calls embedded in content. `test/mock_provider.go`
-[] - FALLBACK: Add malformed response simulation to `MockProvider` — return tool calls embedded in content. `test/mock_provider.go`
 [x] - FALLBACK: Add e2e test — malformed response -> tool calls extracted -> loop continues -> task completes. `test/e2e_test.go`
 
 ## Response Validation (SP-007)
 
 [x] - VALIDATE: Create `ResponseValidator` struct with optional `DebugLog` callback — zero deps on Agent or concrete types. `core/response_validator.go`
 [x] - VALIDATE: Implement `IsIncomplete()` — check for trailing `...`, abrupt endings, unusually short (<10 words not in complete-short list), unclosed code blocks. `core/response_validator.go`
-[] - VALIDATE: Implement `IsIncomplete()` — check for trailing `...`, abrupt endings, unusually short (<10 words not in complete-short list), unclosed code blocks. `core/response_validator.go`
 [x] - VALIDATE: Implement `LooksLikeTentativePostToolResponse()` — detect planning prefixes ("Let me...", "I'll...", "I need to...") under 40 words. `core/response_validator.go`
-[] - VALIDATE: Implement `LooksLikeTentativePostToolResponse()` — detect planning prefixes ("Let me...", "I'll...", "I need to...") under 40 words. `core/response_validator.go`
 [x] - VALIDATE: Wire incomplete check into `ConversationHandler` — on incomplete response, enqueue transient continuation message, loop again. `core/conversation.go`
-[] - VALIDATE: Wire incomplete check into `ConversationHandler` — on incomplete response, enqueue transient continuation message, loop again. `core/conversation.go`
 [x] - VALIDATE: Wire tentative check into `ConversationHandler` — on tentative response with no tool calls, continue loop instead of finalizing. `core/conversation.go`
-[] - VALIDATE: Wire tentative check into `ConversationHandler` — on tentative response with no tool calls, continue loop instead of finalizing. `core/conversation.go`
 [x] - VALIDATE: Add continuation budget — track consecutive continuations, force-finalize after 3 without progress. `core/conversation.go`
 [x] - VALIDATE: Add e2e test for truncated response continuation — provider returns incomplete response -> continuation -> complete response. `test/e2e_test.go`
-[] - VALIDATE: Add e2e test for truncated response continuation — provider returns incomplete response -> continuation -> complete response. `test/e2e_test.go`
 [x] - VALIDATE: Add e2e test for tentative post-tool response — planning stub -> loop continues -> tool call executes. `test/e2e_test.go`
 
 ## Conversation Optimizer (SP-008)
 
 [x] - OPTIMIZE: Create `ConversationOptimizer` struct — track file reads by filepath, shell commands by command string, enable/disable flag, `knownToolFn` callback. `core/conversation_optimizer.go`
-[] - OPTIMIZE: Create `ConversationOptimizer` struct — track file reads by filepath, shell commands by command string, enable/disable flag, `knownToolFn` callback. `core/conversation_optimizer.go`
 [x] - OPTIMIZE: Implement file read tracking — hash content, keep only latest read per filepath, replace earlier reads with `[Earlier file read: {path}]`. `core/conversation_optimizer.go`
 [x] - OPTIMIZE: Implement shell command tracking — detect transient commands (ls, find, pwd, cat, echo, head, tail, wc), keep only latest output. `core/conversation_optimizer.go`
 [x] - OPTIMIZE: Implement `OptimizeConversation()` — lightweight pre-API-call pass that deduplicates redundant reads and commands. `core/conversation_optimizer.go`
@@ -108,7 +97,6 @@
 [x] - STEER: Wire steering into `prepareMessages()` — transient messages appended after history before API call. `core/conversation.go`
 [x] - STEER: Add e2e test for steering — steer mid-session -> next API call includes injected context. `test/e2e_test.go`
 [x] - HOOKS: Add `OnIteration` callback to `Options` — fire-and-forget callback with iteration number and message count. `core/agent.go`
-[] - HOOKS: Add `OnIteration` callback to `Options` — fire-and-forget callback with iteration number and message count. `core/agent.go`
 [x] - HOOKS: Wire `OnIteration` into `ProcessQuery` loop — call at start of each iteration. `core/conversation.go`
 [x] - HOOKS: Publish compaction event — emit event with strategy name, message count delta, estimated tokens saved. `core/conversation.go`
 [x] - HOOKS: Add e2e test for iteration hook — callback fires each iteration with correct counts. `test/e2e_test.go`
