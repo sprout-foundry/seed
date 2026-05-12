@@ -138,6 +138,7 @@ func (s *State) ExportState() ([]byte, error) {
 		TotalCost:        s.totalCost,
 		PromptTokens:     s.promptTokens,
 		CompletionTokens: s.completionTokens,
+		Checkpoints:      s.checkpoints,
 	}
 	return json.Marshal(state)
 }
@@ -156,6 +157,7 @@ func (s *State) ImportState(data []byte) error {
 	s.totalCost = state.TotalCost
 	s.promptTokens = state.PromptTokens
 	s.completionTokens = state.CompletionTokens
+	s.checkpoints = state.Checkpoints
 	return nil
 }
 
