@@ -1,4 +1,6 @@
-// Package events provides event system for sprout UI architecture
+// Package events provides a generic EventBus for pub/sub communication.
+// It implements the core.EventPublisher interface and can be used with
+// any project that imports seed/core.
 package events
 
 import (
@@ -15,21 +17,30 @@ type UIEvent struct {
 	Data      any       `json:"data"`
 }
 
-// Common event types
+// Generic event types used by the core package.
+// These are the only event types any consumer of seed/core needs to handle.
+// (They match the constants in core/interfaces.go.)
 const (
-	EventTypeQueryStarted            = "query_started"
+	EventTypeQueryStarted   = "query_started"
+	EventTypeQueryCompleted = "query_completed"
+	EventTypeError          = "error"
+	EventTypeToolStart      = "tool_start"
+	EventTypeToolEnd        = "tool_end"
+	EventTypeStreamChunk    = "stream_chunk"
+	EventTypeMetricsUpdate  = "metrics_update"
+	EventTypeCompaction     = "compaction"
+)
+
+// Sprout-specific event types. These are used by the sprout application
+// and are not part of the generic seed/core contract. External consumers
+// of seed/core do not need to handle these.
+const (
 	EventTypeQueryProgress           = "query_progress"
-	EventTypeQueryCompleted          = "query_completed"
-	EventTypeError                   = "error"
 	EventTypeToolExecution           = "tool_execution"
-	EventTypeToolStart               = "tool_start"
-	EventTypeToolEnd                 = "tool_end"
 	EventTypeSubagentActivity        = "subagent_activity"
 	EventTypeTodoUpdate              = "todo_update"
 	EventTypeFileChanged             = "file_changed"
 	EventTypeFileContentChanged      = "file_content_changed"
-	EventTypeStreamChunk             = "stream_chunk"
-	EventTypeMetricsUpdate           = "metrics_update"
 	EventTypeValidation              = "validation"
 	EventTypeSecurityApprovalRequest = "security_approval_request"
 	EventTypeSecurityPromptRequest   = "security_prompt_request"
@@ -37,7 +48,6 @@ const (
 	EventTypeAgentMessage            = "agent_message"
 	EventTypeWorkspaceChanged        = "workspace_changed"
 	EventTypeSessionTerminated       = "session_terminated"
-	EventTypeCompaction              = "compaction"
 )
 
 // EventBus manages event distribution between CLI and Web UI
@@ -368,10 +378,10 @@ func AskUserRequestEvent(requestID, question, clientID string) map[string]interf
 // and estimated tokens saved.
 func CompactionEvent(strategy string, messagesBefore, messagesAfter, tokensSaved int) map[string]interface{} {
 	return map[string]interface{}{
-		"strategy":         strategy,
-		"messages_before":  messagesBefore,
-		"messages_after":   messagesAfter,
+		"strategy":            strategy,
+		"messages_before":     messagesBefore,
+		"messages_after":      messagesAfter,
 		"message_count_delta": messagesBefore - messagesAfter,
-		"tokens_saved":     tokensSaved,
+		"tokens_saved":        tokensSaved,
 	}
 }

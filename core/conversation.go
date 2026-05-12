@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"sync"
 	"time"
-
-	"github.com/sprout-foundry/seed/events"
 )
 
 // ConversationHandler manages the high-level conversation flow.
@@ -95,8 +93,8 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 	ch.agent.state.AddMessage(Message{Role: "user", Content: query})
 
 	// Publish query started event
-	if ch.agent.eventBus != nil {
-		ch.agent.eventBus.Publish(events.EventTypeQueryStarted, map[string]interface{}{
+	if ch.agent.eventPublisher != nil {
+		ch.agent.eventPublisher.Publish(EventTypeQueryStarted, map[string]interface{}{
 			"query": query,
 			"model": ch.agent.provider.Info().Model,
 		})
@@ -141,13 +139,14 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 			result := ch.compactMessages(messages, contextSize)
 			messages = result.Messages
 			// Publish compaction event
-			if ch.agent.eventBus != nil && result.Strategy != "none" {
-				ch.agent.eventBus.Publish(events.EventTypeCompaction, events.CompactionEvent(
-					result.Strategy,
-					beforeCount,
-					len(result.Messages),
-					result.TokensSaved(),
-				))
+			if ch.agent.eventPublisher != nil && result.Strategy != "none" {
+				ch.agent.eventPublisher.Publish(EventTypeCompaction, map[string]interface{}{
+					"strategy":            result.Strategy,
+					"messages_before":     beforeCount,
+					"messages_after":      len(result.Messages),
+					"message_count_delta": beforeCount - len(result.Messages),
+					"tokens_saved":        result.TokensSaved(),
+				})
 			}
 		}
 
@@ -162,8 +161,11 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				return "", fmt.Errorf("%w: %w", ErrInterrupted, err)
 			}
-			if ch.agent.eventBus != nil {
-				ch.agent.eventBus.Publish(events.EventTypeError, events.ErrorEvent("chat failed", err))
+			if ch.agent.eventPublisher != nil {
+				ch.agent.eventPublisher.Publish(EventTypeError, map[string]interface{}{
+					"message": "chat failed",
+					"error":   err.Error(),
+				})
 			}
 			return "", fmt.Errorf("chat failed: %w", err)
 		}
@@ -256,18 +258,14 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 		}
 
 		// Publish tool_start events
-		if ch.agent.eventBus != nil {
+		if ch.agent.eventPublisher != nil {
 			for i, tc := range assistantMsg.ToolCalls {
-				ch.agent.eventBus.Publish(events.EventTypeToolStart, events.ToolStartEvent(
-					tc.Function.Name,
-					tc.ID,
-					tc.Function.Arguments,
-					"",    // displayName
-					"",    // persona
-					false, // isSubagent
-					"",    // subagentType
-					i,     // toolIndex
-				))
+				ch.agent.eventPublisher.Publish(EventTypeToolStart, map[string]interface{}{
+					"tool_name":    tc.Function.Name,
+					"tool_call_id": tc.ID,
+					"arguments":    tc.Function.Arguments,
+					"tool_index":   i,
+				})
 			}
 		}
 
@@ -277,7 +275,7 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 		execDuration := time.Since(execStart)
 
 		// Publish tool_end events
-		if ch.agent.eventBus != nil {
+		if ch.agent.eventPublisher != nil {
 			toolCallMap := make(map[string]ToolCall)
 			for _, tc := range assistantMsg.ToolCalls {
 				toolCallMap[tc.ID] = tc
@@ -290,27 +288,38 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 				if ok {
 					toolName = tc.Function.Name
 				}
-				ch.agent.eventBus.Publish(events.EventTypeToolEnd, events.ToolEndEvent(
-					r.ToolCallID,
-					toolName,
-					"completed",
-					r.Content,
-					"",           // errorMessage
-					execDuration, // duration
-				))
+				data := map[string]interface{}{
+					"tool_call_id": r.ToolCallID,
+					"tool_name":    toolName,
+					"status":       "completed",
+					"duration_ms":  execDuration.Milliseconds(),
+				}
+				if r.Content != "" {
+					// Truncate results to 2000 chars for the WebUI - full result stays in the conversation
+					if len(r.Content) > 2000 {
+						data["result"] = r.Content[:2000] + "\n... (truncated)"
+						data["result_truncated"] = true
+						data["result_length"] = len(r.Content)
+					} else {
+						data["result"] = r.Content
+						data["result_truncated"] = false
+						data["result_length"] = len(r.Content)
+					}
+				}
+				ch.agent.eventPublisher.Publish(EventTypeToolEnd, data)
 				published[r.ToolCallID] = true
 			}
 
 			for _, tc := range assistantMsg.ToolCalls {
 				if !published[tc.ID] {
-					ch.agent.eventBus.Publish(events.EventTypeToolEnd, events.ToolEndEvent(
-						tc.ID,
-						tc.Function.Name,
-						"failed",
-						"",
-						"executor returned no result for this tool call",
-						execDuration,
-					))
+					data := map[string]interface{}{
+						"tool_call_id": tc.ID,
+						"tool_name":    tc.Function.Name,
+						"status":       "failed",
+						"duration_ms":  execDuration.Milliseconds(),
+						"error":        "executor returned no result for this tool call",
+					}
+					ch.agent.eventPublisher.Publish(EventTypeToolEnd, data)
 				}
 			}
 		}
@@ -359,14 +368,14 @@ func (ch *ConversationHandler) ProcessQuery(ctx context.Context, query string) (
 					ch.agent.state.AddTokens(resp.Usage.PromptTokens, resp.Usage.CompletionTokens, resp.Usage.TotalTokens)
 
 					// Publish metrics update event
-					if ch.agent.eventBus != nil {
-						ch.agent.eventBus.Publish(events.EventTypeMetricsUpdate, events.MetricsUpdateEvent(
-							ch.agent.state.TotalTokens(),
-							resp.Usage.PromptTokens,
-							ch.agent.provider.Info().ContextSize,
-							iter,
-							ch.agent.state.TotalCost(),
-						))
+					if ch.agent.eventPublisher != nil {
+						ch.agent.eventPublisher.Publish(EventTypeMetricsUpdate, map[string]interface{}{
+							"total_tokens":       ch.agent.state.TotalTokens(),
+							"context_tokens":     resp.Usage.PromptTokens,
+							"max_context_tokens": ch.agent.provider.Info().ContextSize,
+							"iteration":          iter,
+							"total_cost":         ch.agent.state.TotalCost(),
+						})
 					}
 				}
 
@@ -396,8 +405,11 @@ func (ch *ConversationHandler) ProcessQuery(ctx context.Context, query string) (
 			if IsTransient(classifiedErr) || IsRateLimit(classifiedErr) {
 				ch.agent.debugLog("[retry] Retryable error: %v\n", classifiedErr)
 				// Publish error event for each retry attempt (observability).
-				if ch.agent.eventBus != nil {
-					ch.agent.eventBus.Publish(events.EventTypeError, events.ErrorEvent("chat failed", classifiedErr))
+				if ch.agent.eventPublisher != nil {
+					ch.agent.eventPublisher.Publish(EventTypeError, map[string]interface{}{
+						"message": "chat failed",
+						"error":   classifiedErr.Error(),
+					})
 				}
 				continue
 			}

@@ -70,7 +70,7 @@ func TestFallback_JSONFence(t *testing.T) {
 	}
 	bus := events.NewEventBus()
 	ch := bus.Subscribe("t")
-	a, _ := NewAgent(Options{Provider: p, Executor: e, EventBus: bus})
+	a, _ := NewAgent(Options{Provider: p, Executor: e, EventPublisher: bus})
 	_, err := a.Run(context.Background(), "search")
 	if err != nil {
 		t.Fatal(err)
@@ -93,7 +93,7 @@ func TestFallback_NoPatterns(t *testing.T) {
 	}
 	bus := events.NewEventBus()
 	ch := bus.Subscribe("t")
-	a, _ := NewAgent(Options{Provider: p, Executor: e, EventBus: bus})
+	a, _ := NewAgent(Options{Provider: p, Executor: e, EventPublisher: bus})
 	result, err := a.Run(context.Background(), "hello")
 	if err != nil {
 		t.Fatal(err)
@@ -150,7 +150,7 @@ func TestFallback_StructuredSkipsFallback(t *testing.T) {
 	}
 	bus := events.NewEventBus()
 	ch := bus.Subscribe("t")
-	a, _ := NewAgent(Options{Provider: p, Executor: e, EventBus: bus})
+	a, _ := NewAgent(Options{Provider: p, Executor: e, EventPublisher: bus})
 	_, err := a.Run(context.Background(), "search test")
 	if err != nil {
 		t.Fatal(err)
@@ -186,7 +186,7 @@ func TestFallback_UnknownToolFiltered(t *testing.T) {
 	}
 	bus := events.NewEventBus()
 	ch := bus.Subscribe("t")
-	a, _ := NewAgent(Options{Provider: p, Executor: e, EventBus: bus})
+	a, _ := NewAgent(Options{Provider: p, Executor: e, EventPublisher: bus})
 	_, err := a.Run(context.Background(), "do something")
 	if err != nil {
 		t.Fatal(err)
@@ -211,7 +211,7 @@ func TestFallback_FunctionNamePattern(t *testing.T) {
 	}
 	bus := events.NewEventBus()
 	ch := bus.Subscribe("t")
-	a, _ := NewAgent(Options{Provider: p, Executor: e, EventBus: bus})
+	a, _ := NewAgent(Options{Provider: p, Executor: e, EventPublisher: bus})
 	_, err := a.Run(context.Background(), "search")
 	if err != nil {
 		t.Fatal(err)

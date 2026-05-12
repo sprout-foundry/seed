@@ -260,9 +260,9 @@ func TestProcessQuery_ProviderErrorPublishesErrorEvent(t *testing.T) {
 	ch := bus.Subscribe("test")
 
 	a, err := NewAgent(Options{
-		Provider: provider,
-		Executor: &mockExecutor{},
-		EventBus: bus,
+		Provider:       provider,
+		Executor:       &mockExecutor{},
+		EventPublisher: bus,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -350,9 +350,9 @@ func TestProcessQuery_MetricsUpdateEvent(t *testing.T) {
 	ch := bus.Subscribe("test")
 
 	a, err := NewAgent(Options{
-		Provider: provider,
-		Executor: &mockExecutor{},
-		EventBus: bus,
+		Provider:       provider,
+		Executor:       &mockExecutor{},
+		EventPublisher: bus,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -437,9 +437,9 @@ func TestProcessQuery_MetricsUpdateNotPublishedWhenNoTokens(t *testing.T) {
 	ch := bus.Subscribe("test")
 
 	a, err := NewAgent(Options{
-		Provider: provider,
-		Executor: &mockExecutor{},
-		EventBus: bus,
+		Provider:       provider,
+		Executor:       &mockExecutor{},
+		EventPublisher: bus,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -499,9 +499,9 @@ func TestProcessQuery_AgentMessageEvent(t *testing.T) {
 	ch := bus.Subscribe("test")
 
 	a, err := NewAgent(Options{
-		Provider: provider,
-		Executor: &mockExecutor{},
-		EventBus: bus,
+		Provider:       provider,
+		Executor:       &mockExecutor{},
+		EventPublisher: bus,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -578,9 +578,9 @@ func TestProcessQuery_AgentMessageNotPublishedForEmptyContent(t *testing.T) {
 	ch := bus.Subscribe("test")
 
 	a, err := NewAgent(Options{
-		Provider: provider,
-		Executor: &mockExecutor{},
-		EventBus: bus,
+		Provider:       provider,
+		Executor:       &mockExecutor{},
+		EventPublisher: bus,
 	})
 	if err != nil {
 		t.Fatal(err)

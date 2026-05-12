@@ -1,4 +1,3 @@
-
 package core
 
 import (
@@ -212,34 +211,34 @@ func TestIsIncomplete_UnclosedCodeBlock(t *testing.T) {
 		want    bool
 	}{
 		{
-			name: "open code block only",
+			name:    "open code block only",
 			content: "Here is the complete code you requested, it does the thing:\n```\nfunc foo() {}",
-			want: true, // unclosed code block
+			want:    true, // unclosed code block
 		},
 		{
-			name: "closed code block",
+			name:    "closed code block",
 			content: "Here is the complete code you requested, it does the thing:\n```\nfunc foo() {}\n```",
-			want: false, // 11 words, closed block
+			want:    false, // 11 words, closed block
 		},
 		{
-			name: "two open code blocks",
+			name:    "two open code blocks",
 			content: "Here is some content that has enough words to pass the short check:\n```\nfoo\n```\n```\nbar",
-			want: true, // unclosed code block (3 ``` markers)
+			want:    true, // unclosed code block (3 ``` markers)
 		},
 		{
-			name: "two closed code blocks",
+			name:    "two closed code blocks",
 			content: "Here is some content that has enough words to pass the short check:\n```\nfoo\n```\n```\nbar\n```",
-			want: false, // 13 words, 4 ``` markers (even)
+			want:    false, // 13 words, 4 ``` markers (even)
 		},
 		{
-			name: "three backticks in text",
+			name:    "three backticks in text",
 			content: "Here is some content that has enough words to pass the short check, and mentions Use ``` for inline code",
-			want: true, // 3 ``` markers (odd)
+			want:    true, // 3 ``` markers (odd)
 		},
 		{
-			name: "no code blocks",
+			name:    "no code blocks",
 			content: "Just plain text with enough words here to pass the short threshold comfortably.",
-			want: false,
+			want:    false,
 		},
 	}
 
@@ -397,7 +396,7 @@ func TestIsCompleteShortAnswer(t *testing.T) {
 		{"error: not found", true},
 		{"success", true},
 		{"failed", true},
-		{"success: all good", true}, // prefix match
+		{"success: all good", true},   // prefix match
 		{"warning: check logs", true}, // prefix match
 		{"hello world", false},
 		{"this is a response", false},
@@ -453,7 +452,7 @@ func TestIsIncomplete_EdgeCases(t *testing.T) {
 		{"empty string", "", false},
 		{"whitespace only", "   \n\t  ", true}, // whitespace is <10 words and not a complete answer
 		{"single newline", "\n", true},
-		{"only punctuation", "!", true}, // 1 word, not a complete short answer
+		{"only punctuation", "!", true},   // 1 word, not a complete short answer
 		{"only question mark", "?", true}, // <10 words, not complete
 	}
 

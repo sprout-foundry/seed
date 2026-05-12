@@ -103,9 +103,9 @@ func TestAgentStreamHandler_OnContent_PublishesStreamChunkEvent(t *testing.T) {
 	ch := bus.Subscribe("handler-test")
 
 	a, err := NewAgent(Options{
-		Provider: &mockProvider{},
-		Executor: &mockExecutor{},
-		EventBus: bus,
+		Provider:       &mockProvider{},
+		Executor:       &mockExecutor{},
+		EventPublisher: bus,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -145,9 +145,9 @@ func TestAgentStreamHandler_OnContent_PublishesAgentMessageEvent(t *testing.T) {
 	ch := bus.Subscribe("handler-test")
 
 	a, err := NewAgent(Options{
-		Provider: &mockProvider{},
-		Executor: &mockExecutor{},
-		EventBus: bus,
+		Provider:       &mockProvider{},
+		Executor:       &mockExecutor{},
+		EventPublisher: bus,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -210,9 +210,9 @@ func TestAgentStreamHandler_OnContent_InvokesFlushCallback(t *testing.T) {
 func TestAgentStreamHandler_OnContent_NoEventBus(t *testing.T) {
 	// When eventBus is nil, OnContent should not panic
 	a, err := NewAgent(Options{
-		Provider: &mockProvider{},
-		Executor: &mockExecutor{},
-		EventBus: nil,
+		Provider:       &mockProvider{},
+		Executor:       &mockExecutor{},
+		EventPublisher: nil,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -227,9 +227,9 @@ func TestAgentStreamHandler_OnContent_EmptyContentIgnored(t *testing.T) {
 	ch := bus.Subscribe("handler-test")
 
 	a, err := NewAgent(Options{
-		Provider: &mockProvider{},
-		Executor: &mockExecutor{},
-		EventBus: bus,
+		Provider:       &mockProvider{},
+		Executor:       &mockExecutor{},
+		EventPublisher: bus,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -272,9 +272,9 @@ func TestAgentStreamHandler_OnReasoning_PublishesStreamChunkEvent(t *testing.T) 
 	ch := bus.Subscribe("handler-test")
 
 	a, err := NewAgent(Options{
-		Provider: &mockProvider{},
-		Executor: &mockExecutor{},
-		EventBus: bus,
+		Provider:       &mockProvider{},
+		Executor:       &mockExecutor{},
+		EventPublisher: bus,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -332,9 +332,9 @@ func TestAgentStreamHandler_OnReasoning_InvokesFlushCallback(t *testing.T) {
 func TestAgentStreamHandler_OnReasoning_NoEventBus(t *testing.T) {
 	// When eventBus is nil, OnReasoning should not panic
 	a, err := NewAgent(Options{
-		Provider: &mockProvider{},
-		Executor: &mockExecutor{},
-		EventBus: nil,
+		Provider:       &mockProvider{},
+		Executor:       &mockExecutor{},
+		EventPublisher: nil,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -349,9 +349,9 @@ func TestAgentStreamHandler_OnReasoning_EmptyReasoningIgnored(t *testing.T) {
 	ch := bus.Subscribe("handler-test")
 
 	a, err := NewAgent(Options{
-		Provider: &mockProvider{},
-		Executor: &mockExecutor{},
-		EventBus: bus,
+		Provider:       &mockProvider{},
+		Executor:       &mockExecutor{},
+		EventPublisher: bus,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -497,9 +497,9 @@ func TestAgentStreamHandler_OnError_PublishesErrorEvent(t *testing.T) {
 	ch := bus.Subscribe("handler-test")
 
 	a, err := NewAgent(Options{
-		Provider: &mockProvider{},
-		Executor: &mockExecutor{},
-		EventBus: bus,
+		Provider:       &mockProvider{},
+		Executor:       &mockExecutor{},
+		EventPublisher: bus,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -537,9 +537,9 @@ func TestAgentStreamHandler_OnError_PublishesErrorEvent(t *testing.T) {
 func TestAgentStreamHandler_OnError_NoEventBus(t *testing.T) {
 	// When eventBus is nil, OnError should not panic
 	a, err := NewAgent(Options{
-		Provider: &mockProvider{},
-		Executor: &mockExecutor{},
-		EventBus: nil,
+		Provider:       &mockProvider{},
+		Executor:       &mockExecutor{},
+		EventPublisher: nil,
 	})
 	if err != nil {
 		t.Fatal(err)

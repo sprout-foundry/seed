@@ -2,6 +2,42 @@ package core
 
 import "context"
 
+// EventPublisher is the interface for publishing events.
+// It is implemented by events.EventBus and can be satisfied by any
+// custom event system, allowing seed to be used without the events package.
+type EventPublisher interface {
+	Publish(eventType string, data any)
+}
+
+// Generic event type constants used by the core package.
+// These are the only event types that any consumer of core needs to handle.
+const (
+	// EventTypeQueryStarted is published when a new query begins.
+	// Data map keys: "query" (string), "model" (string)
+	EventTypeQueryStarted = "query_started"
+	// EventTypeQueryCompleted is published when a query finishes.
+	// Data map keys: "query", "response", "tokens", "cost", "duration_ms"
+	EventTypeQueryCompleted = "query_completed"
+	// EventTypeError is published on errors.
+	// Data map keys: "message" (string), "error" (string)
+	EventTypeError = "error"
+	// EventTypeToolStart is published when a tool call begins.
+	// Data map keys: "tool_name", "tool_call_id", "arguments", "tool_index"
+	EventTypeToolStart = "tool_start"
+	// EventTypeToolEnd is published when a tool call ends.
+	// Data map keys: "tool_call_id", "tool_name", "status", "result", "duration_ms"
+	EventTypeToolEnd = "tool_end"
+	// EventTypeStreamChunk is published for each streaming content chunk.
+	// Data map keys: "chunk" (string), "content_type" (string: "text"|"reasoning")
+	EventTypeStreamChunk = "stream_chunk"
+	// EventTypeMetricsUpdate is published with token usage updates.
+	// Data map keys: "total_tokens", "context_tokens", "max_context_tokens", "iteration", "total_cost"
+	EventTypeMetricsUpdate = "metrics_update"
+	// EventTypeCompaction is published when context compaction occurs.
+	// Data map keys: "strategy", "messages_before", "messages_after", "message_count_delta", "tokens_saved"
+	EventTypeCompaction = "compaction"
+)
+
 // ProviderInfo contains metadata about a provider and its model.
 type ProviderInfo struct {
 	Model       string `json:"model"`

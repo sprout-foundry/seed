@@ -173,10 +173,10 @@ func TestE2E_ToolEndEvent_MissingResult_DefensivePublish(t *testing.T) {
 	}
 
 	agent, err := core.NewAgent(core.Options{
-		Provider: h.Provider(),
-		Executor: partialExecutor,
-		UI:       h.UI(),
-		EventBus: h.EventBus(),
+		Provider:       h.Provider(),
+		Executor:       partialExecutor,
+		UI:             h.UI(),
+		EventPublisher: h.EventBus(),
 	})
 	if err != nil {
 		t.Fatal(err)

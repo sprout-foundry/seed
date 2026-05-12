@@ -2,8 +2,6 @@ package core
 
 import (
 	"time"
-
-	"github.com/sprout-foundry/seed/events"
 )
 
 // finalize returns the final response content.
@@ -34,9 +32,9 @@ func (ch *ConversationHandler) finalize(query string) (string, error) {
 	}
 
 	// Publish query completed event
-	if ch.agent.eventBus != nil {
+	if ch.agent.eventPublisher != nil {
 		duration := time.Since(ch.conversationStart)
-		ch.agent.eventBus.Publish(events.EventTypeQueryCompleted, map[string]interface{}{
+		ch.agent.eventPublisher.Publish(EventTypeQueryCompleted, map[string]interface{}{
 			"query":       query,
 			"response":    finalContent,
 			"tokens":      ch.agent.state.TotalTokens(),
@@ -46,11 +44,8 @@ func (ch *ConversationHandler) finalize(query string) (string, error) {
 
 		// Publish agent_message event with final response content
 		if finalContent != "" {
-			ch.agent.eventBus.Publish(events.EventTypeAgentMessage, events.AgentMessageEvent(
-				"info",
-				finalContent,
-				nil,
-			))
+			ch.agent.eventPublisher.Publish("agent_message",
+				map[string]interface{}{"category": "info", "message": finalContent})
 		}
 	}
 

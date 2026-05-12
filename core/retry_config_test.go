@@ -38,7 +38,7 @@ func TestRetryConfigDefaults(t *testing.T) {
 
 func TestRetryConfigCustomValues(t *testing.T) {
 	rc := RetryConfig{
-		MaxAttempts: 5,
+		MaxAttempts:  5,
 		InitialDelay: 200 * time.Millisecond,
 		MaxDelay:     10 * time.Second,
 		Multiplier:   3.0,
@@ -158,11 +158,11 @@ func TestRetryConfigInOptions(t *testing.T) {
 	bus := events.NewEventBus()
 
 	agent, err := NewAgent(Options{
-		Provider:    provider,
-		Executor:    executor,
-		UI:          &_mockUI{},
-		EventBus:    bus,
-		RetryConfig: customConfig,
+		Provider:       provider,
+		Executor:       executor,
+		UI:             &_mockUI{},
+		EventPublisher: bus,
+		RetryConfig:    customConfig,
 	})
 	if err != nil {
 		t.Fatalf("unexpected error creating agent: %v", err)
@@ -190,11 +190,11 @@ func TestRetryConfigZeroOptions(t *testing.T) {
 	bus := events.NewEventBus()
 
 	agent, err := NewAgent(Options{
-		Provider:    provider,
-		Executor:    executor,
-		UI:          &_mockUI{},
-		EventBus:    bus,
-		RetryConfig: RetryConfig{}, // explicitly zero
+		Provider:       provider,
+		Executor:       executor,
+		UI:             &_mockUI{},
+		EventPublisher: bus,
+		RetryConfig:    RetryConfig{}, // explicitly zero
 	})
 	if err != nil {
 		t.Fatalf("unexpected error creating agent: %v", err)

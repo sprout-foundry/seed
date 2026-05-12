@@ -6,8 +6,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/sprout-foundry/seed/events"
 )
 
 // DefaultSystemPrompt is the minimal system prompt used when none is provided.
@@ -81,13 +79,13 @@ func (rc RetryConfig) JitterOrDefault() float64 {
 
 // Options configures an Agent.
 type Options struct {
-	Provider      Provider     // required — LLM communication
-	Executor      ToolExecutor // required — tool execution
-	UI            UI           // nil = headless
-	SystemPrompt  string       // empty = minimal default for testing
-	MaxIterations int          // 0 = unlimited
-	Debug         bool
-	EventBus      *events.EventBus // nil = no events
+	Provider       Provider     // required — LLM communication
+	Executor       ToolExecutor // required — tool execution
+	UI             UI           // nil = headless
+	SystemPrompt   string       // empty = minimal default for testing
+	MaxIterations  int          // 0 = unlimited
+	Debug          bool
+	EventPublisher EventPublisher // nil = no events
 	// OnIteration is an optional callback invoked synchronously at the start of
 	// each conversation-loop iteration. It receives the iteration number (0-based)
 	// and the current message count in state (includes prior messages but not
@@ -96,19 +94,27 @@ type Options struct {
 	// panic is caught and logged (the agent continues).
 	OnIteration func(iteration int, messages int)
 	// Optimizer is used to optimize conversation history across iterations.
-	Optimizer     *ConversationOptimizer
-	RetryConfig   RetryConfig      // retry behavior for transient errors; zero values use defaults
+	Optimizer   *ConversationOptimizer
+	RetryConfig RetryConfig // retry behavior for transient errors; zero values use defaults
+	// DisableFallbackParser disables the fallback tool-call parser. When
+	// disabled, malformed tool calls in model responses will not be recovered.
+	// Default (false): fallback parser is enabled when tools are configured.
+	DisableFallbackParser bool
+	// DisableValidator disables the response validator (truncation/tentative
+	// detection). When disabled, incomplete responses will not trigger
+	// automatic continuation. Default (false): validator is enabled.
+	DisableValidator bool
 }
 
 // Agent is the main entry point for the conversation engine.
 type Agent struct {
-	provider      Provider
-	executor      ToolExecutor
-	ui            UI
-	systemPrompt  string
-	maxIterations int
-	debug         bool
-	eventBus      *events.EventBus
+	provider       Provider
+	executor       ToolExecutor
+	ui             UI
+	systemPrompt   string
+	maxIterations  int
+	debug          bool
+	eventPublisher EventPublisher
 
 	state     *State
 	outputMgr OutputManager
@@ -150,6 +156,20 @@ func NewAgent(opts Options) (*Agent, error) {
 		knownTools[t.Name] = true
 	}
 
+	var fallbackParser *FallbackParser
+	if !opts.DisableFallbackParser {
+		fallbackParser = NewFallbackParser(FallbackParserOptions{KnownToolNames: func(name string) bool { return knownTools[name] }})
+	}
+
+	var validator *ResponseValidator
+	if !opts.DisableValidator {
+		validator = NewResponseValidator(ResponseValidatorOptions{DebugLog: func(format string, args ...interface{}) {
+			if opts.Debug {
+				fmt.Printf(format, args...)
+			}
+		}})
+	}
+
 	return &Agent{
 		provider:           opts.Provider,
 		executor:           opts.Executor,
@@ -157,12 +177,12 @@ func NewAgent(opts Options) (*Agent, error) {
 		systemPrompt:       systemPrompt,
 		maxIterations:      opts.MaxIterations,
 		debug:              opts.Debug,
-		eventBus:           opts.EventBus,
+		eventPublisher:     opts.EventPublisher,
 		state:              NewState(),
-		outputMgr:          NewOutputManager(opts.EventBus),
+		outputMgr:          NewOutputManager(opts.EventPublisher),
 		inputInjectionChan: make(chan string, 1),
-		fallbackParser:     NewFallbackParser(FallbackParserOptions{KnownToolNames: func(name string) bool { return knownTools[name] }}),
-		validator:          NewResponseValidator(ResponseValidatorOptions{DebugLog: func(format string, args ...interface{}) { if opts.Debug { fmt.Printf(format, args...) }} }),
+		fallbackParser:     fallbackParser,
+		validator:          validator,
 		optimizer:          opts.Optimizer,
 		onIteration:        opts.OnIteration,
 		retryConfig:        opts.RetryConfig,

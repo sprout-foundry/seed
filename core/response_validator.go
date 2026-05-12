@@ -113,7 +113,7 @@ func (rv *ResponseValidator) hasAbruptEnding(content string) bool {
 		if unicode.IsLetter(lastChar) ||
 			unicode.IsDigit(lastChar) ||
 			unicode.Is(unicode.Sk, lastChar) || // Symbol, modifier (e.g., currency)
-			unicode.Is(unicode.So, lastChar) {   // Symbol, other (e.g., emoji)
+			unicode.Is(unicode.So, lastChar) { // Symbol, other (e.g., emoji)
 			return false
 		}
 		// Technical content with code blocks or URLs is trusted.

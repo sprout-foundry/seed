@@ -81,12 +81,12 @@ type ChatUsage struct {
 
 // AgentState tracks the state of an agent's conversation.
 type AgentState struct {
-	Messages         []Message       `json:"messages"`
-	SessionID        string          `json:"session_id"`
-	TotalTokens      int             `json:"total_tokens"`
-	TotalCost        float64         `json:"total_cost"`
-	PromptTokens     int             `json:"prompt_tokens"`
-	CompletionTokens int             `json:"completion_tokens"`
+	Messages         []Message        `json:"messages"`
+	SessionID        string           `json:"session_id"`
+	TotalTokens      int              `json:"total_tokens"`
+	TotalCost        float64          `json:"total_cost"`
+	PromptTokens     int              `json:"prompt_tokens"`
+	CompletionTokens int              `json:"completion_tokens"`
 	Checkpoints      []TurnCheckpoint `json:"checkpoints,omitempty"`
 }
 

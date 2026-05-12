@@ -10,7 +10,7 @@ test:
 
 # Run e2e tests with verbose output
 test-e2e:
-	go test -v ./test/...
+	go test -v ./internal/test/...
 
 # Run go vet
 vet:

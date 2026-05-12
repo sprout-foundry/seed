@@ -91,10 +91,10 @@ func (h *Harness) EventBus() *events.EventBus {
 // NewAgent creates a new agent wired to the harness mocks.
 func (h *Harness) NewAgent() *core.Agent {
 	agent, err := core.NewAgent(core.Options{
-		Provider: h.provider,
-		Executor: h.executor,
-		UI:       h.ui,
-		EventBus: h.bus,
+		Provider:       h.provider,
+		Executor:       h.executor,
+		UI:             h.ui,
+		EventPublisher: h.bus,
 	})
 	if err != nil {
 		panic(fmt.Sprintf("NewAgent failed: %v", err))
@@ -110,8 +110,8 @@ func (h *Harness) NewAgentWithOptions(opts core.Options) *core.Agent {
 	if opts.UI == nil {
 		opts.UI = h.ui
 	}
-	if opts.EventBus == nil {
-		opts.EventBus = h.bus
+	if opts.EventPublisher == nil {
+		opts.EventPublisher = h.bus
 	}
 	agent, err := core.NewAgent(opts)
 	if err != nil {

@@ -1,11 +1,8 @@
 package core
 
 import (
-	"errors"
 	"sync"
 	"time"
-
-	"github.com/sprout-foundry/seed/events"
 )
 
 // OutputEvent represents a generic output event emitted through the async
@@ -20,7 +17,8 @@ type OutputEvent struct {
 
 // OutputManager manages all output streams from the agent, including content
 // and reasoning buffers, async output delivery, flush callbacks, and event
-// metadata.
+// metadata. The eventPublisher parameter may be nil (no events) or any
+// EventPublisher implementation.
 type OutputManager interface {
 	// Buffer access
 	ContentBuffer() *StreamingBuffer
@@ -57,20 +55,20 @@ type defaultOutputManager struct {
 	metadata map[string]string
 	mu       sync.RWMutex
 
-	eventBus *events.EventBus
+	eventPublisher EventPublisher
 
 	closeMu sync.RWMutex // RLock for publish, Lock for close — zero data races
 	closed  bool         // guarded by closeMu
 }
 
-// NewOutputManager creates a new OutputManager with the given optional event bus.
-func NewOutputManager(eventBus *events.EventBus) *defaultOutputManager {
+// NewOutputManager creates a new OutputManager with the given optional event publisher.
+func NewOutputManager(eventBus EventPublisher) *defaultOutputManager {
 	return &defaultOutputManager{
-		contentBuf:   NewStreamingBuffer(),
-		reasoningBuf: NewStreamingBuffer(),
-		asyncChan:    make(chan OutputEvent, 256),
-		metadata:     make(map[string]string),
-		eventBus:     eventBus,
+		contentBuf:     NewStreamingBuffer(),
+		reasoningBuf:   NewStreamingBuffer(),
+		asyncChan:      make(chan OutputEvent, 256),
+		metadata:       make(map[string]string),
+		eventPublisher: eventBus,
 	}
 }
 
@@ -152,26 +150,26 @@ func (om *defaultOutputManager) PublishOutput(event OutputEvent) {
 	}
 	om.closeMu.RUnlock()
 
-	// If eventBus is configured, publish a corresponding event.
-	// Only publish to EventBus if the async channel send succeeded,
+	// If eventPublisher is configured, publish a corresponding event.
+	// Only publish to eventPublisher if the async channel send succeeded,
 	// to keep the two delivery paths consistent.
-	if sent && om.eventBus != nil {
+	if sent && om.eventPublisher != nil {
 		switch event.Type {
 		case "content":
-			om.eventBus.Publish(events.EventTypeStreamChunk,
-				events.StreamChunkEvent(event.Content, "text"))
-			om.eventBus.Publish(events.EventTypeAgentMessage,
-				events.AgentMessageEvent("info", event.Content, nil))
+			om.eventPublisher.Publish(EventTypeStreamChunk,
+				map[string]interface{}{"chunk": event.Content, "content_type": "text"})
+			om.eventPublisher.Publish("agent_message",
+				map[string]interface{}{"category": "info", "message": event.Content})
 		case "reasoning":
-			om.eventBus.Publish(events.EventTypeStreamChunk,
-				events.StreamChunkEvent(event.Content, "reasoning"))
+			om.eventPublisher.Publish(EventTypeStreamChunk,
+				map[string]interface{}{"chunk": event.Content, "content_type": "reasoning"})
 		case "agent_message":
-			om.eventBus.Publish(events.EventTypeAgentMessage,
-				events.AgentMessageEvent("info", event.Content, nil))
+			om.eventPublisher.Publish("agent_message",
+				map[string]interface{}{"category": "info", "message": event.Content})
 		case "error":
-			om.eventBus.Publish(events.EventTypeError,
-				events.ErrorEvent(event.Content, errors.New(event.Content)))
-			// tool_result and other types: no EventBus event (tool results are
+			om.eventPublisher.Publish(EventTypeError,
+				map[string]interface{}{"message": event.Content, "error": event.Content})
+			// tool_result and other types: no eventPublisher event (tool results are
 			// already communicated via EventTypeToolEnd from the executor).
 		}
 	}

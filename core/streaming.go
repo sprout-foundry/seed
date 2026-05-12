@@ -3,8 +3,6 @@ package core
 import (
 	"bytes"
 	"sync"
-
-	"github.com/sprout-foundry/seed/events"
 )
 
 // StreamingBuffer captures streamed output for controlled display.
@@ -48,7 +46,7 @@ func (b *StreamingBuffer) Reset() {
 
 // AgentStreamHandler is a concrete StreamHandler implementation that writes
 // streamed content to the agent's buffers and publishes events via the
-// agent's EventBus.
+// agent's eventPublisher.
 type AgentStreamHandler struct {
 	agent    *Agent
 	state    *State
@@ -71,11 +69,11 @@ func (h *AgentStreamHandler) OnContent(content string) {
 		return
 	}
 	h.agent.outputMgr.ContentBuffer().Write([]byte(content))
-	if h.agent.eventBus != nil {
-		h.agent.eventBus.Publish(events.EventTypeStreamChunk,
-			events.StreamChunkEvent(content, "text"))
-		h.agent.eventBus.Publish(events.EventTypeAgentMessage,
-			events.AgentMessageEvent("info", content, nil))
+	if h.agent.eventPublisher != nil {
+		h.agent.eventPublisher.Publish(EventTypeStreamChunk,
+			map[string]interface{}{"chunk": content, "content_type": "text"})
+		h.agent.eventPublisher.Publish("agent_message",
+			map[string]interface{}{"category": "info", "message": content})
 	}
 	h.agent.outputMgr.Flush()
 }
@@ -88,9 +86,9 @@ func (h *AgentStreamHandler) OnReasoning(reasoning string) {
 		return
 	}
 	h.agent.outputMgr.ReasoningBuffer().Write([]byte(reasoning))
-	if h.agent.eventBus != nil {
-		h.agent.eventBus.Publish(events.EventTypeStreamChunk,
-			events.StreamChunkEvent(reasoning, "reasoning"))
+	if h.agent.eventPublisher != nil {
+		h.agent.eventPublisher.Publish(EventTypeStreamChunk,
+			map[string]interface{}{"chunk": reasoning, "content_type": "reasoning"})
 	}
 	h.agent.outputMgr.Flush()
 }
@@ -107,14 +105,14 @@ func (h *AgentStreamHandler) OnDone(resp *ChatResponse) {
 			resp.Usage.CompletionTokens, resp.Usage.TotalTokens)
 
 		// Publish metrics update event (matches non-streaming path)
-		if h.agent.eventBus != nil {
-			h.agent.eventBus.Publish(events.EventTypeMetricsUpdate, events.MetricsUpdateEvent(
-				h.state.TotalTokens(),
-				resp.Usage.PromptTokens,
-				h.agent.provider.Info().ContextSize,
-				0, // iteration index not tracked in stream handler
-				h.state.TotalCost(),
-			))
+		if h.agent.eventPublisher != nil {
+			h.agent.eventPublisher.Publish(EventTypeMetricsUpdate, map[string]interface{}{
+				"total_tokens":       h.state.TotalTokens(),
+				"context_tokens":     resp.Usage.PromptTokens,
+				"max_context_tokens": h.agent.provider.Info().ContextSize,
+				"iteration":          0, // iteration index not tracked in stream handler
+				"total_cost":         h.state.TotalCost(),
+			})
 		}
 	}
 	if len(resp.Choices) > 0 {
@@ -130,8 +128,8 @@ func (h *AgentStreamHandler) Response() *ChatResponse {
 
 // OnError handles streaming errors: publishes an error event via the bus.
 func (h *AgentStreamHandler) OnError(err error) {
-	if h.agent.eventBus != nil {
-		h.agent.eventBus.Publish(events.EventTypeError,
-			events.ErrorEvent("chat stream failed", err))
+	if h.agent.eventPublisher != nil {
+		h.agent.eventPublisher.Publish(EventTypeError,
+			map[string]interface{}{"message": "chat stream failed", "error": err.Error()})
 	}
 }
