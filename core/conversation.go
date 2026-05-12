@@ -687,6 +687,120 @@ func (ch *ConversationHandler) isBlankIteration(content string) bool {
 	return isBlankContent(content)
 }
 
+// isRepetitiveContent checks if the current response content is repetitive
+// compared to the previous assistant message. It compares against the
+// assistant message that precedes the current one in the history (the
+// current message is already in state when this is called, so we skip it
+// and look at the one before). Returns false if there is no previous
+// assistant message to compare against.
+func (ch *ConversationHandler) isRepetitiveContent(content string) bool {
+	prev := ch.previousAssistantMessage()
+	if prev == nil {
+		return false
+	}
+	return contentSimilar(content, prev.Content)
+}
+
+// previousAssistantMessage returns the assistant message that precedes the
+// current one in the message history. The current assistant message is
+// already appended to state when this is called, so we skip it and look
+// back for the prior assistant message.
+func (ch *ConversationHandler) previousAssistantMessage() *Message {
+	msgs := ch.agent.state.Messages()
+	return findPreviousRole(msgs, "assistant", "assistant")
+}
+
+// findPreviousRole walks backward from the end of msgs, skipping the last
+// message if its role matches skipRole, and returns the first message whose
+// Role matches targetRole. Returns nil if not found.
+// This is used by previousAssistantMessage. A similar backwards-walk pattern
+// is also used in followsRecentToolResults.
+func findPreviousRole(msgs []Message, skipRole, targetRole string) *Message {
+	if len(msgs) == 0 {
+		return nil
+	}
+	i := len(msgs) - 1
+	if msgs[i].Role == skipRole {
+		i--
+	}
+	for ; i >= 0; i-- {
+		if msgs[i].Role == targetRole {
+			msg := msgs[i]
+			return &msg
+		}
+	}
+	return nil
+}
+
+// repetitionMinOverlapCount is the minimum number of overlapping words
+// required to flag content as repetitive, even when the overlap ratio
+// passes repetitionMinOverlap. This prevents short texts (e.g., a 12-word
+// summary) from being flagged when most of a much longer response is new.
+const repetitionMinOverlapCount = 10
+
+// repetitionMinOverlap is the minimum word-overlap ratio (0.0–1.0) required
+// to flag content as repetitive. The ratio is computed against the shorter
+// message's word set. A value of 0.8 means at least 80% of the shorter
+// message's words must appear in the longer one.
+const repetitionMinOverlap = 0.8
+
+// contentSimilar returns true if two content strings are highly similar,
+// indicating the model may be repeating itself. It uses a combination of
+// exact match (after normalization) and word-overlap heuristic.
+func contentSimilar(a, b string) bool {
+	na := normalizeForComparison(a)
+	nb := normalizeForComparison(b)
+
+	if na == "" || nb == "" {
+		return false
+	}
+
+	// Exact match after normalization.
+	if na == nb {
+		return true
+	}
+
+	// Word-overlap heuristic: if the overlap ratio exceeds the threshold
+	// and the shorter text has enough words, consider it repetitive.
+	wordsA := strings.Fields(na)
+	wordsB := strings.Fields(nb)
+	if len(wordsA) == 0 || len(wordsB) == 0 {
+		return false
+	}
+
+	// Ensure wordsA is the shorter set.
+	if len(wordsA) > len(wordsB) {
+		wordsA, wordsB = wordsB, wordsA
+	}
+
+	// Build a set of words from the longer text.
+	setB := make(map[string]bool, len(wordsB))
+	for _, w := range wordsB {
+		setB[w] = true
+	}
+
+	// Count overlap.
+	overlap := 0
+	for _, w := range wordsA {
+		if setB[w] {
+			overlap++
+		}
+	}
+
+	// Require both: high overlap ratio AND minimum overlap of repetitionMinOverlapCount
+	// to avoid false positives on short responses.
+	return overlap >= repetitionMinOverlapCount && float64(overlap)/float64(len(wordsA)) > repetitionMinOverlap
+}
+
+// normalizeForComparison lowercases, trims whitespace, and strips common
+// trailing punctuation for comparison. This reduces false negatives from
+// minor punctuation differences between otherwise identical messages.
+func normalizeForComparison(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	s = strings.TrimRight(s, ".!,;:?")
+	return s
+}
+
 // followsRecentToolResults scans the message history backwards from the most
 // recent message to determine whether the current turn follows tool results.
 // It walks back past the current assistant message (if any), then checks for

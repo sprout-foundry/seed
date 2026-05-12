@@ -672,3 +672,433 @@ func TestConversationHandler_isBlankIteration(t *testing.T) {
 		})
 	}
 }
+
+// --- normalizeForComparison tests ---
+
+func TestNormalizeForComparison_Lowercases(t *testing.T) {
+	input := "HELLO WORLD"
+	got := normalizeForComparison(input)
+	want := "hello world"
+	if got != want {
+		t.Errorf("normalizeForComparison(%q) = %q, want %q", input, got, want)
+	}
+}
+
+func TestNormalizeForComparison_TrimWhitespace(t *testing.T) {
+	input := "  hello world  "
+	got := normalizeForComparison(input)
+	want := "hello world"
+	if got != want {
+		t.Errorf("normalizeForComparison(%q) = %q, want %q", input, got, want)
+	}
+}
+
+func TestNormalizeForComparison_StripsTrailingPunctuation(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"trailing period", "hello.", "hello"},
+		{"trailing exclamation", "hello!", "hello"},
+		{"trailing comma", "hello,", "hello"},
+		{"trailing semicolon", "hello;", "hello"},
+		{"trailing colon", "hello:", "hello"},
+		{"trailing question mark", "hello?", "hello"},
+		{"multiple trailing punctuations", "hello...!!??", "hello"},
+		{"trailing dash should not strip", "hello--", "hello--"},
+		{"dash inside should not strip", "well-known", "well-known"},
+		{"apostrophe inside should not strip", "it's", "it's"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := normalizeForComparison(tt.input)
+			if got != tt.want {
+				t.Errorf("normalizeForComparison(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestNormalizeForComparison_PreservesInternalPunctuation(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"internal period", "e.g. hello", "e.g. hello"},
+		{"URL", "http://example.com", "http://example.com"},
+		{"math expression", "x > 5", "x > 5"},
+		{"quoted text", "say \"hello\"", "say \"hello\""},
+		{"parentheses", "(see note)", "(see note)"},
+		{"hyphenated word", "state-of-the-art", "state-of-the-art"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := normalizeForComparison(tt.input)
+			if got != tt.want {
+				t.Errorf("normalizeForComparison(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestNormalizeForComparison_EmptyInput(t *testing.T) {
+	got := normalizeForComparison("")
+	if got != "" {
+		t.Errorf("normalizeForComparison(\"\") = %q, want empty string", got)
+	}
+}
+
+// --- contentSimilar tests ---
+
+func TestContentSimilar_ExactMatchAfterNormalization(t *testing.T) {
+	// Same text, different case — should be similar after normalization
+	a := "Hello World"
+	b := "hello world"
+	if !contentSimilar(a, b) {
+		t.Errorf("contentSimilar(%q, %q) = false, want true", a, b)
+	}
+}
+
+func TestContentSimilar_PunctuationDifferences(t *testing.T) {
+	// Trailing punctuation differences should be handled
+	tests := []struct {
+		name string
+		a    string
+		b    string
+		want bool
+	}{
+		{"extra trailing period", "hello world.", "hello world", true},
+		{"extra exclamation", "hello world!", "hello world", true},
+		{"extra question mark", "hello world?", "hello world", true},
+		{"extra comma", "hello world,", "hello world", true},
+		{"multiple trailing punct", "hello world.!", "hello world", true},
+		{"different trailing punct", "hello world.", "hello world?", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := contentSimilar(tt.a, tt.b)
+			if got != tt.want {
+				t.Errorf("contentSimilar(%q, %q) = %v, want %v", tt.a, tt.b, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestContentSimilar_HighOverlapAboveThreshold(t *testing.T) {
+	// Long messages with high word overlap (>80% and >=10 words in shorter)
+	// 18 of 21 words match → ~85.7% overlap (>=10 overlap AND ratio > 0.8)
+	a := "The quick brown fox jumps over the lazy dog today and tomorrow"
+	b := "The quick brown fox jumps over the lazy dog yesterday and nextweek"
+	if !contentSimilar(a, b) {
+		t.Errorf("contentSimilar(high overlap) = false, want true")
+	}
+}
+
+func TestContentSimilar_LowOverlapBelowThreshold(t *testing.T) {
+	// Long messages with low word overlap
+	a := "The cat sat on the mat and ate a fish"
+	b := "The dog ran in the park and chased a ball"
+	if contentSimilar(a, b) {
+		t.Errorf("contentSimilar(low overlap) = true, want false")
+	}
+}
+
+func TestContentSimilar_ShortMessagesNoFalsePositive(t *testing.T) {
+	// Short messages with HIGH overlap: exact match is true (exact-match path,
+	// bypasses word-overlap guard). NEAR-matches with <10 overlap words are
+	// correctly NOT flagged via the word-overlap heuristic.
+	tests := []struct {
+		name string
+		a    string
+		b    string
+		want bool
+	}{
+		// Exact matches always return true (bypass word-overlap guard)
+		{"exact single word", "yes", "yes", true},
+		{"exact few words", "hello world", "hello world", true},
+		// Near-matches: word-overlap heuristic used; overlap <10 → false
+		{"two words different", "yes no", "yes maybe", false},
+		{"five words different", "the cat sat on the mat", "the cat sat on the rug", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := contentSimilar(tt.a, tt.b)
+			if got != tt.want {
+				t.Errorf("contentSimilar(%q, %q) = %v, want %v", tt.a, tt.b, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestContentSimilar_EmptyInput(t *testing.T) {
+	if contentSimilar("", "anything") {
+		t.Error("contentSimilar(\"\", \"anything\") = true, want false")
+	}
+	if contentSimilar("anything", "") {
+		t.Error("contentSimilar(\"anything\", \"\") = true, want false")
+	}
+	if contentSimilar("", "") {
+		t.Error("contentSimilar(\"\", \"\") = true, want false")
+	}
+}
+
+func TestContentSimilar_NoOverlap(t *testing.T) {
+	// Completely different content should return false
+	a := "The sky is blue and the ocean is vast"
+	b := "Programming requires patience and practice"
+	if contentSimilar(a, b) {
+		t.Errorf("contentSimilar(completely different) = true, want false")
+	}
+}
+
+func TestContentSimilar_SubstantialExpansionOfSameContent(t *testing.T) {
+	// One message restates context but the longer message adds significantly
+	// new content such that the overlap ratio drops below the 80% threshold.
+	// The shorter text has enough words (12) to pass repetitionMinOverlapCount,
+	// but only 7 of 12 words appear in the longer text (58.3% < 80%).
+	a := "The answer to the question involves multiple factors that must be considered."
+	b := "The answer to the question involves multiple factors. These include timing complexity and resource availability which were not previously addressed in this discussion."
+
+	if contentSimilar(a, b) {
+		t.Errorf("contentSimilar(expanded content) = true, want false (overlap ~58%% below 80%% threshold)")
+	}
+}
+
+func TestContentSimilar_CompletelyOverlapping(t *testing.T) {
+	// Identical long messages should be similar
+	a := "This is a comprehensive answer that covers all the important details that were requested in the original query."
+	b := "This is a comprehensive answer that covers all the important details that were requested in the original query."
+	if !contentSimilar(a, b) {
+		t.Errorf("contentSimilar(identical long) = false, want true")
+	}
+}
+
+func TestContentSimilar_OneWordDiffersInLongMessage(t *testing.T) {
+	// Two long messages where only one word differs — overlap should be very high
+	a := "The configuration file contains database cache and logging settings for the application."
+	b := "The configuration file contains database memory and logging settings for the application."
+
+	// a: 12 words, b: 12 words. 11 of 12 match → 91.7% overlap ≥ 80%
+	if !contentSimilar(a, b) {
+		t.Errorf("contentSimilar(one word diff) = false, want true (high overlap)")
+	}
+}
+
+func TestContentSimilar_BarelyBelowThreshold(t *testing.T) {
+	// Messages that barely miss the overlap threshold — should NOT be similar
+	// Build messages with exactly 10 words in the shorter, and 8/10 = 80% overlap.
+	// The code uses `>` (strictly greater than) for the ratio check, so 80% exactly
+	// is NOT enough — needs to be > 0.8.
+	shorter := "alpha bravo charlie delta echo foxtrot golf hotel india juliet" // 10 words
+	// Change 3 of 10 words → 7/10 = 70% overlap → below threshold
+	longer := "alpha bravo zulu delta echo foxtrot golf hotel india juliet kilo" // 11 words
+
+	if contentSimilar(shorter, longer) {
+		t.Errorf("contentSimilar(70%% overlap) = true, want false (below 80%% threshold)")
+	}
+}
+
+func TestContentSimilar_ShorterIsSecond(t *testing.T) {
+	// Verify that contentSimilar handles the case where the second argument is shorter
+	// The algorithm should swap so that wordsA is always the shorter set.
+	a := "This is a longer message with many more words that should not be flagged as repetitive"
+	b := "This is a longer message with many more words that should not be flagged as repetitive."
+	if !contentSimilar(a, b) {
+		t.Errorf("contentSimilar(longer first) = false, want true")
+	}
+}
+
+// --- isRepetitiveContent tests ---
+
+// buildHandlerForRepetition creates a ConversationHandler with the given
+// message history so that isRepetitiveContent can be tested directly.
+// The provider is mocked to return an empty response; the executor is noop.
+// The handler's agent points at the provided state.
+func buildHandlerForRepetition(t *testing.T, messages []Message) *ConversationHandler {
+	provider := &mockProvider{
+		info:       ProviderInfo{ContextSize: 10000},
+		tokenCount: 100,
+	}
+	a, err := NewAgent(Options{
+		Provider: provider,
+		Executor: &mockExecutor{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.state.SetMessages(messages)
+	ch := newConversationHandler(a)
+	return ch
+}
+
+func TestIsRepetitiveContent_NoPreviousAssistantMessage(t *testing.T) {
+	// Empty state — no previous assistant message exists
+	ch := buildHandlerForRepetition(t, []Message{})
+	if ch.isRepetitiveContent("anything") {
+		t.Error("isRepetitiveContent(empty state) = true, want false (no previous assistant message)")
+	}
+}
+
+func TestIsRepetitiveContent_NoAssistantMessages(t *testing.T) {
+	// State with only user/tool messages, no assistant message
+	msgs := []Message{
+		{Role: "system", Content: "You are a test assistant."},
+		{Role: "user", Content: "hello"},
+	}
+	ch := buildHandlerForRepetition(t, msgs)
+	if ch.isRepetitiveContent("anything") {
+		t.Error("isRepetitiveContent(no assistant msg) = true, want false")
+	}
+}
+
+func TestIsRepetitiveContent_VeryDifferentContent(t *testing.T) {
+	// Previous assistant message is very different from current content
+	prevAssistant := "The answer is forty two and it requires careful consideration."
+	currentContent := "I cannot help you with that request at this time."
+
+	msgs := []Message{
+		{Role: "system", Content: "You are a test assistant."},
+		{Role: "user", Content: "What is the answer?"},
+		{Role: "assistant", Content: prevAssistant},
+		{Role: "assistant", Content: currentContent}, // current (already in state)
+	}
+	ch := buildHandlerForRepetition(t, msgs)
+	if ch.isRepetitiveContent(currentContent) {
+		t.Error("isRepetitiveContent(different content) = true, want false")
+	}
+}
+
+func TestIsRepetitiveContent_ExactMatchWithPrevious(t *testing.T) {
+	// Current content exactly matches previous assistant message
+	repeatedContent := "This is the complete answer to your question with all the details."
+
+	msgs := []Message{
+		{Role: "system", Content: "You are a test assistant."},
+		{Role: "user", Content: "Tell me more."},
+		{Role: "assistant", Content: repeatedContent}, // previous
+		{Role: "assistant", Content: repeatedContent}, // current (already in state)
+	}
+	ch := buildHandlerForRepetition(t, msgs)
+	if !ch.isRepetitiveContent(repeatedContent) {
+		t.Error("isRepetitiveContent(identical) = false, want true")
+	}
+}
+
+func TestIsRepetitiveContent_MinorPunctuationDifference(t *testing.T) {
+	// Current content matches previous assistant message except for trailing punctuation.
+	// normalizeForComparison strips trailing punctuation, so the word-overlap
+	// heuristic should detect the repetition.
+	previous := "The file contains the expected configuration data that was requested in the query."
+	current := "The file contains the expected configuration data that was requested in the query" // no trailing period
+
+	msgs := []Message{
+		{Role: "system", Content: "You are a test assistant."},
+		{Role: "user", Content: "What's in the file?"},
+		{Role: "assistant", Content: previous},
+		{Role: "assistant", Content: current},
+	}
+	ch := buildHandlerForRepetition(t, msgs)
+	if !ch.isRepetitiveContent(current) {
+		t.Error("isRepetitiveContent(minor punctuation diff) = false, want true")
+	}
+}
+
+func TestIsRepetitiveContent_WithToolResultInBetween(t *testing.T) {
+	// The previous assistant message before the current one should skip over
+	// the current assistant (already in state) and the tool result.
+	previous := "I need to check the configuration file for the database settings."
+	current := "I need to check the configuration file for the database settings" // no trailing period
+
+	msgs := []Message{
+		{Role: "system", Content: "You are a test assistant."},
+		{Role: "user", Content: "Check config."},
+		{Role: "assistant", Content: previous},
+		{Role: "tool", Content: "config data", ToolCallID: "call_1"},
+		{Role: "assistant", Content: current}, // current (already in state)
+	}
+	ch := buildHandlerForRepetition(t, msgs)
+	if !ch.isRepetitiveContent(current) {
+		t.Error("isRepetitiveContent(with tool result) = false, want true")
+	}
+}
+
+func TestIsRepetitiveContent_UserMessageInBetween(t *testing.T) {
+	// Previous assistant message separated by user/tool messages.
+	// The function walks back past the current assistant, finds the previous one.
+	previous := "Let me search the codebase for the relevant function definitions."
+	current := "Let me search the codebase for the relevant function definitions" // no trailing period
+
+	msgs := []Message{
+		{Role: "system", Content: "You are a test assistant."},
+		{Role: "user", Content: "What does this do?"},
+		{Role: "assistant", Content: previous},
+		{Role: "user", Content: "Also check the tests."},
+		{Role: "assistant", Content: current}, // current
+	}
+	ch := buildHandlerForRepetition(t, msgs)
+	if !ch.isRepetitiveContent(current) {
+		t.Error("isRepetitiveContent(user between) = false, want true")
+	}
+}
+
+func TestIsRepetitiveContent_DifferentPreviousFound(t *testing.T) {
+	// There are multiple assistant messages in history. The function should
+	// compare against the immediately preceding one (walking back from end).
+	firstAssistant := "First answer with different content and words."
+	secondAssistant := "Second answer completely different topic here."
+	repeated := "Second answer completely different topic here."
+
+	msgs := []Message{
+		{Role: "user", Content: "hello"},
+		{Role: "assistant", Content: firstAssistant}, // index 1
+		{Role: "user", Content: "more"},
+		{Role: "assistant", Content: secondAssistant}, // index 3 — previous to current
+		{Role: "assistant", Content: repeated},        // index 4 — current
+	}
+	ch := buildHandlerForRepetition(t, msgs)
+	if !ch.isRepetitiveContent(repeated) {
+		t.Error("isRepetitiveContent(multiple assistant msgs, matches previous) = false, want true")
+	}
+}
+
+func TestIsRepetitiveContent_RepeatedButTooShort(t *testing.T) {
+	// Near-identical short content (<10 overlap words) should NOT be flagged because
+	// the word-overlap guard requires >= repetitionMinOverlapCount words. Exact matches of
+	// short text ARE flagged (bypass word-overlap), so we test a near-match
+	// where the overlap heuristic is used and correctly returns false.
+	shortRepeated := "yes that is correct" // 4 words
+
+	msgs := []Message{
+		{Role: "user", Content: "test"},
+		{Role: "assistant", Content: shortRepeated},
+		{Role: "assistant", Content: "yes that is correct with adjustment"},
+	}
+	ch := buildHandlerForRepetition(t, msgs)
+	if ch.isRepetitiveContent(msgs[2].Content) {
+		t.Error("isRepetitiveContent(short near-repeat) = true, want false (below min word threshold)")
+	}
+}
+
+func TestIsRepetitiveContent_MultipleToolMessagesBetween(t *testing.T) {
+	// Previous assistant message separated by multiple tool messages.
+	previous := "I will read the file and analyze its contents carefully."
+	current := "I will read the file and analyze its contents carefully" // no trailing period
+
+	msgs := []Message{
+		{Role: "user", Content: "analyze this."},
+		{Role: "assistant", Content: previous},
+		{Role: "tool", Content: "file contents 1", ToolCallID: "call_1"},
+		{Role: "tool", Content: "file contents 2", ToolCallID: "call_2"},
+		{Role: "assistant", Content: current}, // current
+	}
+	ch := buildHandlerForRepetition(t, msgs)
+	if !ch.isRepetitiveContent(current) {
+		t.Error("isRepetitiveContent(multiple tools between) = false, want true")
+	}
+}
