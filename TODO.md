@@ -107,8 +107,7 @@
 [x] - CHECKPOINT: Define `TurnCheckpoint` struct — `StartIndex`, `EndIndex`, `Summary`, `ActionableSummary` with JSON tags. `core/turn_checkpoints.go`
 [x] - CHECKPOINT: Add `[]TurnCheckpoint` to `State` — mutex-protected access with `AddCheckpoint`, `GetCheckpoints`, `SetCheckpoints`, `ClearCheckpoints`. `core/state.go`
 [x] - CHECKPOINT: Add checkpoint serialization to ExportState/ImportState — checkpoints round-trip through JSON. `core/state.go`
-[x] - CHECKPOINT: Implement Go-only summary builder — extract user question, tool calls, errors, files modified, final status from turn messages. `core/turn_checkpoints.go`
-[x] - CHECKPOINT: Implement Go-only summary builder — extract user question, tool calls, errors, files modified, final status from turn messages. `core/turn_checkpoints.go`
+
 [x] - CHECKPOINT: Implement actionable summary builder — bullet list of accomplishments with file paths and commands. `core/turn_checkpoints.go`
 [x] - CHECKPOINT: Implement async `RecordTurnCheckpointAsync()` — snapshot messages, compute summary in background goroutine. `core/turn_checkpoints.go`
 [x] - CHECKPOINT: Implement `BuildCheckpointCompactedMessages()` — replace consumed checkpoints with summary messages, shift remaining indices. `core/turn_checkpoints.go`
@@ -123,7 +122,6 @@
 ## Response Processing Hardening (SP-011)
 
 [x] - NORMALIZE: Create `ToolCallNormalizer` struct with `Normalize(calls []ToolCall) NormalizedToolCalls` — strips `<|channel|>` suffix, generates missing IDs, deduplicates by ID+args, repairs JSON arguments, normalizes Type to "function". `core/tool_call_normalizer.go` (new file)
-[] - NORMALIZE: Create `ToolCallNormalizer` struct with `Normalize(calls []ToolCall) NormalizedToolCalls` — strips `<|channel|>` suffix, generates missing IDs, deduplicates by ID+args, repairs JSON arguments, normalizes Type to "function". `core/tool_call_normalizer.go` (new file)
 [x] - NORMALIZE: Wire normalizer into `runLoop` — run on structured `tool_calls` before execution. `core/conversation.go`
 [x] - NORMALIZE: Handle malformed structured tool calls — inject transient message asking model to re-emit, discard malformed calls. `core/conversation.go`
 [x] - FINISH: Implement finish reason dispatch — explicit switch on `""`, `"stop"`, `"length"`, `"content_filter"`, default. `core/conversation.go`
@@ -132,22 +130,16 @@
 [x] - FINISH: Handle `"stop"` with tentative content after tool results — implement `followsRecentToolResults()` scan, reject with specific message, accept after 2 rejections (match sprout). `core/conversation.go`
 [x] - FINISH: Handle `"length"` — always continue (model hit token limit). `core/conversation.go`
 [x] - FINISH: Handle `"content_filter"` — retry once, then return error to consumer on second occurrence. `core/conversation.go`
-[] - FINISH: Handle `"content_filter"` — retry once, then return error to consumer on second occurrence. `core/conversation.go`
 [x] - BLANK: Implement `isBlankIteration(content)` — check if content is empty/whitespace. `core/conversation.go`
 [x] - BLANK: Implement `isRepetitiveContent(content)` — compare against previous assistant message. `core/conversation.go`
-[] - BLANK: Implement `isRepetitiveContent(content)` — compare against previous assistant message. `core/conversation.go`
 [x] - BLANK: Wire blank/repetitive detection — separate `consecutiveBlank` counter, 1st → reminder, 2nd consecutive → force-finalize with error. `core/conversation.go`
-[] - BLANK: Wire blank/repetitive detection — separate `consecutiveBlank` counter, 1st → reminder, 2nd consecutive → force-finalize with error. `core/conversation.go`
 [x] - ANSI: Add `sanitizeANSI(content)` — strip ANSI escape codes from content. `core/conversation.go`
 [x] - NORMALIZE: Add e2e test — `<|channel|>0` suffix stripped → tool name matches → executes. `test/e2e_test.go`
-[] - NORMALIZE: Add e2e test — `<|channel|>0` suffix stripped → tool name matches → executes. `test/e2e_test.go`
 [x] - FINISH: Add e2e test — `finish_reason: "stop"` with empty content → continuation → complete response. `test/e2e_test.go`
-[] - FINISH: Add e2e test — `finish_reason: "stop"` with empty content → continuation → complete response. `test/e2e_test.go`
 [x] - FINISH: Add e2e test — `finish_reason: "length"` → continuation. `test/e2e_test.go`
-[] - FINISH: Add e2e test — `finish_reason: "content_filter"` → retry once → second occurrence → error returned. `test/e2e_test.go`
 [x] - NORMALIZE: Add e2e test — malformed structured tool call → transient message → model re-emits. `test/e2e_test.go`
-[] - NORMALIZE: Add e2e test — missing tool call ID → synthetic ID generated → tool result linked. `test/e2e_test.go`
+[x] - ANSI: Add e2e test — ANSI codes stripped from content. `test/e2e_test.go`
+[x] - NORMALIZE: Add e2e test — missing tool call ID → synthetic ID generated → tool result linked. `test/e2e_test.go`
 [] - NORMALIZE: Add e2e test — duplicate tool calls → only unique calls execute. `test/e2e_test.go`
 [] - BLANK: Add e2e test — blank iteration → reminder → 2nd blank → error. `test/e2e_test.go`
 [] - BLANK: Add e2e test — repetitive content → reminder → 2nd → error. `test/e2e_test.go`
-[x] - ANSI: Add e2e test — ANSI codes stripped from content. `test/e2e_test.go`

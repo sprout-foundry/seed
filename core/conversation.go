@@ -442,7 +442,7 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 			}
 			// If every call was dropped, flag it for retry below.
 			allMalformed = len(normalized) == 0
-			assistantMsg.ToolCalls = normalized
+			assistantMsg.ToolCalls = []ToolCall(normalized)
 			// Update the last message in state so tool results are linked correctly.
 			msgs := a.state.Messages()
 			if len(msgs) > 0 {
