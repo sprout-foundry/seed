@@ -73,7 +73,7 @@
 
 ## Response Validation (SP-007)
 
-[] - VALIDATE: Create `ResponseValidator` struct with optional `DebugLog` callback — zero deps on Agent or concrete types. `core/response_validator.go`
+[x] - VALIDATE: Create `ResponseValidator` struct with optional `DebugLog` callback — zero deps on Agent or concrete types. `core/response_validator.go`
 [] - VALIDATE: Implement `IsIncomplete()` — check for trailing `...`, abrupt endings, unusually short (<10 words not in complete-short list), unclosed code blocks. `core/response_validator.go`
 [] - VALIDATE: Implement `LooksLikeTentativePostToolResponse()` — detect planning prefixes ("Let me...", "I'll...", "I need to...") under 40 words. `core/response_validator.go`
 [] - VALIDATE: Wire incomplete check into `ConversationHandler` — on incomplete response, enqueue transient continuation message, loop again. `core/conversation.go`
