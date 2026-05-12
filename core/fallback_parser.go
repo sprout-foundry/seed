@@ -77,14 +77,18 @@ func (fp *FallbackParser) Parse(content string) *FallbackParseResult {
 var toolCallPatternMarkers = []string{
 	"tool_calls", "function_call", "tool_use", "```json", "```",
 	"<function=", "<tool=", "arguments",
+	// Function-name pattern markers (Strategy 6)
+	"name:", "function:", "tool:", "function_name:", "tool_name:",
+	"args:", "input:", "parameters:", "params:",
 }
 
 func (fp *FallbackParser) containsToolCallPatterns(content string) bool {
 	if len(strings.TrimSpace(content)) == 0 {
 		return false
 	}
+	lowerContent := strings.ToLower(content)
 	for _, m := range toolCallPatternMarkers {
-		if strings.Contains(content, m) {
+		if strings.Contains(lowerContent, m) {
 			return true
 		}
 	}
@@ -102,7 +106,7 @@ type rawBlock struct {
 }
 
 // ---------------------------------------------------------------------------
-// Five extraction strategies
+// Six extraction strategies
 // ---------------------------------------------------------------------------
 
 func (fp *FallbackParser) extractAll(content string) []rawBlock {
@@ -111,6 +115,7 @@ func (fp *FallbackParser) extractAll(content string) []rawBlock {
 	blocks = append(blocks, fp.extractXMLBlocks(content)...)
 	blocks = append(blocks, fp.extractToolBlocks(content)...)
 	blocks = append(blocks, fp.extractToolUseBlocks(content)...)
+	blocks = append(blocks, fp.extractFunctionNamePatterns(content)...)
 	blocks = append(blocks, fp.extractBareJSON(content)...)
 	return blocks
 }
@@ -446,7 +451,17 @@ func (fp *FallbackParser) extractXMLBlocks(content string) []rawBlock {
 			idx = blockEnd
 			continue
 		}
-		argsStr := strings.TrimSpace(content[bodyStart:bodyEnd])
+		bodyRaw := strings.TrimSpace(content[bodyStart:bodyEnd])
+		if bodyRaw == "" {
+			idx = blockEnd
+			continue
+		}
+
+		// Try XML <parameter> children first; fall back to raw JSON body.
+		argsStr := fp.parseXMLParameters(bodyRaw)
+		if argsStr == "" {
+			argsStr = bodyRaw
+		}
 		if argsStr == "" {
 			idx = blockEnd
 			continue
@@ -463,6 +478,126 @@ func (fp *FallbackParser) extractXMLBlocks(content string) []rawBlock {
 		idx = blockEnd
 	}
 	return blocks
+}
+
+// parseXMLParameters parses XML <parameter name="..." value
+// children and return a JSON-encoded object string. Returns empty string
+// if no <parameter> elements are found.
+func (fp *FallbackParser) parseXMLParameters(body string) string {
+	params := make(map[string]string)
+	idx := 0
+	for {
+		// Find opening <parameter
+		openTag := strings.Index(body[idx:], "<parameter")
+		if openTag == -1 {
+			break
+		}
+		openTag += idx
+
+		// Ensure it is exactly "<parameter" (not "<parameterx" etc.)
+		tagEnd := openTag + len("<parameter")
+		if tagEnd < len(body) {
+			ch := body[tagEnd]
+			if ch == '<' || ch == '(' || ch == '/' ||
+				(ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') {
+				idx = tagEnd
+				continue
+			}
+		}
+
+		// Find closing >
+		attrEnd := strings.Index(body[openTag:], ">")
+		if attrEnd == -1 {
+			break
+		}
+		attrEnd += openTag
+
+		// Extract attributes from the opening tag
+		attrs := body[openTag+10 : attrEnd] // skip "<parameter"
+		name := fp.xmlGetAttr(attrs, "name")
+		if name == "" {
+			idx = attrEnd + 1
+			continue
+		}
+
+		// Find matching closing tag
+		closeTag := strings.Index(body[attrEnd:], "</"+"parameter>")
+		var value string
+		if closeTag != -1 {
+			value = strings.TrimSpace(body[attrEnd : attrEnd+closeTag])
+		} else {
+			value = strings.TrimSpace(body[attrEnd:])
+		}
+		params[name] = value
+		if closeTag != -1 {
+			idx = attrEnd + closeTag + len("</"+"parameter>")
+		} else {
+			break
+		}
+	}
+	if len(params) == 0 {
+		return ""
+	}
+	b, err := json.Marshal(params)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+// xmlGetAttr extracts a named attribute value from an XML-like attribute string.
+func (fp *FallbackParser) xmlGetAttr(attrs string, name string) string {
+	idx := 0
+	for idx < len(attrs) {
+		// Skip whitespace
+		for idx < len(attrs) && (attrs[idx] == ' ' || attrs[idx] == '\t' || attrs[idx] == '\n' || attrs[idx] == '\r') {
+			idx++
+		}
+		if idx >= len(attrs) {
+			break
+		}
+		// Find attribute name
+		start := idx
+		for idx < len(attrs) && attrs[idx] != '=' && attrs[idx] != ' ' && attrs[idx] != '\t' {
+			idx++
+		}
+		attrName := attrs[start:idx]
+		if attrName != name {
+			continue
+		}
+		// Expect '='
+		if idx >= len(attrs) || attrs[idx] != '=' {
+			break
+		}
+		idx++
+		// Skip whitespace
+		for idx < len(attrs) && (attrs[idx] == ' ' || attrs[idx] == '\t') {
+			idx++
+		}
+		if idx >= len(attrs) {
+			return ""
+		}
+		// Get value delimiter
+		var delim byte
+		if attrs[idx] == '"' || attrs[idx] == '\'' {
+			delim = attrs[idx]
+			idx++
+		} else {
+			// No quotes, value goes to next space
+			end := idx
+			for end < len(attrs) && attrs[end] != ' ' && attrs[end] != '\t' && attrs[end] != '>' {
+				end++
+			}
+			return attrs[idx:end]
+		}
+		// Find closing delimiter
+		end := idx
+		for end < len(attrs) && attrs[end] != delim {
+			end++
+		}
+		return attrs[idx:end]
+	}
+	return ""
 }
 
 // ---------------------------------------------------------------------------
@@ -545,6 +680,353 @@ func (fp *FallbackParser) extractToolUseBlocks(content string) []rawBlock {
 		}
 	}
 	return blocks
+}
+
+// ---------------------------------------------------------------------------
+// Strategy 6: Function-name pattern extraction
+// ---------------------------------------------------------------------------
+
+// extractFunctionNamePatterns detects `name: tool_name` followed by balanced
+// JSON arguments. This handles patterns like:
+//
+//	name: search
+//	arguments: {"query": "hello"}
+//
+// or variations with different key names (e.g., "function:", "tool:", "name:").
+func (fp *FallbackParser) extractFunctionNamePatterns(content string) []rawBlock {
+	var blocks []rawBlock
+
+	// We scan for lines matching "name: <tool_name>" followed by a line
+	// containing JSON arguments (balanced braces/brackets).
+	lines := strings.Split(content, "\n")
+	for i := 0; i < len(lines); i++ {
+		line := strings.TrimSpace(lines[i])
+
+		// Look for "name: tool_name" pattern (case-insensitive key)
+		name, ok := fp.extractNameValue(line)
+		if !ok {
+			continue
+		}
+
+		// Check if this is a known tool (if filter is set)
+		if fp.knownToolNames != nil && !fp.knownToolNames(name) {
+			continue
+		}
+
+		// Look for arguments in subsequent lines
+		argsJSON, argsEndLine := fp.findArgumentsInLines(lines, i+1)
+		if argsJSON == "" {
+			continue
+		}
+
+		// Calculate byte offsets for the block
+		blockStart := fp.lineToOffset(content, i)
+		if argsEndLine > len(lines) {
+			argsEndLine = len(lines)
+		}
+		blockEnd := fp.lineToOffset(content, argsEndLine)
+		if blockEnd > len(content) {
+			blockEnd = len(content)
+		}
+
+		tc := ToolCall{
+			Type:     "function",
+			Function: ToolCallFunction{Name: name, Arguments: argsJSON},
+		}
+		blocks = append(blocks, rawBlock{
+			start:  blockStart,
+			end:    blockEnd,
+			parsed: []ToolCall{tc},
+		})
+
+		// Skip past the arguments block
+		i = argsEndLine - 1 // -1 because the for loop will increment i
+	}
+
+	return blocks
+}
+
+// extractNameValue checks if a line matches "name: value" pattern and returns
+// the value. It handles variations like "name:", "Name:", "NAME:", etc.
+// The matched key must be preceded by whitespace or be at the start of the
+// line to avoid false positives (e.g., "command_name:" should not match).
+func (fp *FallbackParser) extractNameValue(line string) (string, bool) {
+	// Match patterns like "name: value", "Name: value", "NAME: value"
+	// Also handle "function: value", "tool: value", "function_name: value"
+	keyPatterns := []string{"name:", "function:", "tool:", "function_name:", "tool_name:"}
+	lowerLine := strings.ToLower(line)
+	for _, pattern := range keyPatterns {
+		idx := strings.Index(lowerLine, pattern)
+		if idx == -1 {
+			continue
+		}
+
+		// Require word boundary: the pattern must be preceded by whitespace
+		// or be at the start of the line. This prevents false positives like
+		// "command_name:" matching "name:" or "tool_use:" matching "tool:".
+		if idx > 0 {
+			prev := line[idx-1]
+			if prev != ' ' && prev != '\t' && prev != '\r' {
+				continue
+			}
+		}
+
+		// Extract the value after the colon
+		valueStart := idx + len(pattern)
+		if valueStart >= len(line) {
+			continue
+		}
+
+		// Skip whitespace
+		for valueStart < len(line) && (line[valueStart] == ' ' || line[valueStart] == '\t') {
+			valueStart++
+		}
+
+		if valueStart >= len(line) {
+			continue
+		}
+
+		// Extract value (trim quotes if present)
+		value := strings.TrimSpace(line[valueStart:])
+		if len(value) >= 2 && ((value[0] == '"' && value[len(value)-1] == '"') ||
+			(value[0] == '\'' && value[len(value)-1] == '\'')) {
+			value = value[1 : len(value)-1]
+		}
+
+		if value != "" {
+			return value, true
+		}
+	}
+
+	return "", false
+}
+
+// findArgumentsInLines searches for JSON arguments in lines starting from
+// startIndex. It looks for patterns like "arguments: {...}" or just "{...}".
+// Returns the JSON string and the line number AFTER the last consumed line.
+func (fp *FallbackParser) findArgumentsInLines(lines []string, startIndex int) (string, int) {
+	if startIndex >= len(lines) {
+		return "", 0
+	}
+
+	// Look for arguments in the next few lines (up to 10 lines)
+	maxLines := startIndex + 10
+	if maxLines > len(lines) {
+		maxLines = len(lines)
+	}
+
+	for i := startIndex; i < maxLines; i++ {
+		line := strings.TrimSpace(lines[i])
+		if line == "" {
+			continue
+		}
+
+		// Check for "arguments: {...}" pattern
+		argsKeyPatterns := []string{"arguments:", "args:", "input:", "parameters:", "params:"}
+		lowerLine := strings.ToLower(line)
+		origLine := lines[i]
+		leadingSpace := len(origLine) - len(line)
+		for _, pattern := range argsKeyPatterns {
+			idx := strings.Index(lowerLine, pattern)
+			if idx == -1 {
+				continue
+			}
+
+			// Word boundary check: the pattern must be preceded by whitespace
+			// or be at the start of the line. This prevents false positives like
+			// "myarguments:" matching "arguments:".
+			if idx > 0 {
+				prev := lowerLine[idx-1]
+				if prev != ' ' && prev != '\t' && prev != '\r' {
+					continue
+				}
+			}
+
+			// Extract value after the colon
+			valueStart := idx + len(pattern)
+			if valueStart >= len(line) {
+				continue
+			}
+
+			// Skip whitespace
+			for valueStart < len(line) && (line[valueStart] == ' ' || line[valueStart] == '\t') {
+				valueStart++
+			}
+
+			if valueStart >= len(line) {
+				continue
+			}
+
+			value := line[valueStart:]
+
+			// If the value starts with { or [, try to find balanced JSON
+			if len(value) > 0 && (value[0] == '{' || value[0] == '[') {
+				// Try to parse as JSON directly
+				if json.Valid([]byte(value)) {
+					return value, i + 1
+				}
+
+				// Handle case where value is a quoted JSON string like
+				// "{\"key\": \"val\"}" — the outer quotes wrap escaped JSON.
+				// Find the matching closing quote and try the unescaped content.
+				if len(value) > 1 && value[0] == '{' {
+					unescaped := fp.unescapeJSONString(value)
+					if unescaped != "" && json.Valid([]byte(unescaped)) {
+						return unescaped, i + 1
+					}
+				}
+
+				// If not valid, try to collect more lines
+				// Use leadingSpace + valueStart to get the correct offset
+				// on the original (non-trimmed) line.
+				jsonStr, endLine := fp.collectJSONLines(lines, i, leadingSpace+valueStart)
+				if jsonStr != "" {
+					return jsonStr, endLine
+				}
+				return "", 0
+			}
+
+			// If the value is a quoted string, try to parse it as JSON
+			if len(value) >= 2 && ((value[0] == '"' && value[len(value)-1] == '"') ||
+				(value[0] == '\'' && value[len(value)-1] == '\'')) {
+				unquoted := value[1 : len(value)-1]
+				if json.Valid([]byte(unquoted)) {
+					return unquoted, i + 1
+				}
+				// Try unescaping \" to " (model may output escaped JSON in quotes)
+				unescaped := strings.ReplaceAll(unquoted, `\"`, `"`)
+				if json.Valid([]byte(unescaped)) {
+					return unescaped, i + 1
+				}
+			}
+		}
+
+		// Check if the line starts with { or [ (bare JSON)
+		if len(line) > 0 && (line[0] == '{' || line[0] == '[') {
+			if json.Valid([]byte(line)) {
+				return line, i + 1
+			}
+			// Try to collect more lines
+			// Use leadingSpace so collectJSONLines starts from the actual
+			// content position on the original (non-trimmed) line.
+			jsonStr, endLine := fp.collectJSONLines(lines, i, leadingSpace)
+			if jsonStr != "" {
+				return jsonStr, endLine
+			}
+			return "", 0
+		}
+	}
+
+	return "", 0
+}
+
+// collectJSONLines collects lines starting from lineIdx, offset, and tries to
+// form valid JSON by accumulating lines until the JSON is balanced.
+// Returns the JSON string and the line number AFTER the last consumed line.
+func (fp *FallbackParser) collectJSONLines(lines []string, lineIdx int, offset int) (string, int) {
+	if lineIdx >= len(lines) {
+		return "", 0
+	}
+
+	// Start with the current line from offset
+	accumulated := strings.TrimSpace(lines[lineIdx][offset:])
+
+	// Check if we already have balanced JSON
+	if json.Valid([]byte(accumulated)) {
+		return accumulated, lineIdx + 1
+	}
+
+	// Accumulate more lines until we have balanced JSON or hit a limit
+	for i := lineIdx + 1; i < len(lines); i++ {
+		line := strings.TrimSpace(lines[i])
+		if line == "" {
+			accumulated += "\n"
+			continue
+		}
+
+		accumulated += "\n" + line
+
+		if json.Valid([]byte(accumulated)) {
+			// Normalize to compact canonical JSON so indentation from the
+			// original content doesn't affect the result.
+			var parsed any
+			if err := json.Unmarshal([]byte(accumulated), &parsed); err == nil {
+				normalized, _ := json.Marshal(parsed)
+				return string(normalized), i + 1
+			}
+			return accumulated, i + 1
+		}
+
+		// Stop if we've accumulated too many lines (limit: 20 lines)
+		if i-lineIdx > 20 {
+			break
+		}
+	}
+
+	return "", 0
+}
+
+// lineToOffset converts a line number to a byte offset in the content string.
+func (fp *FallbackParser) lineToOffset(content string, lineNum int) int {
+	if lineNum <= 0 {
+		return 0
+	}
+
+	offset := 0
+	currentLine := 0
+	for offset < len(content) && currentLine < lineNum {
+		if content[offset] == '\n' {
+			currentLine++
+			if currentLine == lineNum {
+				return offset + 1
+			}
+		}
+		offset++
+	}
+
+	return offset
+}
+
+// unescapeJSONString handles the case where a JSON string value is wrapped
+// in outer quotes with escaped inner quotes, like:
+//
+//	{"key": "val"}  (from the raw text: "{\"key\": \"val\"}")
+//
+// It strips the outer quotes and unescapes \" to ".
+func (fp *FallbackParser) unescapeJSONString(s string) string {
+	if len(s) < 2 {
+		return ""
+	}
+
+	// Check if the string looks like a quoted JSON: starts with { or [
+	// and ends with } or ] (possibly preceded by ")
+	trimmed := strings.TrimSpace(s)
+	if len(trimmed) < 2 {
+		return ""
+	}
+
+	// Case 1: trimmed starts and ends with the same quote
+	if (trimmed[0] == '"' && trimmed[len(trimmed)-1] == '"') ||
+		(trimmed[0] == '\'' && trimmed[len(trimmed)-1] == '\'') {
+		inner := trimmed[1 : len(trimmed)-1]
+		// Unescape \" to "
+		unescaped := strings.ReplaceAll(inner, `\"`, `"`)
+		return unescaped
+	}
+
+	// Case 2: starts with { or [ but contains \" patterns suggesting
+	// it's a quoted JSON string that lost its outer quotes
+	if (trimmed[0] == '{' || trimmed[0] == '[') && strings.Contains(trimmed, `\"`) {
+		// Try to find the matching closing quote at the end
+		// The pattern is: {\"key\": \"val\"}
+		// We need to unescape \" to " and check if valid JSON
+		unescaped := strings.ReplaceAll(trimmed, `\"`, `"`)
+		if json.Valid([]byte(unescaped)) {
+			return unescaped
+		}
+	}
+
+	return ""
 }
 
 // ---------------------------------------------------------------------------

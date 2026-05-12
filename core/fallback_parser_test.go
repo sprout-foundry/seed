@@ -1127,3 +1127,478 @@ func TestParse_BareJSON_WithNewlinesAndFormatting(t *testing.T) {
 		t.Errorf("expected name 'indented', got %q", result.ToolCalls[0].Function.Name)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Tests for extractFunctionNamePatterns (Strategy 6)
+// ---------------------------------------------------------------------------
+
+func TestParse_FunctionNamePattern_Basic(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{})
+	content := "name: search\narguments: {\"query\": \"hello\"}"
+	result := fp.Parse(content)
+
+	if len(result.ToolCalls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(result.ToolCalls))
+	}
+	if result.ToolCalls[0].Function.Name != "search" {
+		t.Errorf("expected name 'search', got %q", result.ToolCalls[0].Function.Name)
+	}
+	if result.ToolCalls[0].Function.Arguments != `{"query": "hello"}` {
+		t.Errorf("unexpected args: %s", result.ToolCalls[0].Function.Arguments)
+	}
+}
+
+func TestParse_FunctionNamePattern_WithFunctionKey(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{})
+	content := "function: compute\narguments: {\"x\": 42}"
+	result := fp.Parse(content)
+
+	if len(result.ToolCalls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(result.ToolCalls))
+	}
+	if result.ToolCalls[0].Function.Name != "compute" {
+		t.Errorf("expected name 'compute', got %q", result.ToolCalls[0].Function.Name)
+	}
+}
+
+func TestParse_FunctionNamePattern_WithToolKey(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{})
+	content := "tool: web_search\nargs: {\"q\": \"test\"}"
+	result := fp.Parse(content)
+
+	if len(result.ToolCalls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(result.ToolCalls))
+	}
+	if result.ToolCalls[0].Function.Name != "web_search" {
+		t.Errorf("expected name 'web_search', got %q", result.ToolCalls[0].Function.Name)
+	}
+}
+
+func TestParse_FunctionNamePattern_WithArgsKey(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{})
+	content := "name: calculate\nargs: {\"expr\": \"1+1\"}"
+	result := fp.Parse(content)
+
+	if len(result.ToolCalls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(result.ToolCalls))
+	}
+	if result.ToolCalls[0].Function.Name != "calculate" {
+		t.Errorf("expected name 'calculate', got %q", result.ToolCalls[0].Function.Name)
+	}
+}
+
+func TestParse_FunctionNamePattern_WithInputKey(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{})
+	content := "name: parse\ninput: {\"key\": \"value\"}"
+	result := fp.Parse(content)
+
+	if len(result.ToolCalls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(result.ToolCalls))
+	}
+	if result.ToolCalls[0].Function.Name != "parse" {
+		t.Errorf("expected name 'parse', got %q", result.ToolCalls[0].Function.Name)
+	}
+}
+
+func TestParse_FunctionNamePattern_WithParametersKey(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{})
+	content := "name: fetch\nparameters: {\"url\": \"https://example.com\"}"
+	result := fp.Parse(content)
+
+	if len(result.ToolCalls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(result.ToolCalls))
+	}
+	if result.ToolCalls[0].Function.Name != "fetch" {
+		t.Errorf("expected name 'fetch', got %q", result.ToolCalls[0].Function.Name)
+	}
+}
+
+func TestParse_FunctionNamePattern_WithParamsKey(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{})
+	content := "name: read_file\nparams: {\"path\": \"/tmp/test\"}"
+	result := fp.Parse(content)
+
+	if len(result.ToolCalls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(result.ToolCalls))
+	}
+	if result.ToolCalls[0].Function.Name != "read_file" {
+		t.Errorf("expected name 'read_file', got %q", result.ToolCalls[0].Function.Name)
+	}
+}
+
+func TestParse_FunctionNamePattern_BareJSONArgs(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{})
+	content := "name: search\n{\"query\": \"hello\", \"limit\": 10}"
+	result := fp.Parse(content)
+
+	if len(result.ToolCalls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(result.ToolCalls))
+	}
+	if result.ToolCalls[0].Function.Name != "search" {
+		t.Errorf("expected name 'search', got %q", result.ToolCalls[0].Function.Name)
+	}
+}
+
+func TestParse_FunctionNamePattern_MultilineJSON(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{})
+	content := `name: search
+arguments: {
+  "query": "hello",
+  "limit": 10
+}`
+	result := fp.Parse(content)
+
+	if len(result.ToolCalls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(result.ToolCalls))
+	}
+	if result.ToolCalls[0].Function.Name != "search" {
+		t.Errorf("expected name 'search', got %q", result.ToolCalls[0].Function.Name)
+	}
+}
+
+func TestParse_FunctionNamePattern_QuotedName(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{})
+	content := `name: "search_tool"
+arguments: {"query": "hello"}`
+	result := fp.Parse(content)
+
+	if len(result.ToolCalls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(result.ToolCalls))
+	}
+	if result.ToolCalls[0].Function.Name != "search_tool" {
+		t.Errorf("expected name 'search_tool', got %q", result.ToolCalls[0].Function.Name)
+	}
+}
+
+func TestParse_FunctionNamePattern_SingleQuotedName(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{})
+	content := `name: 'search_tool'
+arguments: {"query": "hello"}`
+	result := fp.Parse(content)
+
+	if len(result.ToolCalls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(result.ToolCalls))
+	}
+	if result.ToolCalls[0].Function.Name != "search_tool" {
+		t.Errorf("expected name 'search_tool', got %q", result.ToolCalls[0].Function.Name)
+	}
+}
+
+func TestParse_FunctionNamePattern_WithSurroundingText(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{})
+	content := "I'll help you with that.\n\nname: search\narguments: {\"query\": \"test\"}\n\nLet me know the results."
+	result := fp.Parse(content)
+
+	if len(result.ToolCalls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(result.ToolCalls))
+	}
+	if result.ToolCalls[0].Function.Name != "search" {
+		t.Errorf("expected name 'search', got %q", result.ToolCalls[0].Function.Name)
+	}
+}
+
+func TestParse_FunctionNamePattern_CaseInsensitiveKey(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{})
+	content := "Name: SearchTool\nArguments: {\"q\": \"test\"}"
+	result := fp.Parse(content)
+
+	if len(result.ToolCalls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(result.ToolCalls))
+	}
+	if result.ToolCalls[0].Function.Name != "SearchTool" {
+		t.Errorf("expected name 'SearchTool', got %q", result.ToolCalls[0].Function.Name)
+	}
+}
+
+func TestParse_FunctionNamePattern_UnknownToolFiltered(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{
+		KnownToolNames: func(s string) bool { return s == "allowed" },
+	})
+	content := "name: denied\narguments: {\"x\": 1}"
+	result := fp.Parse(content)
+
+	if len(result.ToolCalls) != 0 {
+		t.Errorf("expected 0 tool calls (unknown tool filtered), got %d", len(result.ToolCalls))
+	}
+}
+
+func TestParse_FunctionNamePattern_NoArguments(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{})
+	content := "name: search"
+	result := fp.Parse(content)
+
+	// No arguments found, so no tool call should be extracted
+	if len(result.ToolCalls) != 0 {
+		t.Errorf("expected 0 tool calls (no arguments), got %d", len(result.ToolCalls))
+	}
+}
+
+func TestParse_FunctionNamePattern_InvalidJSONArguments(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{})
+	content := "name: search\narguments: not valid json"
+	result := fp.Parse(content)
+
+	// Invalid JSON arguments should not produce a tool call
+	if len(result.ToolCalls) != 0 {
+		t.Errorf("expected 0 tool calls (invalid JSON), got %d", len(result.ToolCalls))
+	}
+}
+
+func TestParse_FunctionNamePattern_ArrayArguments(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{})
+	content := "name: batch_process\narguments: [{\"id\": 1}, {\"id\": 2}]"
+	result := fp.Parse(content)
+
+	if len(result.ToolCalls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(result.ToolCalls))
+	}
+	if result.ToolCalls[0].Function.Name != "batch_process" {
+		t.Errorf("expected name 'batch_process', got %q", result.ToolCalls[0].Function.Name)
+	}
+}
+
+func TestParse_FunctionNamePattern_EmptyObjectArgs(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{})
+	content := "name: ping\narguments: {}"
+	result := fp.Parse(content)
+
+	if len(result.ToolCalls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(result.ToolCalls))
+	}
+	if result.ToolCalls[0].Function.Name != "ping" {
+		t.Errorf("expected name 'ping', got %q", result.ToolCalls[0].Function.Name)
+	}
+	if result.ToolCalls[0].Function.Arguments != "{}" {
+		t.Errorf("unexpected args: %s", result.ToolCalls[0].Function.Arguments)
+	}
+}
+
+func TestParse_FunctionNamePattern_FunctionNameKey(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{})
+	content := "function_name: my_tool\narguments: {\"x\": 1}"
+	result := fp.Parse(content)
+
+	if len(result.ToolCalls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(result.ToolCalls))
+	}
+	if result.ToolCalls[0].Function.Name != "my_tool" {
+		t.Errorf("expected name 'my_tool', got %q", result.ToolCalls[0].Function.Name)
+	}
+}
+
+func TestParse_FunctionNamePattern_ToolNameKey(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{})
+	content := "tool_name: api_call\narguments: {\"endpoint\": \"/users\"}"
+	result := fp.Parse(content)
+
+	if len(result.ToolCalls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(result.ToolCalls))
+	}
+	if result.ToolCalls[0].Function.Name != "api_call" {
+		t.Errorf("expected name 'api_call', got %q", result.ToolCalls[0].Function.Name)
+	}
+}
+
+func TestParse_FunctionNamePattern_CleanedContent(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{})
+	content := "Before\n\nname: search\narguments: {\"query\": \"test\"}\n\nAfter"
+	result := fp.Parse(content)
+
+	if len(result.ToolCalls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(result.ToolCalls))
+	}
+	// Cleaned content should remove the name/arguments block
+	if strings.Contains(result.CleanedContent, "name: search") {
+		t.Error("cleaned content should not contain 'name: search'")
+	}
+	if strings.Contains(result.CleanedContent, "arguments:") {
+		t.Error("cleaned content should not contain 'arguments:'")
+	}
+	// Surrounding text should be preserved
+	if !strings.Contains(result.CleanedContent, "Before") {
+		t.Error("expected 'Before' in cleaned content")
+	}
+	if !strings.Contains(result.CleanedContent, "After") {
+		t.Error("expected 'After' in cleaned content")
+	}
+}
+
+func TestParse_FunctionNamePattern_TypeDefaultsToFunction(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{})
+	content := "name: search\narguments: {\"q\": \"test\"}"
+	result := fp.Parse(content)
+
+	if len(result.ToolCalls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(result.ToolCalls))
+	}
+	if result.ToolCalls[0].Type != "function" {
+		t.Errorf("expected type 'function', got %q", result.ToolCalls[0].Type)
+	}
+}
+
+func TestParse_FunctionNamePattern_QuotedJSONArgs(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{})
+	content := `name: search
+arguments: "{\"query": "hello"}"`
+	result := fp.Parse(content)
+
+	if len(result.ToolCalls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(result.ToolCalls))
+	}
+	if result.ToolCalls[0].Function.Name != "search" {
+		t.Errorf("expected name 'search', got %q", result.ToolCalls[0].Function.Name)
+	}
+	if result.ToolCalls[0].Function.Arguments != `{"query": "hello"}` {
+		t.Errorf("unexpected args: %s", result.ToolCalls[0].Function.Arguments)
+	}
+}
+
+func TestParse_FunctionNamePattern_NoFalsePositives(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{})
+	// "name" appears in prose but not as a key-value pattern with JSON args
+	content := "My name is John and I like to search for things."
+	result := fp.Parse(content)
+
+	if len(result.ToolCalls) != 0 {
+		t.Errorf("expected 0 tool calls from prose, got %d", len(result.ToolCalls))
+	}
+}
+
+func TestParse_FunctionNamePattern_MultiplePatterns(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{})
+	content := "name: search\narguments: {\"q\": \"hello\"}\n\nname: compute\narguments: {\"x\": 42}"
+	result := fp.Parse(content)
+
+	if len(result.ToolCalls) != 2 {
+		t.Fatalf("expected 2 tool calls, got %d", len(result.ToolCalls))
+	}
+	if result.ToolCalls[0].Function.Name != "search" {
+		t.Errorf("expected first name 'search', got %q", result.ToolCalls[0].Function.Name)
+	}
+	if result.ToolCalls[1].Function.Name != "compute" {
+		t.Errorf("expected second name 'compute', got %q", result.ToolCalls[1].Function.Name)
+	}
+}
+
+func TestParse_FunctionNamePattern_WordBoundaryCheck(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{})
+	// "command_name:" contains "name:" but should NOT match because
+	// the character before "name:" is not whitespace.
+	content := "command_name: search\narguments: {\"q\": \"test\"}"
+	result := fp.Parse(content)
+
+	if len(result.ToolCalls) != 0 {
+		t.Errorf("expected 0 tool calls (name: inside command_name:), got %d", len(result.ToolCalls))
+	}
+}
+
+func TestParse_FunctionNamePattern_ToolUseNotMatched(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{})
+	// "tool_use:" contains "tool:" but should NOT match because
+	// the character before "tool:" is not whitespace.
+	content := "tool_use: calc\ninput: {\"expr\": \"1+1\"}"
+	result := fp.Parse(content)
+
+	if len(result.ToolCalls) != 0 {
+		t.Errorf("expected 0 tool calls (tool: inside tool_use:), got %d", len(result.ToolCalls))
+	}
+}
+
+func TestParse_FunctionNamePattern_ArgsOnSeparateLine(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{})
+	// Arguments key is on its own line, JSON is on the next line.
+	// The block boundary should include both the args key line AND the JSON line.
+	content := "name: search\n\nargs:\n{\"query\": \"test\"}"
+	result := fp.Parse(content)
+
+	if len(result.ToolCalls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(result.ToolCalls))
+	}
+	if result.ToolCalls[0].Function.Name != "search" {
+		t.Errorf("expected name 'search', got %q", result.ToolCalls[0].Function.Name)
+	}
+	if result.ToolCalls[0].Function.Arguments != `{"query": "test"}` {
+		t.Errorf("unexpected args: %s", result.ToolCalls[0].Function.Arguments)
+	}
+	// Cleaned content should NOT contain the JSON body
+	if strings.Contains(result.CleanedContent, `"query"`) {
+		t.Error("cleaned content should not contain JSON body")
+	}
+}
+
+func TestParse_FunctionNamePattern_ArgsOnSeparateLine_MultipleCalls(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{})
+	content := "name: search\nargs:\n{\"query\": \"test\"}\n\nname: compute\nargs:\n{\"x\": 1}"
+	result := fp.Parse(content)
+
+	if len(result.ToolCalls) != 2 {
+		t.Fatalf("expected 2 tool calls, got %d", len(result.ToolCalls))
+	}
+	if result.ToolCalls[0].Function.Name != "search" {
+		t.Errorf("expected first name 'search', got %q", result.ToolCalls[0].Function.Name)
+	}
+	if result.ToolCalls[1].Function.Name != "compute" {
+		t.Errorf("expected second name 'compute', got %q", result.ToolCalls[1].Function.Name)
+	}
+	// Cleaned content should NOT contain either JSON body
+	if strings.Contains(result.CleanedContent, `"query"`) {
+		t.Error("cleaned content should not contain first JSON body")
+	}
+	if strings.Contains(result.CleanedContent, `"x"`) {
+		t.Error("cleaned content should not contain second JSON body")
+	}
+}
+
+// TestParse_FunctionNamePattern_IndentedArgsKey verifies that multiline JSON
+// with leading whitespace on the args key line is correctly extracted.
+// Regression test for the trimmed-line offset bug (Issue #1).
+func TestParse_FunctionNamePattern_IndentedArgsKey(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{})
+	content := "name: search\n  args: {\n    \"query\": \"test\"\n  }"
+	result := fp.Parse(content)
+
+	if len(result.ToolCalls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(result.ToolCalls))
+	}
+	if result.ToolCalls[0].Function.Name != "search" {
+		t.Errorf("expected name 'search', got %q", result.ToolCalls[0].Function.Name)
+	}
+	// Multi-line JSON is normalized to compact canonical form by re-marshaling.
+	if result.ToolCalls[0].Function.Arguments != `{"query":"test"}` {
+		t.Errorf("unexpected args: %s", result.ToolCalls[0].Function.Arguments)
+	}
+}
+
+// TestParse_FunctionNamePattern_IndentedBareJSON verifies that bare JSON
+// with leading whitespace is correctly extracted after the name line.
+// Regression test for the trimmed-line offset bug (Issue #1).
+func TestParse_FunctionNamePattern_IndentedBareJSON(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{})
+	content := "name: search\n  {\n    \"query\": \"test\"\n  }"
+	result := fp.Parse(content)
+
+	if len(result.ToolCalls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(result.ToolCalls))
+	}
+	if result.ToolCalls[0].Function.Name != "search" {
+		t.Errorf("expected name 'search', got %q", result.ToolCalls[0].Function.Name)
+	}
+	// Multi-line JSON is normalized to compact canonical form by re-marshaling.
+	if result.ToolCalls[0].Function.Arguments != `{"query":"test"}` {
+		t.Errorf("unexpected args: %s", result.ToolCalls[0].Function.Arguments)
+	}
+}
+
+// TestParse_FunctionNamePattern_ArgsKeyWordBoundary verifies that
+// "myarguments: {...}" does NOT match because the word boundary check
+// prevents "myarguments:" from being treated as "arguments:".
+// Regression test for Issue #2.
+func TestParse_FunctionNamePattern_ArgsKeyWordBoundary(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{})
+	content := "name: search\nmyarguments: {\"q\": \"test\"}"
+	result := fp.Parse(content)
+
+	if len(result.ToolCalls) != 0 {
+		t.Errorf("expected 0 tool calls (myarguments: should not match arguments:), got %d", len(result.ToolCalls))
+	}
+}
