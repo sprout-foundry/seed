@@ -224,6 +224,18 @@ func (a *Agent) Provider() Provider {
 	return a.provider
 }
 
+// SetProvider swaps the provider at runtime. The new provider will be used
+// for all subsequent calls. It is safe to call between queries; calling
+// during an active query may cause undefined behavior.
+// Panics if p is nil — use NewAgent to create an agent without a provider
+// and then call SetProvider with a non-nil provider.
+func (a *Agent) SetProvider(p Provider) {
+	if p == nil {
+		panic("core: SetProvider called with nil provider")
+	}
+	a.provider = p
+}
+
 // InjectInput injects a user message into the conversation via a buffered
 // channel. Returns true if the input was accepted (queued for the next loop
 // iteration), false if a prior injection is still pending. The injection is

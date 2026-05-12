@@ -377,3 +377,104 @@ func TestAgent_ProviderAccess(t *testing.T) {
 		t.Errorf("expected 'test-model', got %q", info.Model)
 	}
 }
+
+func TestAgent_SetProvider(t *testing.T) {
+	original := &mockProvider{
+		info: ProviderInfo{Model: "original-model", ContextSize: 10000},
+	}
+	a, err := NewAgent(Options{
+		Provider: original,
+		Executor: &mockExecutor{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify initial provider
+	info := a.Provider().Info()
+	if info.Model != "original-model" {
+		t.Errorf("expected 'original-model', got %q", info.Model)
+	}
+
+	// Swap to new provider
+	newProvider := &mockProvider{
+		info: ProviderInfo{Model: "swapped-model", ContextSize: 128000},
+	}
+	a.SetProvider(newProvider)
+
+	// Verify the swap took effect
+	info = a.Provider().Info()
+	if info.Model != "swapped-model" {
+		t.Errorf("expected 'swapped-model', got %q", info.Model)
+	}
+}
+
+func TestAgent_SetProvider_NilPanics(t *testing.T) {
+	a, err := NewAgent(Options{
+		Provider: &mockProvider{},
+		Executor: &mockExecutor{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic on SetProvider(nil)")
+		}
+	}()
+	a.SetProvider(nil)
+}
+
+func TestAgent_SetProvider_AffectsSubsequentRuns(t *testing.T) {
+	providerA := &mockProvider{
+		chatResp: &ChatResponse{
+			Choices: []ChatChoice{{Message: Message{Role: "assistant", Content: "Response A"}}},
+			Usage:   ChatUsage{TotalTokens: 10},
+		},
+		info:       ProviderInfo{Model: "model-a", ContextSize: 10000},
+		tokenCount: 50,
+	}
+	providerB := &mockProvider{
+		chatResp: &ChatResponse{
+			Choices: []ChatChoice{{Message: Message{Role: "assistant", Content: "Response B"}}},
+			Usage:   ChatUsage{TotalTokens: 10},
+		},
+		info:       ProviderInfo{Model: "model-b", ContextSize: 128000},
+		tokenCount: 60,
+	}
+	a, err := NewAgent(Options{
+		Provider: providerA,
+		Executor: &mockExecutor{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// First run uses providerA
+	result, err := a.Run(context.Background(), "query 1")
+	if err != nil {
+		t.Fatalf("run 1 failed: %v", err)
+	}
+	if result != "Response A" {
+		t.Errorf("expected 'Response A', got %q", result)
+	}
+
+	// Swap provider
+	a.SetProvider(providerB)
+
+	// Second run uses providerB
+	result, err = a.Run(context.Background(), "query 2")
+	if err != nil {
+		t.Fatalf("run 2 failed: %v", err)
+	}
+	if result != "Response B" {
+		t.Errorf("expected 'Response B', got %q", result)
+	}
+
+	// Verify providerB was actually called
+	if providerB.EstimateTokens(&ChatRequest{}) != 60 {
+		t.Error("providerB token estimate mismatch")
+	}
+}

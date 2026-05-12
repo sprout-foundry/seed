@@ -100,9 +100,9 @@
 
 ## Configuration, Steering & Extensibility (SP-009)
 
-[] - CONFIG: Define `RetryConfig` struct — `MaxAttempts`, `InitialDelay`, `MaxDelay`, `Multiplier`, `Jitter` fields with sensible defaults. `core/agent.go`
-[] - CONFIG: Wire `RetryConfig` into `ProcessQuery` retry loop — use consumer-provided values instead of hardcoded defaults. `core/conversation.go`
-[] - CONFIG: Add `Agent.SetProvider(Provider)` — swap provider at runtime for subsequent calls. `core/agent.go`
+[x] - CONFIG: Define `RetryConfig` struct — `MaxAttempts`, `InitialDelay`, `MaxDelay`, `Multiplier`, `Jitter` fields with sensible defaults. `core/agent.go`
+[x] - CONFIG: Wire `RetryConfig` into `ProcessQuery` retry loop — use consumer-provided values instead of hardcoded defaults. `core/conversation.go`
+[x] - CONFIG: Add `Agent.SetProvider(Provider)` — swap provider at runtime for subsequent calls. `core/agent.go`
 [] - STEER: Add `Agent.Steer(Message)` — queue a transient message prepended to the next API call, consumed once, not persisted. `core/agent.go`
 [] - STEER: Add `Agent.SteerSystem(string)` — convenience for injecting system-level steering. `core/agent.go`
 [] - STEER: Wire steering into `prepareMessages()` — transient messages appended after history before API call. `core/conversation.go`
