@@ -1336,6 +1336,115 @@ func TestE2E_Cancellation_NoEffectWithoutCancel(t *testing.T) {
 	h.AssertProviderCalledN(1)
 }
 
+// --- Continuation Budget Reset Tests ---
+
+func TestE2E_ContinuationBudget_ResetsOnToolCalls(t *testing.T) {
+	// This test verifies that the continuation budget resets when tool calls
+	// occur between incomplete responses. Without the reset, the budget would
+	// accumulate incorrectly and the loop could force-finalize prematurely.
+	//
+	// Flow:
+	// 1. Provider returns an incomplete response → continuationCount = 1
+	// 2. Provider returns a tool call → continuationCount resets to 0
+	// 3. Provider returns an incomplete response → continuationCount = 1 again
+	// 4. Provider returns another tool call → continuationCount resets to 0 again
+	// 5. Provider returns a complete final answer → loop completes normally
+	//
+	// Total provider calls: 5
+	// Total executor calls: 2
+
+	h := NewHarnessWithT(t)
+
+	// Call 1: incomplete response (ends with "...") — triggers continuation
+	h.Provider().AddTextResponse("First incomplete response...")
+
+	// Call 2: tool call response — resets continuationCount to 0
+	h.Provider().AddToolCallResponse(
+		"Let me check the data.",
+		core.ToolCall{
+			ID: "call_1",
+			Function: core.ToolCallFunction{
+				Name:      "fetch_data",
+				Arguments: `{"id": "123"}`,
+			},
+		},
+	)
+
+	// Call 3: incomplete response (ends with "...") — continuationCount = 1 again
+	h.Provider().AddTextResponse("Looking at the results...")
+
+	// Call 4: another tool call — resets continuationCount to 0 again
+	h.Provider().AddToolCallResponse(
+		"I'll aggregate the data.",
+		core.ToolCall{
+			ID: "call_2",
+			Function: core.ToolCallFunction{
+				Name:      "aggregate",
+				Arguments: `{"source": "123"}`,
+			},
+		},
+	)
+
+	// Call 5: final complete answer — loop completes
+	h.Provider().AddTextResponse("The aggregated data shows all metrics are within acceptable ranges.")
+
+	// Executor returns results for both tool calls
+	h.Executor().AddToolResult("call_1", "raw data content")
+	h.Executor().AddToolResult("call_2", "aggregated: {\"status\": \"ok\"}")
+
+	agent := h.NewAgent()
+	result, err := agent.Run(context.Background(), "Check data and aggregate")
+	h.AssertNoError(err)
+	h.AssertEquals(result, "The aggregated data shows all metrics are within acceptable ranges.")
+
+	// Provider called 5 times:
+	//  1. Initial incomplete response → continuation
+	//  2. Tool call response → executes, resets continuationCount
+	//  3. Second incomplete response → continuation (count = 1)
+	//  4. Second tool call → executes, resets continuationCount
+	//  5. Final answer → completes
+	h.AssertProviderCalledN(5)
+	h.AssertExecutorCalledN(2)
+
+	// State messages (8 total):
+	//  1. user: "Check data and aggregate"
+	//  2. assistant: "First incomplete response..."
+	//  3. assistant: "Let me check the data." (with tool call)
+	//  4. tool: "raw data content"
+	//  5. assistant: "Looking at the results..."
+	//  6. assistant: "I'll aggregate the data." (with tool call)
+	//  7. tool: "aggregated: {\"status\": \"ok\"}"
+	//  8. assistant: "The aggregated data shows..."
+	h.AssertStateHasNMessages(agent, 8)
+}
+
+func TestE2E_ContinuationBudget_TruncatedAndTentativeOverlap(t *testing.T) {
+	// A response that matches both LooksTruncated (ends with "...") and
+	// LooksLikeTentativePostToolResponse (starts with "Let me") should only
+	// consume one continuation budget. The truncated check takes priority
+	// (if/else if chain), so only that check fires.
+	h := NewHarnessWithT(t)
+
+	// First two responses match both truncated (ends with "...") and
+	// tentative (starts with "Let me"). Each should consume only 1
+	// continuation budget (not 2) because the if/else if chain ensures
+	// only the truncated check fires. The final response is substantive
+	// enough (>40 words) that it won't be flagged as tentative.
+	h.Provider().AddTextResponse("Let me check this...")
+	h.Provider().AddTextResponse("Let me try again...")
+	h.Provider().AddTextResponse("The file contains configuration data with multiple sections including database settings, cache parameters, and logging levels. All values are within acceptable ranges.")
+
+	agent := h.NewAgent()
+	_, err := agent.Run(context.Background(), "test")
+	h.AssertNoError(err)
+
+	// Provider called 3 times: 2 continuations (budget 2/3) + 1 final
+	h.AssertProviderCalledN(3)
+
+	// State: user + 3 assistant messages
+	h.AssertStateHasNMessages(agent, 4)
+}
+
 // --- Streaming Tests ---
 
 func TestE2E_Streaming_CallbacksFire(t *testing.T) {

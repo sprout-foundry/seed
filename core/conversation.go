@@ -153,10 +153,10 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 			default:
 			}
 
-			// Check if the response appears truncated — if so, ask the model
-			// to continue rather than finalizing. Uses LooksTruncated (not
-			// IsIncomplete) to avoid flagging short but complete answers like
-			// "Done." as needing continuation.
+			// Truncation check takes priority over the tentative check.
+			// A structural truncation marker (e.g., trailing "...") is a
+			// stronger signal of incomplete output than tentative phrasing,
+			// so only one check fires per response.
 			if a.validator != nil && a.validator.LooksTruncated(assistantMsg.Content) {
 				if ch.continuationCount < maxContinuations {
 					ch.continuationCount++
@@ -169,16 +169,7 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 					continue
 				}
 				ch.agent.debugLog("[validate] Max continuations (%d) reached, force-finalizing\n", maxContinuations)
-			}
-
-			// Check if the response is a tentative planning stub — e.g.,
-			// "Let me check..." or "I'll need to..." — where the model is
-			// planning what to do next instead of providing a real answer.
-			// The validator method name references "PostTool" because this
-			// pattern is most common after tool execution, but the check
-			// applies to any assistant message with no tool calls.
-			// Continue the loop so the model can produce an actual response.
-			if a.validator != nil && a.validator.LooksLikeTentativePostToolResponse(assistantMsg.Content) {
+			} else if a.validator != nil && a.validator.LooksLikeTentativePostToolResponse(assistantMsg.Content) {
 				if ch.continuationCount < maxContinuations {
 					ch.continuationCount++
 					ch.agent.debugLog("[validate] Tentative response detected (continuation %d/%d), looping again\n",
