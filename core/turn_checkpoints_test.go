@@ -92,9 +92,14 @@ func TestBuildCheckpointCompactedMessages_SingleCheckpoint(t *testing.T) {
 		t.Errorf("unexpected summary content: %s", outMsgs[1].Content)
 	}
 
-	// Checkpoint should be consumed (removed from result).
-	if len(outCps) != 0 {
-		t.Errorf("expected 0 remaining checkpoints, got %d", len(outCps))
+	// Consumed checkpoint is kept in the returned list so future calls
+	// can re-apply its summary against the growing message history.
+	if len(outCps) != 1 {
+		t.Errorf("expected 1 checkpoint (kept for future re-application), got %d", len(outCps))
+	}
+	// Checkpoint indices are unchanged (reference raw state.Messages()).
+	if outCps[0].StartIndex != 1 || outCps[0].EndIndex != 2 {
+		t.Errorf("expected checkpoint [1,2], got [%d,%d]", outCps[0].StartIndex, outCps[0].EndIndex)
 	}
 }
 
@@ -120,9 +125,16 @@ func TestBuildCheckpointCompactedMessages_MultipleCheckpoints(t *testing.T) {
 		t.Fatalf("expected 5 messages, got %d", len(outMsgs))
 	}
 
-	// First two checkpoints should be consumed.
-	if len(outCps) != 0 {
-		t.Errorf("expected 0 remaining checkpoints, got %d", len(outCps))
+	// Both consumed checkpoints are kept for future re-application.
+	if len(outCps) != 2 {
+		t.Errorf("expected 2 checkpoints (kept for future re-application), got %d", len(outCps))
+	}
+	// Indices unchanged (reference raw state.Messages()).
+	if outCps[0].StartIndex != 1 || outCps[0].EndIndex != 2 {
+		t.Errorf("expected checkpoint [1,2], got [%d,%d]", outCps[0].StartIndex, outCps[0].EndIndex)
+	}
+	if outCps[1].StartIndex != 3 || outCps[1].EndIndex != 4 {
+		t.Errorf("expected checkpoint [3,4], got [%d,%d]", outCps[1].StartIndex, outCps[1].EndIndex)
 	}
 
 	// Verify structure: system, summary1, summary2, user3, assistant3
@@ -155,26 +167,27 @@ func TestBuildCheckpointCompactedMessages_MixedConsumable(t *testing.T) {
 	outMsgs, outCps := BuildCheckpointCompactedMessages(msgs, checkpoints)
 
 	// Checkpoint 1 consumed: [0,1] -> 1 summary. 1 message removed.
-	// Checkpoint 2 unconsumable: kept as-is (original indices 2,3).
+	// Checkpoint 2 unconsumable: kept as-is.
 	// Checkpoint 3 consumed: original [4,5] -> 1 summary. 1 message removed.
 	// Result messages: summary1, user2, assistant2, summary3 = 4 messages.
-	//
-	// Remaining checkpoint 2: original [2,3].
-	// Only consumed range [0,1] (origEnd=1) is before [2,3], so removedBefore = 1.
-	// Shifted: [2-1, 3-1] = [1, 2].
-	// Consumed range [4,5] (origEnd=5) is NOT before [2,3], so it does not shift.
 
 	if len(outMsgs) != 4 {
 		t.Errorf("expected 4 messages, got %d", len(outMsgs))
 	}
 
-	// Remaining: only the unconsumable checkpoint 2 (shifted).
-	if len(outCps) != 1 {
-		t.Errorf("expected 1 remaining checkpoint, got %d", len(outCps))
+	// All checkpoints returned (consumed ones kept for future re-application).
+	if len(outCps) != 3 {
+		t.Errorf("expected 3 checkpoints (all kept), got %d", len(outCps))
 	}
-	// Shifted from [2,3] to [1,2] (only the consumed range before it counts).
-	if outCps[0].StartIndex != 1 || outCps[0].EndIndex != 2 {
-		t.Errorf("expected checkpoint [1,2], got [%d,%d]", outCps[0].StartIndex, outCps[0].EndIndex)
+	// Checkpoint indices unchanged (reference raw state.Messages()).
+	if outCps[0].StartIndex != 0 || outCps[0].EndIndex != 1 {
+		t.Errorf("expected checkpoint [0,1], got [%d,%d]", outCps[0].StartIndex, outCps[0].EndIndex)
+	}
+	if outCps[1].StartIndex != 2 || outCps[1].EndIndex != 3 {
+		t.Errorf("expected checkpoint [2,3], got [%d,%d]", outCps[1].StartIndex, outCps[1].EndIndex)
+	}
+	if outCps[2].StartIndex != 4 || outCps[2].EndIndex != 5 {
+		t.Errorf("expected checkpoint [4,5], got [%d,%d]", outCps[2].StartIndex, outCps[2].EndIndex)
 	}
 }
 
@@ -287,8 +300,9 @@ func TestBuildCheckpointCompactedMessages_AllButLastConsumed(t *testing.T) {
 	if len(outMsgs) != 5 {
 		t.Errorf("expected 5 messages, got %d", len(outMsgs))
 	}
-	if len(outCps) != 0 {
-		t.Errorf("expected 0 remaining checkpoints, got %d", len(outCps))
+	// All consumed checkpoints are kept for future re-application.
+	if len(outCps) != 3 {
+		t.Errorf("expected 3 checkpoints (kept for future re-application), got %d", len(outCps))
 	}
 }
 
@@ -321,8 +335,9 @@ func TestBuildCheckpointCompactedMessages_CheckpointSummariesOnly(t *testing.T) 
 	if outMsgs[2].Role != "user" || outMsgs[2].Content != "User asked about topic B." {
 		t.Errorf("third message wrong: %+v", outMsgs[2])
 	}
-	if len(outCps) != 0 {
-		t.Errorf("expected 0 remaining checkpoints, got %d", len(outCps))
+	// Both consumed checkpoints are kept for future re-application.
+	if len(outCps) != 2 {
+		t.Errorf("expected 2 checkpoints (kept for future re-application), got %d", len(outCps))
 	}
 }
 
@@ -348,9 +363,9 @@ func TestBuildCheckpointCompactedMessages_CheckpointAfterConsecutiveAssistant(t 
 	if len(outMsgs) != 4 {
 		t.Errorf("expected 4 messages, got %d", len(outMsgs))
 	}
-	// Checkpoint was consumed, so no remaining checkpoints.
-	if len(outCps) != 0 {
-		t.Errorf("expected 0 remaining checkpoints, got %d", len(outCps))
+	// Consumed checkpoint is kept for future re-application.
+	if len(outCps) != 1 {
+		t.Errorf("expected 1 checkpoint (kept for future re-application), got %d", len(outCps))
 	}
 	// Verify structure: user(summary), summary, user, assistant
 	if outMsgs[0].Role != "user" || outMsgs[0].Content != "Query" {
@@ -405,8 +420,9 @@ func TestBuildCheckpointCompactedMessages_AllMessagesConsumed(t *testing.T) {
 	if len(outMsgs) != 1 {
 		t.Errorf("expected 1 message, got %d", len(outMsgs))
 	}
-	if len(outCps) != 0 {
-		t.Errorf("expected 0 remaining checkpoints, got %d", len(outCps))
+	// Consumed checkpoint is kept for future re-application.
+	if len(outCps) != 1 {
+		t.Errorf("expected 1 checkpoint (kept for future re-application), got %d", len(outCps))
 	}
 }
 
@@ -434,16 +450,19 @@ func TestBuildCheckpointCompactedMessages_ThreeCheckpointsWithOneUnconsumed(t *t
 		t.Errorf("expected 4 messages, got %d", len(outMsgs))
 	}
 
-	// Only checkpoint 2 should remain.
-	if len(outCps) != 1 {
-		t.Errorf("expected 1 remaining checkpoint, got %d", len(outCps))
+	// All checkpoints returned (consumed ones kept for future re-application).
+	if len(outCps) != 3 {
+		t.Errorf("expected 3 checkpoints (all kept), got %d", len(outCps))
 	}
-	// Checkpoint 2: original [2,3].
-	// Consumed range [0,1] (origEnd=1) is before [2,3]: removedBefore = 1.
-	// Consumed range [4,5] (origEnd=5) is NOT before [2,3]: no additional shift.
-	// Shifted: [2-1, 3-1] = [1, 2].
-	if outCps[0].StartIndex != 1 || outCps[0].EndIndex != 2 {
-		t.Errorf("expected shifted [1,2], got [%d,%d]", outCps[0].StartIndex, outCps[0].EndIndex)
+	// Checkpoint indices unchanged (reference raw state.Messages()).
+	if outCps[0].StartIndex != 0 || outCps[0].EndIndex != 1 {
+		t.Errorf("expected checkpoint [0,1], got [%d,%d]", outCps[0].StartIndex, outCps[0].EndIndex)
+	}
+	if outCps[1].StartIndex != 2 || outCps[1].EndIndex != 3 {
+		t.Errorf("expected checkpoint [2,3], got [%d,%d]", outCps[1].StartIndex, outCps[1].EndIndex)
+	}
+	if outCps[2].StartIndex != 4 || outCps[2].EndIndex != 5 {
+		t.Errorf("expected checkpoint [4,5], got [%d,%d]", outCps[2].StartIndex, outCps[2].EndIndex)
 	}
 }
 
@@ -466,7 +485,7 @@ func TestBuildCheckpointCompactedMessages_OverlappingCheckpoints(t *testing.T) {
 
 	outMsgs, outCps := BuildCheckpointCompactedMessages(msgs, checkpoints)
 
-	// First consumed [0,2], second overlaps so it's kept as remaining.
+	// First consumed [0,2], second overlaps so it's not consumed.
 	// Result: summary S1 + msgs[3] + msgs[4] + msgs[5] = 4 messages.
 	if len(outMsgs) != 4 {
 		t.Fatalf("expected 4 messages, got %d", len(outMsgs))
@@ -475,16 +494,16 @@ func TestBuildCheckpointCompactedMessages_OverlappingCheckpoints(t *testing.T) {
 		t.Errorf("expected first message to be S1 summary, got %q", outMsgs[0].Content)
 	}
 
-	// The overlapping checkpoint should remain (shifted).
-	if len(outCps) != 1 {
-		t.Errorf("expected 1 remaining checkpoint, got %d", len(outCps))
+	// Both checkpoints returned (first consumed, second overlaps so unconsumed).
+	if len(outCps) != 2 {
+		t.Errorf("expected 2 checkpoints (all kept), got %d", len(outCps))
 	}
-	// Original [2,4] covered Q2(2), A2(3), Q3(4).
-	// Q2 was consumed by cp1 [0,2], so trimmed to [3,4] (A2, Q3).
-	// Consumed range [0,2] removed 2 messages (3->1), so shift by 2.
-	// Shifted: [3-2, 4-2] = [1, 2].
-	if outCps[0].StartIndex != 1 || outCps[0].EndIndex != 2 {
-		t.Errorf("expected shifted [1,2], got [%d,%d]", outCps[0].StartIndex, outCps[0].EndIndex)
+	// Checkpoint indices unchanged (reference raw state.Messages()).
+	if outCps[0].StartIndex != 0 || outCps[0].EndIndex != 2 {
+		t.Errorf("expected checkpoint [0,2], got [%d,%d]", outCps[0].StartIndex, outCps[0].EndIndex)
+	}
+	if outCps[1].StartIndex != 2 || outCps[1].EndIndex != 4 {
+		t.Errorf("expected checkpoint [2,4], got [%d,%d]", outCps[1].StartIndex, outCps[1].EndIndex)
 	}
 }
 
@@ -516,8 +535,9 @@ func TestBuildCheckpointCompactedMessages_ConsecutiveAssistantMerge(t *testing.T
 	if !strings.Contains(outMsgs[1].Content, "A1") || !strings.Contains(outMsgs[1].Content, "A2") {
 		t.Errorf("expected merged content, got %q", outMsgs[1].Content)
 	}
-	if len(outCps) != 0 {
-		t.Errorf("expected 0 remaining checkpoints, got %d", len(outCps))
+	// Consumed checkpoint is kept for future re-application.
+	if len(outCps) != 1 {
+		t.Errorf("expected 1 checkpoint (kept for future re-application), got %d", len(outCps))
 	}
 }
 
@@ -1946,9 +1966,9 @@ func TestBuildCheckpointCompactedMessages_consecutive_assistant_boundary(t *test
 	if !strings.Contains(outMsgs[1].Content, "second assistant response") {
 		t.Errorf("merged content missing 'second assistant response': %q", outMsgs[1].Content)
 	}
-	// Checkpoint consumed, no remaining.
-	if len(outCps) != 0 {
-		t.Errorf("expected 0 remaining checkpoints, got %d", len(outCps))
+	// Consumed checkpoint is kept for future re-application.
+	if len(outCps) != 1 {
+		t.Errorf("expected 1 checkpoint (kept for future re-application), got %d", len(outCps))
 	}
 }
 
@@ -1988,8 +2008,8 @@ func TestBuildCheckpointCompactedMessages_normal_compaction_no_consecutive(t *te
 			t.Errorf("unexpected consecutive assistants at indices %d and %d", i-1, i)
 		}
 	}
-	// Both checkpoints consumed.
-	if len(outCps) != 0 {
-		t.Errorf("expected 0 remaining checkpoints, got %d", len(outCps))
+	// Both checkpoints consumed, kept for future re-application.
+	if len(outCps) != 2 {
+		t.Errorf("expected 2 checkpoints (kept for future re-application), got %d", len(outCps))
 	}
 }

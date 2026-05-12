@@ -7,6 +7,14 @@ func (ch *ConversationHandler) prepareMessages() []Message {
 	// Get current messages
 	messages := ch.agent.state.Messages()
 
+	// Checkpoint compaction: replace consumed checkpoint ranges with summary
+	// messages before any other transformation. Checkpoint indices reference
+	// the raw state.Messages() slice, so this must run first.
+	checkpoints := ch.agent.state.GetCheckpoints()
+	if len(checkpoints) > 0 {
+		messages, _ = BuildCheckpointCompactedMessages(messages, checkpoints)
+	}
+
 	// Strip system messages from history (we always prepend current system prompt)
 	filtered := make([]Message, 0, len(messages))
 	for _, m := range messages {
