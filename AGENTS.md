@@ -82,3 +82,6 @@ See [roadmap/README.md](./roadmap/README.md) for current spec status and open wo
 5. **Context cancellation** requires checking `ctx.Done()` in the main loop and exposing `agent.Interrupt()`.
 6. **Keep `conversation.go` focused.** If it exceeds ~150 lines, extract `prepareMessages`, `compactMessages`, or `finalize` into separate files.
 7. **Run `make check`** before marking any task complete.
+8. **Max 400 lines per file.** If a file exceeds this, extract logical units into separate files.
+9. **Follow SRP.** Each file should have one clear responsibility; don't mix concerns.
+10. **Code should be self-documenting.** Use clear names and small, focused functions. Add comments only when the *why* isn't obvious from the code.

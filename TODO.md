@@ -122,8 +122,9 @@
 
 ## Response Processing Hardening (SP-011)
 
+[x] - NORMALIZE: Create `ToolCallNormalizer` struct with `Normalize(calls []ToolCall) NormalizedToolCalls` — strips `<|channel|>` suffix, generates missing IDs, deduplicates by ID+args, repairs JSON arguments, normalizes Type to "function". `core/tool_call_normalizer.go` (new file)
 [] - NORMALIZE: Create `ToolCallNormalizer` struct with `Normalize(calls []ToolCall) NormalizedToolCalls` — strips `<|channel|>` suffix, generates missing IDs, deduplicates by ID+args, repairs JSON arguments, normalizes Type to "function". `core/tool_call_normalizer.go` (new file)
-[] - NORMALIZE: Wire normalizer into `runLoop` — run on structured `tool_calls` before execution. `core/conversation.go`
+[x] - NORMALIZE: Wire normalizer into `runLoop` — run on structured `tool_calls` before execution. `core/conversation.go`
 [] - NORMALIZE: Handle malformed structured tool calls — inject transient message asking model to re-emit, discard malformed calls. `core/conversation.go`
 [] - FINISH: Implement finish reason dispatch — explicit switch on `""`, `"stop"`, `"length"`, `"content_filter"`, default. `core/conversation.go`
 [] - FINISH: Handle `"stop"` with empty content — treat as incomplete, ask model to continue. `core/conversation.go`

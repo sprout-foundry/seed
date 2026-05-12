@@ -247,6 +247,32 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 
 		// Execute tool calls
 		ch.continuationCount = 0 // tool calls are progress, reset continuation budget
+
+		// Normalize structured tool calls before execution.
+		if a.normalizer != nil && len(assistantMsg.ToolCalls) > 0 {
+			normalized := a.normalizer.Normalize(assistantMsg.ToolCalls)
+			dropped := len(assistantMsg.ToolCalls) - len(normalized)
+			if dropped > 0 {
+				a.debugLog("[normalize] Dropped %d malformed/duplicate tool calls (%d → %d)\n",
+					dropped, len(assistantMsg.ToolCalls), len(normalized))
+			}
+			assistantMsg.ToolCalls = normalized
+			// Update the last message in state so tool results are linked correctly.
+			msgs := a.state.Messages()
+			if len(msgs) > 0 {
+				msgs[len(msgs)-1] = assistantMsg
+				a.state.SetMessages(msgs)
+			}
+		}
+
+		if len(assistantMsg.ToolCalls) == 0 {
+			a.debugLog("[normalize] No tool calls remaining after normalization, finalizing\n")
+			ch.turnCompleted = true
+			ch.turnEndIndex = ch.agent.state.Len() - 1
+			completed = true
+			break
+		}
+
 		ch.agent.debugLog("[tool] Executing %d tool calls\n", len(assistantMsg.ToolCalls))
 
 		// Check for context cancellation before executing tools

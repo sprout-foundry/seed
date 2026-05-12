@@ -124,6 +124,10 @@ type Options struct {
 	// detection). When disabled, incomplete responses will not trigger
 	// automatic continuation. Default (false): validator is enabled.
 	DisableValidator bool
+	// DisableNormalizer disables the tool call normalizer. When disabled,
+	// structured tool calls will not be cleaned before execution. Default
+	// (false): normalizer is enabled.
+	DisableNormalizer bool
 }
 
 // Agent is the main entry point for the conversation engine.
@@ -143,6 +147,7 @@ type Agent struct {
 	inputInjectionChan chan string
 
 	fallbackParser *FallbackParser
+	normalizer     *ToolCallNormalizer
 	validator      *ResponseValidator
 	optimizer      *ConversationOptimizer
 	onIteration    func(iteration int, messages int)
@@ -190,6 +195,11 @@ func NewAgent(opts Options) (*Agent, error) {
 		}})
 	}
 
+	var normalizer *ToolCallNormalizer
+	if !opts.DisableNormalizer {
+		normalizer = NewToolCallNormalizer()
+	}
+
 	return &Agent{
 		provider:           opts.Provider,
 		executor:           opts.Executor,
@@ -202,6 +212,7 @@ func NewAgent(opts Options) (*Agent, error) {
 		outputMgr:          NewOutputManager(opts.EventPublisher),
 		inputInjectionChan: make(chan string, 1),
 		fallbackParser:     fallbackParser,
+		normalizer:         normalizer,
 		validator:          validator,
 		optimizer:          opts.Optimizer,
 		onIteration:        opts.OnIteration,
