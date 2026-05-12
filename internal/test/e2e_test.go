@@ -4364,6 +4364,110 @@ func TestE2E_ANSISanitization_PreservesNonANSIContent(t *testing.T) {
 	h.AssertEquals(userMsg, "simple query")
 }
 
+// --- Finish Reason: "stop" with empty content e2e tests ---
+
+func TestE2E_FinishReasonStop_EmptyContent_Continuation(t *testing.T) {
+	// Provider returns finish_reason="stop" with empty content on the first call.
+	// The conversation handler should detect this as incomplete and continue the loop
+	// with a transient continuation message. The second provider call returns the
+	// actual answer.
+	h := NewHarnessWithT(t)
+	h.Provider().AddTextResponseWithFinish("", "stop")
+	h.Provider().AddTextResponseWithFinish("Here is the complete answer.", "stop")
+
+	agent := h.NewAgent()
+	result, err := agent.Run(context.Background(), "hi")
+
+	h.AssertNoError(err)
+	h.AssertEquals(result, "Here is the complete answer.")
+
+	// Provider called twice: initial empty response + continuation with content
+	h.AssertProviderCalledN(2)
+
+	// State: user query + assistant(empty) + assistant(complete)
+	h.AssertStateHasNMessages(agent, 3)
+
+	// Token counts accumulate: 35 (first) + 35 (second) = 70
+	h.AssertStateHasTokens(agent, 70)
+
+	// Verify events
+	h.AssertEventPublished(events.EventTypeQueryStarted)
+	h.AssertEventPublished(events.EventTypeQueryCompleted)
+
+	// Two metrics_update events (one per iteration)
+	metricsEvents := h.FindEvents(events.EventTypeMetricsUpdate)
+	if len(metricsEvents) != 2 {
+		t.Fatalf("expected 2 metrics_update events, got %d", len(metricsEvents))
+	}
+
+	// Verify iteration numbers in metrics events
+	for i, evt := range metricsEvents {
+		data, ok := evt.Data.(map[string]interface{})
+		if !ok {
+			t.Fatalf("event %d: expected data to be map[string]interface{}, got %T", i, evt.Data)
+		}
+		it, ok := data["iteration"].(int)
+		if !ok {
+			t.Fatalf("event %d: expected iteration to be int, got %T", i, data["iteration"])
+		}
+		if it != i {
+			t.Errorf("event %d: expected iteration %d, got %d", i, i, it)
+		}
+	}
+
+	// Verify accumulated total_tokens in second metrics event
+	lastMetrics := metricsEvents[1].Data.(map[string]interface{})
+	totalTokens, ok := lastMetrics["total_tokens"].(int)
+	if !ok {
+		t.Fatalf("expected total_tokens to be int, got %T", lastMetrics["total_tokens"])
+	}
+	if totalTokens != 70 {
+		t.Errorf("expected total_tokens 70 (accumulated), got %d", totalTokens)
+	}
+
+	// Verify state messages
+	messages := agent.State().Messages()
+	if messages[0].Content != "hi" {
+		t.Errorf("expected message 1 to be 'hi', got %q", messages[0].Content)
+	}
+	if messages[1].Content != "" {
+		t.Errorf("expected message 2 to be empty, got %q", messages[1].Content)
+	}
+	if messages[2].Content != "Here is the complete answer." {
+		t.Errorf("expected message 3 to be 'Here is the complete answer.', got %q", messages[2].Content)
+	}
+
+	// Verify the transient continuation message appears in the second provider request
+	if len(h.Provider().Calls) < 2 {
+		t.Fatal("expected at least 2 provider calls")
+	}
+	foundTransient := false
+	for _, msg := range h.Provider().Calls[1].Messages {
+		if msg.Role == "user" && strings.Contains(msg.Content, "Please provide a complete response") {
+			foundTransient = true
+			break
+		}
+	}
+	if !foundTransient {
+		t.Error("expected transient continuation message in second provider request")
+	}
+
+	// Verify the transient message is NOT in state
+	for _, msg := range agent.State().Messages() {
+		if msg.Role == "user" && strings.Contains(msg.Content, "Please provide a complete response") {
+			t.Error("transient continuation message should not be in state")
+		}
+	}
+
+	// Verify the first request did NOT contain a transient continuation message
+	firstReq := h.Provider().Calls[0]
+	for _, msg := range firstReq.Messages {
+		if strings.Contains(msg.Content, "Please provide a complete response") {
+			t.Error("transient continuation message should not be in first provider request")
+		}
+	}
+}
+
 // --- Tool Call Normalization Tests ---
 
 func TestE2E_ChannelSuffixStripped(t *testing.T) {
