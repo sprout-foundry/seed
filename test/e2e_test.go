@@ -800,6 +800,118 @@ func TestE2E_IncompleteResponse_WithToolCalls(t *testing.T) {
 	h.AssertStateHasNMessages(agent, 4)
 }
 
+func TestE2E_TruncatedResponseContinuation_FullFlow(t *testing.T) {
+	h := NewHarnessWithT(t)
+
+	// First call: truncated response (ends with "...")
+	h.Provider().AddTextResponse("Here is the beginning of the answer...")
+
+	// Second call: complete response (>10 words, no truncation markers)
+	h.Provider().AddTextResponse("This is the complete answer that I was going to provide from the very start.")
+
+	agent := h.NewAgent()
+	result, err := agent.Run(context.Background(), "What is the answer?")
+
+	h.AssertNoError(err)
+
+	// Result should be the complete response (not the truncated one)
+	h.AssertEquals(result, "This is the complete answer that I was going to provide from the very start.")
+
+	// Provider called twice: initial truncated + continuation with complete answer
+	h.AssertProviderCalledN(2)
+
+	// State: user query + assistant(truncated) + assistant(complete)
+	h.AssertStateHasNMessages(agent, 3)
+
+	// Token counts accumulate: 35 (first) + 35 (second) = 70
+	h.AssertStateHasTokens(agent, 70)
+
+	// Verify events
+	h.AssertEventPublished(events.EventTypeQueryStarted)
+	h.AssertEventPublished(events.EventTypeQueryCompleted)
+
+	// Two metrics_update events (one per iteration)
+	metricsEvents := h.FindEvents(events.EventTypeMetricsUpdate)
+	if len(metricsEvents) != 2 {
+		t.Fatalf("expected 2 metrics_update events, got %d", len(metricsEvents))
+	}
+
+	// Verify iteration numbers in metrics events
+	for i, evt := range metricsEvents {
+		data, ok := evt.Data.(map[string]interface{})
+		if !ok {
+			t.Fatalf("event %d: expected data to be map[string]interface{}, got %T", i, evt.Data)
+		}
+		it, ok := data["iteration"].(int)
+		if !ok {
+			t.Fatalf("event %d: expected iteration to be int, got %T", i, data["iteration"])
+		}
+		if it != i {
+			t.Errorf("event %d: expected iteration %d, got %d", i, i, it)
+		}
+	}
+
+	// Verify accumulated total_tokens in second metrics event
+	lastMetrics := metricsEvents[1].Data.(map[string]interface{})
+	totalTokens, ok := lastMetrics["total_tokens"].(int)
+	if !ok {
+		t.Fatalf("expected total_tokens to be int, got %T", lastMetrics["total_tokens"])
+	}
+	if totalTokens != 70 {
+		t.Errorf("expected total_tokens 70 (accumulated), got %d", totalTokens)
+	}
+
+	// Verify state messages
+	messages := agent.State().Messages()
+	if messages[0].Role != "user" {
+		t.Errorf("expected message 1 to be user, got %q", messages[0].Role)
+	}
+	if messages[1].Role != "assistant" {
+		t.Errorf("expected message 2 to be assistant, got %q", messages[1].Role)
+	}
+	if !strings.HasSuffix(messages[1].Content, "...") {
+		t.Errorf("expected message 2 to end with '...', got %q", messages[1].Content)
+	}
+	if messages[2].Role != "assistant" {
+		t.Errorf("expected message 3 to be assistant, got %q", messages[2].Role)
+	}
+
+	// Verify the last provider request included the continuation message.
+	// The transient continuation message is prepended to the next API call
+	// but is NOT added to state.
+	lastReq := h.Provider().LastRequest()
+	if lastReq == nil {
+		t.Fatal("expected provider to have been called")
+	}
+
+	// Find the transient continuation message in the last request
+	foundContinuation := false
+	for _, msg := range lastReq.Messages {
+		if msg.Role == "user" && strings.Contains(msg.Content, "Please continue") {
+			foundContinuation = true
+			break
+		}
+	}
+	if !foundContinuation {
+		t.Error("expected transient continuation message in last provider request")
+	}
+
+	// Verify the continuation message is NOT in state (it's transient)
+	for _, msg := range messages {
+		if msg.Role == "user" && strings.Contains(msg.Content, "Please continue") {
+			t.Error("continuation message should not be in state (it's transient)")
+		}
+	}
+
+	// Verify the first request did NOT include a continuation message
+	firstReq := h.Provider().Calls[0]
+	for _, msg := range firstReq.Messages {
+		if strings.Contains(msg.Content, "Please continue") {
+			t.Error("continuation message should not be in first provider request")
+		}
+	}
+}
+
 // --- Tentative Post-Tool Response Tests ---
 
 func TestE2E_TentativeResponse_PlanningStub(t *testing.T) {
