@@ -2433,3 +2433,116 @@ func TestE2E_TentativeResponse_Streaming(t *testing.T) {
 	// State: user + assistant(tentative) + assistant(final)
 	h.AssertStateHasNMessages(agent, 3)
 }
+
+// --- Conversation Optimizer Integration Tests ---
+
+func TestE2E_Optimizer_Integration_FileReadDedup(t *testing.T) {
+	// End-to-end test for the ConversationOptimizer's file read deduplication.
+	//
+	// Flow:
+	//   Iteration 0: assistant calls read_file("test.txt") → tool returns "file content here"
+	//   Iteration 1: assistant calls read_file("test.txt") again → tool returns "file content here"
+	//   Iteration 2: assistant gives final answer "Done."
+	//
+	// The optimizer should replace the first tool result's content with
+	// `[Earlier file read: test.txt]` while keeping the second with original content.
+	h := NewHarnessWithT(t)
+
+	// Register the read_file tool.
+	h.Executor().AddTool(core.Tool{Name: "read_file"})
+
+	// Provider returns: tool call 1, tool call 2 (same file), final answer.
+	h.Provider().AddToolCallResponse(
+		"Reading the file.",
+		core.ToolCall{
+			ID: "call_1",
+			Function: core.ToolCallFunction{
+				Name:      "read_file",
+				Arguments: `{"path":"test.txt"}`,
+			},
+		},
+	)
+	h.Provider().AddToolCallResponse(
+		"Reading it again to confirm.",
+		core.ToolCall{
+			ID: "call_2",
+			Function: core.ToolCallFunction{
+				Name:      "read_file",
+				Arguments: `{"path":"test.txt"}`,
+			},
+		},
+	)
+	h.Provider().AddTextResponse("Done.")
+
+	// Both calls return the same content.
+	h.Executor().AddToolResult("call_1", "file content here")
+	h.Executor().AddToolResult("call_2", "file content here")
+
+	// Enable the optimizer with file read classification.
+	optimizer := core.NewConversationOptimizer(core.ConversationOptimizerOptions{
+		Enabled: true,
+		KnownToolFn: func(name string) core.ToolCategory {
+			switch name {
+			case "read_file":
+				return core.ToolCategoryFileRead
+			case "shell":
+				return core.ToolCategoryShellCommand
+			default:
+				return core.ToolCategoryUnknown
+			}
+		},
+	})
+
+	agent := h.NewAgentWithOptions(core.Options{
+		Optimizer: optimizer,
+	})
+
+	result, err := agent.Run(context.Background(), "Read test.txt")
+	h.AssertNoError(err)
+	h.AssertEquals(result, "Done.")
+
+	// Provider called 3 times: call1 → call2 → final answer.
+	h.AssertProviderCalledN(3)
+	h.AssertExecutorCalledN(2)
+
+	// State: user + assistant(call1) + tool + assistant(call2) + tool + assistant(final) = 6.
+	h.AssertStateHasNMessages(agent, 6)
+
+	// Verify the last provider request has the first tool result replaced with a placeholder
+	// and the second retaining the original content. Check by position to ensure the
+	// optimizer replaced the correct (earlier) read, not the later one.
+	lastReq := h.Provider().LastRequest()
+	if lastReq == nil {
+		t.Fatal("expected provider to have been called")
+	}
+
+	var toolMsgs []core.Message
+	for _, msg := range lastReq.Messages {
+		if msg.Role == "tool" {
+			toolMsgs = append(toolMsgs, msg)
+		}
+	}
+	if len(toolMsgs) != 2 {
+		t.Fatalf("expected 2 tool messages in last request, got %d", len(toolMsgs))
+	}
+
+	// First (earlier) read should be replaced with placeholder
+	h.AssertEquals(toolMsgs[0].Content, "[Earlier file read: test.txt]")
+	// Second (latest) read should retain original content
+	h.AssertEquals(toolMsgs[1].Content, "file content here")
+
+	// Verify state messages are NOT mutated — the optimizer works on ephemeral copies
+	stateMsgs := agent.State().Messages()
+	var stateToolCount int
+	for _, m := range stateMsgs {
+		if m.Role == "tool" {
+			stateToolCount++
+			if m.Content != "file content here" {
+				t.Errorf("expected state tool message %d to retain original content, got %q", stateToolCount, m.Content)
+			}
+		}
+	}
+	if stateToolCount != 2 {
+		t.Errorf("expected 2 tool messages in state, got %d", stateToolCount)
+	}
+}
