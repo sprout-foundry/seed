@@ -112,7 +112,7 @@
 [x] - HOOKS: Wire `OnIteration` into `ProcessQuery` loop — call at start of each iteration. `core/conversation.go`
 [x] - HOOKS: Publish compaction event — emit event with strategy name, message count delta, estimated tokens saved. `core/conversation.go`
 [x] - HOOKS: Add e2e test for iteration hook — callback fires each iteration with correct counts. `test/e2e_test.go`
-[] - HOOKS: Add e2e test for compaction event — context overflow -> compaction event published. `test/e2e_test.go`
+[x] - HOOKS: Add e2e test for compaction event — context overflow -> compaction event published. `test/e2e_test.go`
 
 ## Turn Checkpoints (SP-010)
 

@@ -491,6 +491,147 @@ func TestE2E_ContextCompaction(t *testing.T) {
 	h.AssertEquals("Compacted!", "Compacted!") // verify it completed
 }
 
+// --- Compaction Event Tests ---
+
+func TestE2E_CompactionEventPublished(t *testing.T) {
+	h := NewHarnessWithT(t)
+	h.Provider().
+		WithTokenEstimate(200000). // Over context limit to trigger compaction
+		WithInfo(core.ProviderInfo{
+			Model:       "mock",
+			ContextSize: 4096,
+			HasVision:   false,
+		}).
+		AddTextResponse("Compacted!")
+
+	agent := h.NewAgent()
+
+	// Add many messages to state to trigger compaction.
+	// roughTokens: 200/4 + 10 = 60 per message; 50 user + 50 assistant = 100 messages = ~6000 tokens > 4096 limit.
+	for i := 0; i < 50; i++ {
+		agent.State().AddMessage(core.Message{
+			Role:    "user",
+			Content: strings.Repeat("x", 200),
+		})
+		agent.State().AddMessage(core.Message{
+			Role:    "assistant",
+			Content: strings.Repeat("y", 200),
+		})
+	}
+
+	_, err := agent.Run(context.Background(), "final query")
+	h.AssertNoError(err)
+
+	// Provider called once (compaction happens before the call, not a separate iteration)
+	h.AssertProviderCalledN(1)
+
+	// Verify the compaction event was published
+	h.AssertEventPublished(events.EventTypeCompaction)
+
+	// Find the compaction events and verify the payload
+	compactionEvents := h.FindEvents(events.EventTypeCompaction)
+	if len(compactionEvents) != 1 {
+		t.Fatalf("expected 1 compaction event, got %d", len(compactionEvents))
+	}
+
+	data, ok := compactionEvents[0].Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected compaction event data to be map[string]interface{}, got %T", compactionEvents[0].Data)
+	}
+
+	// strategy should be one of "checkpoint", "structural", or "emergency" (not "none")
+	strategy, ok := data["strategy"].(string)
+	if !ok {
+		t.Fatalf("expected strategy to be string, got %T", data["strategy"])
+	}
+	if strategy == "none" {
+		t.Errorf("expected strategy not 'none', got %q", strategy)
+	}
+	// With 100 pre-added messages (50 user/assistant pairs) plus the system prompt
+	// and final query, checkpoint compaction alone is insufficient; structural is used.
+	// Assert the expected strategy to make the test self-documenting and catch algorithm changes.
+	h.AssertEquals(strategy, "structural")
+
+	// messages_before > messages_after
+	messagesBefore, ok := data["messages_before"].(int)
+	if !ok {
+		t.Fatalf("expected messages_before to be int, got %T", data["messages_before"])
+	}
+	messagesAfter, ok := data["messages_after"].(int)
+	if !ok {
+		t.Fatalf("expected messages_after to be int, got %T", data["messages_after"])
+	}
+	if messagesBefore <= messagesAfter {
+		t.Errorf("expected messages_before (%d) > messages_after (%d)", messagesBefore, messagesAfter)
+	}
+
+	// message_count_delta should equal messages_before - messages_after
+	messageCountDelta, ok := data["message_count_delta"].(int)
+	if !ok {
+		t.Fatalf("expected message_count_delta to be int, got %T", data["message_count_delta"])
+	}
+	expectedDelta := messagesBefore - messagesAfter
+	if messageCountDelta != expectedDelta {
+		t.Errorf("expected message_count_delta %d, got %d", expectedDelta, messageCountDelta)
+	}
+
+	// tokens_saved should be positive
+	tokensSaved, ok := data["tokens_saved"].(int)
+	if !ok {
+		t.Fatalf("expected tokens_saved to be int, got %T", data["tokens_saved"])
+	}
+	if tokensSaved <= 0 {
+		t.Errorf("expected tokens_saved > 0, got %d", tokensSaved)
+	}
+
+	// Verify the provider received the compacted message list (fewer than original)
+	lastReq := h.Provider().LastRequest()
+	if lastReq == nil {
+		t.Fatal("expected provider to have been called")
+	}
+	// Original: 1 system + 100 pre-added + 1 user query = 102 messages
+	// After structural compaction: ~26 messages (system + summary + recent)
+	if len(lastReq.Messages) >= 102 {
+		t.Errorf("expected compaction to reduce messages below 102, got %d", len(lastReq.Messages))
+	}
+}
+
+func TestE2E_CompactionEventNotPublishedWhenNoCompaction(t *testing.T) {
+	h := NewHarnessWithT(t)
+	// Normal provider: large context size (128000) and small token estimate (35 from AddTextResponse default).
+	// No compaction should be triggered.
+	h.Provider().AddTextResponse("OK")
+
+	agent := h.NewAgent()
+
+	// Add only a few messages — well under the context limit
+	for i := 0; i < 3; i++ {
+		agent.State().AddMessage(core.Message{
+			Role:    "user",
+			Content: "short query",
+		})
+		agent.State().AddMessage(core.Message{
+			Role:    "assistant",
+			Content: "short reply",
+		})
+	}
+
+	_, err := agent.Run(context.Background(), "test")
+	h.AssertNoError(err)
+
+	// Provider called once
+	h.AssertProviderCalledN(1)
+
+	// State: 6 pre-added + 1 user query + 1 assistant response = 8 messages
+	h.AssertStateHasNMessages(agent, 8)
+
+	// No compaction event should have been published
+	compactionEvents := h.FindEvents(events.EventTypeCompaction)
+	if len(compactionEvents) != 0 {
+		t.Errorf("expected no compaction events, got %d", len(compactionEvents))
+	}
+}
+
 func TestE2E_ImagesStrippedForNonVision(t *testing.T) {
 	h := NewHarnessWithT(t)
 	h.Provider().AddTextResponse("OK")
