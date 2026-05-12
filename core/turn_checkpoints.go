@@ -606,3 +606,209 @@ func RecordTurnCheckpointAsync(state *State, messages []Message, startIndex, end
 		}
 	}()
 }
+
+// isConsumableCheckpoint determines whether a checkpoint can be compacted.
+// A checkpoint is consumable when:
+// - Its StartIndex and EndIndex are valid within the messages slice
+// - StartIndex <= EndIndex
+// - The checkpoint has a non-empty Summary
+func isConsumableCheckpoint(cp TurnCheckpoint, messageCount int) bool {
+	if cp.Summary == "" {
+		return false
+	}
+	if cp.StartIndex < 0 || cp.EndIndex < 0 || cp.StartIndex > cp.EndIndex {
+		return false
+	}
+	if cp.EndIndex >= messageCount {
+		return false
+	}
+	return true
+}
+
+// BuildCheckpointCompactedMessages replaces consumed checkpoint ranges with
+// summary messages and shifts remaining checkpoint indices accordingly.
+// It returns the compacted message list and updated checkpoints.
+//
+// A checkpoint is "consumable" when:
+// - Its StartIndex and EndIndex are valid (within the messages slice)
+// - The messages in the range [StartIndex, EndIndex] exist
+// - The checkpoint has a non-empty Summary
+//
+// The function works from oldest to newest checkpoint (by StartIndex):
+// 1. For each consumable checkpoint, replace messages[StartIndex:EndIndex+1]
+//    with a single summary message (role "user", content from checkpoint.Summary)
+// 2. After each replacement, compute the delta (old count - 1) and shift all
+//    subsequent checkpoint indices by -delta
+// 3. Handle consecutive-assistant boundaries: if the inserted summary message
+//    would create two consecutive assistant messages with no tool calls between
+//    them, merge the summary into the preceding message or adjust the role.
+//
+// The summary message role should be "user" to maintain proper conversation flow
+// (system -> user -> assistant pattern).
+//
+// Return:
+// - compactedMessages: the new message slice with checkpoints applied
+// - updatedCheckpoints: checkpoints with shifted indices; consumed checkpoints
+//   are removed from the list
+func BuildCheckpointCompactedMessages(messages []Message, checkpoints []TurnCheckpoint) ([]Message, []TurnCheckpoint) {
+	// Guard: nothing to do with empty inputs.
+	if len(messages) == 0 || len(checkpoints) == 0 {
+		outMsgs := make([]Message, len(messages))
+		copy(outMsgs, messages)
+		outCps := make([]TurnCheckpoint, len(checkpoints))
+		copy(outCps, checkpoints)
+		return outMsgs, outCps
+	}
+
+	// Work on a copy so we never mutate the original.
+	msgs := make([]Message, len(messages))
+	copy(msgs, messages)
+
+	// Sort a copy of checkpoints by StartIndex so we process oldest first.
+	sorted := make([]TurnCheckpoint, len(checkpoints))
+	copy(sorted, checkpoints)
+	sort.Slice(sorted, func(i, j int) bool {
+		return sorted[i].StartIndex < sorted[j].StartIndex
+	})
+
+	// Phase 1: Walk through sorted checkpoints and determine which are
+	// consumable. For consumable ones, record their summary and range in the
+	// original messages array. For non-consumable ones, keep the original
+	// checkpoint so it can be returned as-is.
+	//
+	// We track lastConsumedEnd to reject overlapping ranges.
+	type rangeInfo struct {
+		summary   string
+		origStart int // position in original msgs array
+		origEnd   int // inclusive end in original msgs array
+		msgCount  int // number of original messages in this range
+	}
+	var consumables []rangeInfo
+	var remaining []TurnCheckpoint
+	lastConsumedEnd := -1 // highest original index consumed by a previous checkpoint
+
+	for _, cp := range sorted {
+		// Reject if not consumable (invalid range or empty summary).
+		if !isConsumableCheckpoint(cp, len(msgs)) {
+			remaining = append(remaining, cp)
+			continue
+		}
+
+		// Reject if this checkpoint overlaps with a previously consumed range.
+		if cp.StartIndex <= lastConsumedEnd {
+			remaining = append(remaining, cp)
+			continue
+		}
+
+		msgCount := cp.EndIndex - cp.StartIndex + 1
+
+		ri := rangeInfo{
+			summary:   cp.Summary,
+			origStart: cp.StartIndex,
+			origEnd:   cp.EndIndex,
+			msgCount:  msgCount,
+		}
+		consumables = append(consumables, ri)
+
+		lastConsumedEnd = cp.EndIndex
+	}
+
+	// If nothing was consumed, return copies of the original data.
+	if len(consumables) == 0 {
+		outMsgs := make([]Message, len(msgs))
+		copy(outMsgs, msgs)
+		outCps := make([]TurnCheckpoint, len(remaining))
+		copy(outCps, remaining)
+		return outMsgs, outCps
+	}
+
+	// Phase 2: Build compacted messages by walking through msgs and
+	// replacing consumed ranges with summary messages.
+	newMsgs := make([]Message, 0, len(msgs))
+	msgIdx := 0
+	consIdx := 0
+
+	for msgIdx < len(msgs) {
+		if consIdx < len(consumables) && msgIdx == consumables[consIdx].origStart {
+			ri := consumables[consIdx]
+			newMsgs = append(newMsgs, Message{Role: "user", Content: ri.summary})
+			msgIdx = ri.origEnd + 1
+			consIdx++
+			continue
+		}
+		newMsgs = append(newMsgs, msgs[msgIdx])
+		msgIdx++
+	}
+
+	// Phase 3: Defensive consecutive-assistant check.
+	// Since we insert summaries with role "user", this should rarely fire,
+	// but guard against edge cases (e.g. ranges containing only assistant msgs).
+	for i := 1; i < len(newMsgs); i++ {
+		if newMsgs[i-1].Role == "assistant" && newMsgs[i].Role == "assistant" {
+			newMsgs[i-1].Content += "\n" + newMsgs[i].Content
+			newMsgs = append(newMsgs[:i], newMsgs[i+1:]...)
+			i--
+		}
+	}
+
+	// Phase 4: Compute new indices for remaining (unconsumed) checkpoints.
+	//
+	// For each remaining checkpoint, we need to map its original [StartIndex,
+	// EndIndex] into the compacted message array. Two things can happen:
+	//
+	//  1. A consumed range is entirely before the checkpoint — its messages
+	//     were removed, shifting the checkpoint left by (msgCount-1).
+	//  2. A consumed range overlaps the start of the checkpoint — the consumed
+	//     messages are gone, so the checkpoint's start advances past them.
+	//
+	for i := range remaining {
+		s := remaining[i].StartIndex
+		e := remaining[i].EndIndex
+
+		// Trim any consumed range that eats into this checkpoint.
+		for _, ri := range consumables {
+			// Consumed range overlaps the start?
+			if ri.origEnd >= s && ri.origEnd < e {
+				s = ri.origEnd + 1 // advance start past consumed range
+			}
+			if ri.origStart <= e && ri.origEnd >= e {
+				e = ri.origStart - 1 // retreat end before consumed range
+			}
+		}
+
+		if s > e || s < 0 || e < 0 {
+			// Checkpoint entirely consumed — clamp to invalid.
+			remaining[i].StartIndex = -1
+			remaining[i].EndIndex = -1
+			continue
+		}
+
+		// Compute shift amount: sum of (msgCount-1) for consumed ranges
+		// entirely before the (possibly trimmed) index.
+		shift := func(idx int) int {
+			d := 0
+			for _, ri := range consumables {
+				if ri.origEnd < idx {
+					d += ri.msgCount - 1
+				}
+			}
+			return d
+		}
+
+		remaining[i].StartIndex = s - shift(s)
+		remaining[i].EndIndex = e - shift(e)
+
+		// Clamp to valid range.
+		if remaining[i].StartIndex < 0 {
+			remaining[i].StartIndex = 0
+		}
+		if remaining[i].EndIndex < 0 {
+			remaining[i].EndIndex = 0
+		}
+		if len(newMsgs) > 0 && remaining[i].EndIndex >= len(newMsgs) {
+			remaining[i].EndIndex = len(newMsgs) - 1
+		}
+	}
+
+	return newMsgs, remaining
+}

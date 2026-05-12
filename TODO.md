@@ -110,7 +110,7 @@
 [] - CHECKPOINT: Implement Go-only summary builder — extract user question, tool calls, errors, files modified, final status from turn messages. `core/turn_checkpoints.go`
 [x] - CHECKPOINT: Implement actionable summary builder — bullet list of accomplishments with file paths and commands. `core/turn_checkpoints.go`
 [x] - CHECKPOINT: Implement async `RecordTurnCheckpointAsync()` — snapshot messages, compute summary in background goroutine. `core/turn_checkpoints.go`
-[] - CHECKPOINT: Implement `BuildCheckpointCompactedMessages()` — replace consumed checkpoints with summary messages, shift remaining indices. `core/turn_checkpoints.go`
+[x] - CHECKPOINT: Implement `BuildCheckpointCompactedMessages()` — replace consumed checkpoints with summary messages, shift remaining indices. `core/turn_checkpoints.go`
 [] - CHECKPOINT: Implement index shifting — update checkpoint StartIndex/EndIndex by delta after compaction removes messages. `core/turn_checkpoints.go`
 [] - CHECKPOINT: Handle consecutive-assistant boundary — if summary + next message are both assistant with no tool calls, merge or drop. `core/turn_checkpoints.go`
 [] - CHECKPOINT: Wire recording into ConversationHandler — set `queryStartIndex` when user message added, record checkpoint in `finalize()`. `core/conversation.go`

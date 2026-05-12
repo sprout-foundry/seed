@@ -6,6 +6,572 @@ import (
 	"time"
 )
 
+// --- BuildCheckpointCompactedMessages tests ---
+
+func TestBuildCheckpointCompactedMessages_EmptyMessages(t *testing.T) {
+	msgs, cps := BuildCheckpointCompactedMessages(nil, []TurnCheckpoint{})
+	if len(msgs) != 0 {
+		t.Errorf("expected empty messages, got %d", len(msgs))
+	}
+	if len(cps) != 0 {
+		t.Errorf("expected empty checkpoints, got %d", len(cps))
+	}
+}
+
+func TestBuildCheckpointCompactedMessages_EmptyCheckpoints(t *testing.T) {
+	msgs := []Message{
+		{Role: "user", Content: "hi"},
+		{Role: "assistant", Content: "hello"},
+	}
+	cp := []TurnCheckpoint{}
+	outMsgs, outCps := BuildCheckpointCompactedMessages(msgs, cp)
+
+	// Should return copies unchanged.
+	if len(outMsgs) != len(msgs) {
+		t.Errorf("expected %d messages, got %d", len(msgs), len(outMsgs))
+	}
+	if len(outCps) != 0 {
+		t.Errorf("expected 0 checkpoints, got %d", len(outCps))
+	}
+
+	// Verify originals were not modified.
+	if msgs[0].Content != "hi" {
+		t.Error("original messages were mutated")
+	}
+}
+
+func TestBuildCheckpointCompactedMessages_NoConsumable(t *testing.T) {
+	// Checkpoint with empty summary is not consumable.
+	msgs := []Message{
+		{Role: "user", Content: "hi"},
+		{Role: "assistant", Content: "hello"},
+	}
+	checkpoints := []TurnCheckpoint{
+		{StartIndex: 0, EndIndex: 1, Summary: "", ActionableSummary: ""},
+	}
+
+	outMsgs, outCps := BuildCheckpointCompactedMessages(msgs, checkpoints)
+
+	// Messages should be unchanged.
+	if len(outMsgs) != len(msgs) {
+		t.Errorf("expected %d messages, got %d", len(msgs), len(outMsgs))
+	}
+	// Checkpoint should be kept as-is (not consumed).
+	if len(outCps) != 1 {
+		t.Errorf("expected 1 checkpoint, got %d", len(outCps))
+	}
+	if outCps[0].Summary != "" {
+		t.Error("checkpoint should be unchanged")
+	}
+}
+
+func TestBuildCheckpointCompactedMessages_SingleCheckpoint(t *testing.T) {
+	msgs := []Message{
+		{Role: "system", Content: "You are helpful."},
+		{Role: "user", Content: "What is 2+2?"},
+		{Role: "assistant", Content: "The answer is 4."},
+	}
+	checkpoints := []TurnCheckpoint{
+		{StartIndex: 1, EndIndex: 2, Summary: "User asked about 2+2, assistant answered 4.", ActionableSummary: "- Question: What is 2+2?\n- Result: 4"},
+	}
+
+	outMsgs, outCps := BuildCheckpointCompactedMessages(msgs, checkpoints)
+
+	// Should have 2 messages: system + summary.
+	if len(outMsgs) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(outMsgs))
+	}
+
+	if outMsgs[0].Role != "system" || outMsgs[0].Content != "You are helpful." {
+		t.Errorf("system message mismatch: %+v", outMsgs[0])
+	}
+	if outMsgs[1].Role != "user" {
+		t.Errorf("expected summary to be user role, got %s", outMsgs[1].Role)
+	}
+	if outMsgs[1].Content != "User asked about 2+2, assistant answered 4." {
+		t.Errorf("unexpected summary content: %s", outMsgs[1].Content)
+	}
+
+	// Checkpoint should be consumed (removed from result).
+	if len(outCps) != 0 {
+		t.Errorf("expected 0 remaining checkpoints, got %d", len(outCps))
+	}
+}
+
+func TestBuildCheckpointCompactedMessages_MultipleCheckpoints(t *testing.T) {
+	msgs := []Message{
+		{Role: "system", Content: "You are helpful."},
+		{Role: "user", Content: "Question 1"},
+		{Role: "assistant", Content: "Answer 1"},
+		{Role: "user", Content: "Question 2"},
+		{Role: "assistant", Content: "Answer 2"},
+		{Role: "user", Content: "Question 3"},
+		{Role: "assistant", Content: "Answer 3"},
+	}
+	checkpoints := []TurnCheckpoint{
+		{StartIndex: 1, EndIndex: 2, Summary: "Summary 1"},
+		{StartIndex: 3, EndIndex: 4, Summary: "Summary 2"},
+	}
+
+	outMsgs, outCps := BuildCheckpointCompactedMessages(msgs, checkpoints)
+
+	// 3 messages (system) + 2 summaries + 1 last turn = 5 messages.
+	if len(outMsgs) != 5 {
+		t.Fatalf("expected 5 messages, got %d", len(outMsgs))
+	}
+
+	// First two checkpoints should be consumed.
+	if len(outCps) != 0 {
+		t.Errorf("expected 0 remaining checkpoints, got %d", len(outCps))
+	}
+
+	// Verify structure: system, summary1, summary2, user3, assistant3
+	expectedRoles := []string{"system", "user", "user", "user", "assistant"}
+	for i, role := range expectedRoles {
+		if outMsgs[i].Role != role {
+			t.Errorf("expected role %s at index %d, got %s", role, i, outMsgs[i].Role)
+		}
+	}
+}
+
+func TestBuildCheckpointCompactedMessages_MixedConsumable(t *testing.T) {
+	msgs := []Message{
+		{Role: "user", Content: "Question 1"},
+		{Role: "assistant", Content: "Answer 1"},
+		{Role: "user", Content: "Question 2"},
+		{Role: "assistant", Content: "Answer 2"},
+		{Role: "user", Content: "Question 3"},
+		{Role: "assistant", Content: "Answer 3"},
+	}
+	// Checkpoint 1: consumable (has summary).
+	// Checkpoint 2: not consumable (empty summary).
+	// Checkpoint 3: consumable.
+	checkpoints := []TurnCheckpoint{
+		{StartIndex: 0, EndIndex: 1, Summary: "Summary 1"},
+		{StartIndex: 2, EndIndex: 3, Summary: ""},
+		{StartIndex: 4, EndIndex: 5, Summary: "Summary 3"},
+	}
+
+	outMsgs, outCps := BuildCheckpointCompactedMessages(msgs, checkpoints)
+
+	// Checkpoint 1 consumed: [0,1] -> 1 summary. 1 message removed.
+	// Checkpoint 2 unconsumable: kept as-is (original indices 2,3).
+	// Checkpoint 3 consumed: original [4,5] -> 1 summary. 1 message removed.
+	// Result messages: summary1, user2, assistant2, summary3 = 4 messages.
+	//
+	// Remaining checkpoint 2: original [2,3].
+	// Only consumed range [0,1] (origEnd=1) is before [2,3], so removedBefore = 1.
+	// Shifted: [2-1, 3-1] = [1, 2].
+	// Consumed range [4,5] (origEnd=5) is NOT before [2,3], so it does not shift.
+
+	if len(outMsgs) != 4 {
+		t.Errorf("expected 4 messages, got %d", len(outMsgs))
+	}
+
+	// Remaining: only the unconsumable checkpoint 2 (shifted).
+	if len(outCps) != 1 {
+		t.Errorf("expected 1 remaining checkpoint, got %d", len(outCps))
+	}
+	// Shifted from [2,3] to [1,2] (only the consumed range before it counts).
+	if outCps[0].StartIndex != 1 || outCps[0].EndIndex != 2 {
+		t.Errorf("expected checkpoint [1,2], got [%d,%d]", outCps[0].StartIndex, outCps[0].EndIndex)
+	}
+}
+
+func TestBuildCheckpointCompactedMessages_InvalidRange(t *testing.T) {
+	msgs := []Message{
+		{Role: "user", Content: "hi"},
+		{Role: "assistant", Content: "hello"},
+	}
+	// StartIndex > EndIndex is invalid.
+	checkpoints := []TurnCheckpoint{
+		{StartIndex: 1, EndIndex: 0, Summary: "invalid range"},
+	}
+
+	outMsgs, outCps := BuildCheckpointCompactedMessages(msgs, checkpoints)
+
+	// Should be unchanged.
+	if len(outMsgs) != len(msgs) {
+		t.Errorf("expected %d messages, got %d", len(msgs), len(outMsgs))
+	}
+	if len(outCps) != 1 {
+		t.Errorf("expected 1 checkpoint (not consumed), got %d", len(outCps))
+	}
+}
+
+func TestBuildCheckpointCompactedMessages_OutOfRangeEndIndex(t *testing.T) {
+	msgs := []Message{
+		{Role: "user", Content: "hi"},
+		{Role: "assistant", Content: "hello"},
+	}
+	checkpoints := []TurnCheckpoint{
+		{StartIndex: 0, EndIndex: 100, Summary: "out of range"},
+	}
+
+	outMsgs, outCps := BuildCheckpointCompactedMessages(msgs, checkpoints)
+
+	// Not consumable — EndIndex out of bounds.
+	if len(outMsgs) != len(msgs) {
+		t.Errorf("expected %d messages, got %d", len(msgs), len(outMsgs))
+	}
+	if len(outCps) != 1 {
+		t.Errorf("expected 1 checkpoint (not consumed), got %d", len(outCps))
+	}
+}
+
+func TestBuildCheckpointCompactedMessages_OutOfRangeStartIndex(t *testing.T) {
+	msgs := []Message{
+		{Role: "user", Content: "hi"},
+		{Role: "assistant", Content: "hello"},
+	}
+	checkpoints := []TurnCheckpoint{
+		{StartIndex: -1, EndIndex: 0, Summary: "negative start"},
+	}
+
+	outMsgs, outCps := BuildCheckpointCompactedMessages(msgs, checkpoints)
+
+	// Not consumable — negative StartIndex.
+	if len(outMsgs) != len(msgs) {
+		t.Errorf("expected %d messages, got %d", len(msgs), len(outMsgs))
+	}
+	if len(outCps) != 1 {
+		t.Errorf("expected 1 checkpoint (not consumed), got %d", len(outCps))
+	}
+}
+
+func TestBuildCheckpointCompactedMessages_OriginalNotModified(t *testing.T) {
+	msgs := []Message{
+		{Role: "user", Content: "original 1"},
+		{Role: "assistant", Content: "original 2"},
+	}
+	checkpoints := []TurnCheckpoint{
+		{StartIndex: 0, EndIndex: 1, Summary: "replaced"},
+	}
+
+	// Copy originals for comparison.
+	origMsgs := make([]Message, len(msgs))
+	copy(origMsgs, msgs)
+
+	_, _ = BuildCheckpointCompactedMessages(msgs, checkpoints)
+
+	// Verify originals unchanged.
+	for i := range msgs {
+		if msgs[i].Content != origMsgs[i].Content {
+			t.Errorf("original message %d was mutated: %q -> %q", i, origMsgs[i].Content, msgs[i].Content)
+		}
+	}
+}
+
+func TestBuildCheckpointCompactedMessages_AllButLastConsumed(t *testing.T) {
+	// Three consumed checkpoints covering [0,1], [2,3], [4,5],
+	// but 8 messages total — indices 6,7 are not covered.
+	msgs := []Message{
+		{Role: "user", Content: "Q1"},
+		{Role: "assistant", Content: "A1"},
+		{Role: "user", Content: "Q2"},
+		{Role: "assistant", Content: "A2"},
+		{Role: "user", Content: "Q3"},
+		{Role: "assistant", Content: "A3"},
+		{Role: "user", Content: "Q4"},
+		{Role: "assistant", Content: "A4"},
+	}
+	checkpoints := []TurnCheckpoint{
+		{StartIndex: 0, EndIndex: 1, Summary: "S1"},
+		{StartIndex: 2, EndIndex: 3, Summary: "S2"},
+		{StartIndex: 4, EndIndex: 5, Summary: "S3"},
+	}
+
+	outMsgs, outCps := BuildCheckpointCompactedMessages(msgs, checkpoints)
+
+	// 3 summaries + Q4 + A4 = 5 messages (indices 6,7 not covered)
+	if len(outMsgs) != 5 {
+		t.Errorf("expected 5 messages, got %d", len(outMsgs))
+	}
+	if len(outCps) != 0 {
+		t.Errorf("expected 0 remaining checkpoints, got %d", len(outCps))
+	}
+}
+
+func TestBuildCheckpointCompactedMessages_CheckpointSummariesOnly(t *testing.T) {
+	// Test with only summaries (no tool calls, just user/assistant pairs).
+	msgs := []Message{
+		{Role: "system", Content: "System prompt"},
+		{Role: "user", Content: "First question with lots of content"},
+		{Role: "assistant", Content: "First answer with lots of content"},
+		{Role: "user", Content: "Second question with lots of content"},
+		{Role: "assistant", Content: "Second answer with lots of content"},
+	}
+	checkpoints := []TurnCheckpoint{
+		{StartIndex: 1, EndIndex: 2, Summary: "User asked about topic A."},
+		{StartIndex: 3, EndIndex: 4, Summary: "User asked about topic B."},
+	}
+
+	outMsgs, outCps := BuildCheckpointCompactedMessages(msgs, checkpoints)
+
+	// 1 system + 2 summaries = 3 messages.
+	if len(outMsgs) != 3 {
+		t.Fatalf("expected 3 messages, got %d", len(outMsgs))
+	}
+	if outMsgs[0].Role != "system" {
+		t.Errorf("first message should be system, got %s", outMsgs[0].Role)
+	}
+	if outMsgs[1].Role != "user" || outMsgs[1].Content != "User asked about topic A." {
+		t.Errorf("second message wrong: %+v", outMsgs[1])
+	}
+	if outMsgs[2].Role != "user" || outMsgs[2].Content != "User asked about topic B." {
+		t.Errorf("third message wrong: %+v", outMsgs[2])
+	}
+	if len(outCps) != 0 {
+		t.Errorf("expected 0 remaining checkpoints, got %d", len(outCps))
+	}
+}
+
+func TestBuildCheckpointCompactedMessages_CheckpointAfterConsecutiveAssistant(t *testing.T) {
+	// Edge case: the checkpoint range is [1, 1] — only the assistant message.
+	// Message 0 is also assistant. After replacement, message at index 0 (assistant)
+	// and index 1 (summary, "user") are consecutive — but since summary is "user",
+	// this is fine. The consecutive-assistant guard shouldn't trigger.
+	msgs := []Message{
+		{Role: "user", Content: "Query"},
+		{Role: "assistant", Content: "First thought"},
+		{Role: "user", Content: "Follow-up"},
+		{Role: "assistant", Content: "Second response"},
+	}
+	checkpoints := []TurnCheckpoint{
+		{StartIndex: 1, EndIndex: 1, Summary: "Assistant had a thought."},
+	}
+
+	outMsgs, outCps := BuildCheckpointCompactedMessages(msgs, checkpoints)
+
+	// Checkpoint [1,1] is consumed → 1 summary replaces 1 msg, delta=0.
+	// Result: user, summary(user), user, assistant = 4 messages.
+	if len(outMsgs) != 4 {
+		t.Errorf("expected 4 messages, got %d", len(outMsgs))
+	}
+	// Checkpoint was consumed, so no remaining checkpoints.
+	if len(outCps) != 0 {
+		t.Errorf("expected 0 remaining checkpoints, got %d", len(outCps))
+	}
+	// Verify structure: user(summary), summary, user, assistant
+	if outMsgs[0].Role != "user" || outMsgs[0].Content != "Query" {
+		t.Errorf("first message wrong: %+v", outMsgs[0])
+	}
+	if outMsgs[1].Role != "user" || outMsgs[1].Content != "Assistant had a thought." {
+		t.Errorf("second message wrong: %+v", outMsgs[1])
+	}
+}
+
+func TestBuildCheckpointCompactedMessages_ToolCallTurn(t *testing.T) {
+	msgs := []Message{
+		{Role: "system", Content: "You are helpful."},
+		{Role: "user", Content: "List files"},
+		{Role: "assistant", Content: "I'll list files.", ToolCalls: []ToolCall{
+			{ID: "call_1", Type: "function", Function: ToolCallFunction{Name: "list_files", Arguments: `{}`}},
+		}},
+		{Role: "tool", Content: "file1.txt, file2.txt", ToolCallID: "call_1"},
+		{Role: "assistant", Content: "Here are the files."},
+	}
+	checkpoints := []TurnCheckpoint{
+		{StartIndex: 1, EndIndex: 4, Summary: "User asked to list files. Assistant listed file1.txt and file2.txt."},
+	}
+
+	outMsgs, _ := BuildCheckpointCompactedMessages(msgs, checkpoints)
+
+	// 1 system + 1 summary = 2 messages.
+	if len(outMsgs) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(outMsgs))
+	}
+	if outMsgs[0].Role != "system" {
+		t.Errorf("expected system first, got %s", outMsgs[0].Role)
+	}
+	if outMsgs[1].Content != "User asked to list files. Assistant listed file1.txt and file2.txt." {
+		t.Errorf("unexpected summary: %s", outMsgs[1].Content)
+	}
+}
+
+func TestBuildCheckpointCompactedMessages_AllMessagesConsumed(t *testing.T) {
+	msgs := []Message{
+		{Role: "user", Content: "hi"},
+		{Role: "assistant", Content: "hello"},
+	}
+	// Single checkpoint covering all messages — should produce one summary.
+	checkpoints := []TurnCheckpoint{
+		{StartIndex: 0, EndIndex: 1, Summary: "consumed"},
+	}
+
+	outMsgs, outCps := BuildCheckpointCompactedMessages(msgs, checkpoints)
+
+	// Both messages consumed, 1 summary left.
+	if len(outMsgs) != 1 {
+		t.Errorf("expected 1 message, got %d", len(outMsgs))
+	}
+	if len(outCps) != 0 {
+		t.Errorf("expected 0 remaining checkpoints, got %d", len(outCps))
+	}
+}
+
+func TestBuildCheckpointCompactedMessages_ThreeCheckpointsWithOneUnconsumed(t *testing.T) {
+	msgs := []Message{
+		{Role: "user", Content: "Q1"},
+		{Role: "assistant", Content: "A1"},
+		{Role: "user", Content: "Q2"},
+		{Role: "assistant", Content: "A2"},
+		{Role: "user", Content: "Q3"},
+		{Role: "assistant", Content: "A3"},
+	}
+	checkpoints := []TurnCheckpoint{
+		{StartIndex: 0, EndIndex: 1, Summary: "S1"},  // consumed
+		{StartIndex: 2, EndIndex: 3, Summary: ""},    // unconsumable (empty)
+		{StartIndex: 4, EndIndex: 5, Summary: "S3"},  // consumed
+	}
+
+	outMsgs, outCps := BuildCheckpointCompactedMessages(msgs, checkpoints)
+
+	// First consumed: [0,1] -> 1 summary. 1 message removed.
+	// Third consumed: [4,5] -> 1 summary. 1 message removed.
+	// Result: 1 summary + user2 + assistant2 + 1 summary = 4 messages.
+	if len(outMsgs) != 4 {
+		t.Errorf("expected 4 messages, got %d", len(outMsgs))
+	}
+
+	// Only checkpoint 2 should remain.
+	if len(outCps) != 1 {
+		t.Errorf("expected 1 remaining checkpoint, got %d", len(outCps))
+	}
+	// Checkpoint 2: original [2,3].
+	// Consumed range [0,1] (origEnd=1) is before [2,3]: removedBefore = 1.
+	// Consumed range [4,5] (origEnd=5) is NOT before [2,3]: no additional shift.
+	// Shifted: [2-1, 3-1] = [1, 2].
+	if outCps[0].StartIndex != 1 || outCps[0].EndIndex != 2 {
+		t.Errorf("expected shifted [1,2], got [%d,%d]", outCps[0].StartIndex, outCps[0].EndIndex)
+	}
+}
+
+// --- Overlapping checkpoints test ---
+
+func TestBuildCheckpointCompactedMessages_OverlappingCheckpoints(t *testing.T) {
+	msgs := []Message{
+		{Role: "user", Content: "Q1"},
+		{Role: "assistant", Content: "A1"},
+		{Role: "user", Content: "Q2"},
+		{Role: "assistant", Content: "A2"},
+		{Role: "user", Content: "Q3"},
+		{Role: "assistant", Content: "A3"},
+	}
+	// Two overlapping checkpoints: [0,2] and [2,4] — message 2 is shared.
+	checkpoints := []TurnCheckpoint{
+		{StartIndex: 0, EndIndex: 2, Summary: "S1"},
+		{StartIndex: 2, EndIndex: 4, Summary: "S2"},
+	}
+
+	outMsgs, outCps := BuildCheckpointCompactedMessages(msgs, checkpoints)
+
+	// First consumed [0,2], second overlaps so it's kept as remaining.
+	// Result: summary S1 + msgs[3] + msgs[4] + msgs[5] = 4 messages.
+	if len(outMsgs) != 4 {
+		t.Fatalf("expected 4 messages, got %d", len(outMsgs))
+	}
+	if outMsgs[0].Content != "S1" {
+		t.Errorf("expected first message to be S1 summary, got %q", outMsgs[0].Content)
+	}
+
+	// The overlapping checkpoint should remain (shifted).
+	if len(outCps) != 1 {
+		t.Errorf("expected 1 remaining checkpoint, got %d", len(outCps))
+	}
+	// Original [2,4] covered Q2(2), A2(3), Q3(4).
+	// Q2 was consumed by cp1 [0,2], so trimmed to [3,4] (A2, Q3).
+	// Consumed range [0,2] removed 2 messages (3->1), so shift by 2.
+	// Shifted: [3-2, 4-2] = [1, 2].
+	if outCps[0].StartIndex != 1 || outCps[0].EndIndex != 2 {
+		t.Errorf("expected shifted [1,2], got [%d,%d]", outCps[0].StartIndex, outCps[0].EndIndex)
+	}
+}
+
+func TestBuildCheckpointCompactedMessages_ConsecutiveAssistantMerge(t *testing.T) {
+	// Two assistant messages in the original array that become adjacent
+	// after compaction (no checkpoint covers them). Phase 3 should merge them.
+	msgs := []Message{
+		{Role: "user", Content: "Q1"},
+		{Role: "assistant", Content: "A1"},
+		{Role: "assistant", Content: "A2"}, // consecutive assistant — unusual but possible
+		{Role: "user", Content: "Q3"},
+		{Role: "assistant", Content: "A3"},
+	}
+	// Consume only [0,0], leaving [1,2] as consecutive assistants.
+	checkpoints := []TurnCheckpoint{
+		{StartIndex: 0, EndIndex: 0, Summary: "S1"},
+	}
+
+	outMsgs, outCps := BuildCheckpointCompactedMessages(msgs, checkpoints)
+
+	// summary + merged assistant + user + assistant = 4 messages.
+	if len(outMsgs) != 4 {
+		t.Fatalf("expected 4 messages, got %d", len(outMsgs))
+	}
+	// The two consecutive assistants should be merged.
+	if outMsgs[1].Role != "assistant" {
+		t.Errorf("expected assistant at index 1, got %s", outMsgs[1].Role)
+	}
+	if !strings.Contains(outMsgs[1].Content, "A1") || !strings.Contains(outMsgs[1].Content, "A2") {
+		t.Errorf("expected merged content, got %q", outMsgs[1].Content)
+	}
+	if len(outCps) != 0 {
+		t.Errorf("expected 0 remaining checkpoints, got %d", len(outCps))
+	}
+}
+
+func TestIsConsumableCheckpoint_Valid(t *testing.T) {
+	cp := TurnCheckpoint{StartIndex: 0, EndIndex: 1, Summary: "test"}
+	if !isConsumableCheckpoint(cp, 5) {
+		t.Error("expected consumable")
+	}
+}
+
+func TestIsConsumableCheckpoint_EmptySummary(t *testing.T) {
+	cp := TurnCheckpoint{StartIndex: 0, EndIndex: 1, Summary: ""}
+	if isConsumableCheckpoint(cp, 5) {
+		t.Error("expected not consumable due to empty summary")
+	}
+}
+
+func TestIsConsumableCheckpoint_NegativeStart(t *testing.T) {
+	cp := TurnCheckpoint{StartIndex: -1, EndIndex: 1, Summary: "test"}
+	if isConsumableCheckpoint(cp, 5) {
+		t.Error("expected not consumable due to negative start")
+	}
+}
+
+func TestIsConsumableCheckpoint_NegativeEnd(t *testing.T) {
+	cp := TurnCheckpoint{StartIndex: 0, EndIndex: -1, Summary: "test"}
+	if isConsumableCheckpoint(cp, 5) {
+		t.Error("expected not consumable due to negative end")
+	}
+}
+
+func TestIsConsumableCheckpoint_StartGreaterThanEnd(t *testing.T) {
+	cp := TurnCheckpoint{StartIndex: 2, EndIndex: 1, Summary: "test"}
+	if isConsumableCheckpoint(cp, 5) {
+		t.Error("expected not consumable due to start > end")
+	}
+}
+
+func TestIsConsumableCheckpoint_EndOutOfBounds(t *testing.T) {
+	cp := TurnCheckpoint{StartIndex: 0, EndIndex: 5, Summary: "test"}
+	if isConsumableCheckpoint(cp, 5) {
+		t.Error("expected not consumable due to end out of bounds")
+	}
+}
+
+func TestIsConsumableCheckpoint_EndEqualsLenMinus1(t *testing.T) {
+	cp := TurnCheckpoint{StartIndex: 4, EndIndex: 4, Summary: "test"}
+	if !isConsumableCheckpoint(cp, 5) {
+		t.Error("expected consumable — end is last valid index")
+	}
+}
+
+// --- Restored tests from original_test.go ---
+
 func TestBuildCheckpointSummary_SimpleTurn(t *testing.T) {
 	messages := []Message{
 		{Role: "user", Content: "What is the capital of France?"},
