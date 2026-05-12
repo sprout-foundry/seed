@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/sprout-foundry/seed/events"
@@ -158,37 +159,46 @@ func TestFinishReasonLength_MaxContinuations(t *testing.T) {
 	}
 }
 
-func TestFinishReasonContentFilter_PublishesError(t *testing.T) {
-	provider := newFRProvider(frTextResponse("filtered", "content_filter"))
-	bus := events.NewEventBus()
-	sub := bus.Subscribe("__fr_test__")
+func TestFinishReasonContentFilter_RetriesOnce(t *testing.T) {
+	// First content_filter triggers a retry. Second content_filter returns error.
+	provider := newFRProvider(
+		frTextResponse("filtered", "content_filter"),
+		frTextResponse("still filtered", "content_filter"),
+	)
 	agent, _ := NewAgent(Options{
-		Provider:       provider,
-		Executor:       &mockExecutor{},
-		EventPublisher: bus,
+		Provider: provider,
+		Executor: &mockExecutor{},
 	})
 
 	result, err := agent.Run(context.Background(), "hi")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err == nil {
+		t.Fatal("expected ContentFilteredError on second content_filter")
 	}
-	if result != "filtered" {
-		t.Errorf("expected %q, got %q", "filtered", result)
+	if !IsContentFiltered(err) {
+		t.Fatalf("expected ContentFilteredError, got: %v", err)
 	}
-	if provider.idx != 1 {
-		t.Errorf("expected 1 provider call, got %d", provider.idx)
+	if result != "" {
+		t.Errorf("expected empty result on error, got %q", result)
+	}
+	if provider.idx != 2 {
+		t.Errorf("expected 2 provider calls (retry once), got %d", provider.idx)
 	}
 
-	evts := drainEvents(sub)
-	if !findEventType(evts, EventTypeError) {
-		t.Errorf("expected error event for content_filter")
+	// Verify Provider field is set
+	cfErr := &ContentFilteredError{}
+	if !errors.As(err, &cfErr) {
+		t.Fatal("expected ContentFilteredError via errors.As")
+	}
+	if cfErr.Provider != "test-model" {
+		t.Errorf("expected Provider 'test-model', got %q", cfErr.Provider)
 	}
 }
 
-func TestFinishReasonContentFilter_NoContinuation(t *testing.T) {
+func TestFinishReasonContentFilter_RetrySucceeds(t *testing.T) {
+	// First content_filter triggers a retry. Second response succeeds.
 	provider := newFRProvider(
-		frTextResponse("This was cut off...", "content_filter"),
-		frTextResponse("should not be called", "stop"),
+		frTextResponse("filtered", "content_filter"),
+		frTextResponse("rephrased response", "stop"),
 	)
 	agent, _ := NewAgent(Options{
 		Provider: provider,
@@ -199,11 +209,82 @@ func TestFinishReasonContentFilter_NoContinuation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if provider.idx != 1 {
-		t.Errorf("expected 1 provider call (no continuation), got %d", provider.idx)
+	if result != "rephrased response" {
+		t.Errorf("expected %q, got %q", "rephrased response", result)
 	}
-	if result != "This was cut off..." {
-		t.Errorf("expected %q, got %q", "This was cut off...", result)
+	if provider.idx != 2 {
+		t.Errorf("expected 2 provider calls (retry once), got %d", provider.idx)
+	}
+}
+
+func TestFinishReasonContentFilter_PublishesErrorOnSecond(t *testing.T) {
+	// Error events published on both first (retrying) and second (exhausted) content_filter.
+	provider := newFRProvider(
+		frTextResponse("filtered", "content_filter"),
+		frTextResponse("still filtered", "content_filter"),
+	)
+	bus := events.NewEventBus()
+	sub := bus.Subscribe("__fr_cf_err__")
+	agent, _ := NewAgent(Options{
+		Provider:       provider,
+		Executor:       &mockExecutor{},
+		EventPublisher: bus,
+	})
+
+	_, err := agent.Run(context.Background(), "hi")
+	if err == nil {
+		t.Fatal("expected ContentFilteredError")
+	}
+
+	evts := drainEvents(sub)
+	// Should have 2 error events: one for first retry, one for second (exhausted)
+	var errorEvts []events.UIEvent
+	for _, e := range evts {
+		if e.Type == EventTypeError {
+			errorEvts = append(errorEvts, e)
+		}
+	}
+	if len(errorEvts) != 2 {
+		t.Fatalf("expected 2 error events (first retry + second exhausted), got %d", len(errorEvts))
+	}
+	// First event: retrying
+	data1, ok := errorEvts[0].Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected map data, got %T", errorEvts[0].Data)
+	}
+	if data1["message"] != "response filtered by content policy (retrying)" {
+		t.Errorf("expected retrying message, got %v", data1["message"])
+	}
+	// Second event: exhausted
+	data2, ok := errorEvts[1].Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected map data, got %T", errorEvts[1].Data)
+	}
+	if data2["message"] != "response filtered by content policy (retry exhausted)" {
+		t.Errorf("expected exhausted message, got %v", data2["message"])
+	}
+}
+
+func TestFinishReasonContentFilter_RetriesOnFirst(t *testing.T) {
+	// First content_filter triggers a retry — the second response is called.
+	provider := newFRProvider(
+		frTextResponse("This was cut off...", "content_filter"),
+		frTextResponse("rephrased answer", "stop"),
+	)
+	agent, _ := NewAgent(Options{
+		Provider: provider,
+		Executor: &mockExecutor{},
+	})
+
+	result, err := agent.Run(context.Background(), "hi")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if provider.idx != 2 {
+		t.Errorf("expected 2 provider calls (retry once), got %d", provider.idx)
+	}
+	if result != "rephrased answer" {
+		t.Errorf("expected %q, got %q", "rephrased answer", result)
 	}
 }
 
@@ -342,7 +423,11 @@ func TestFinishReasonLength_NoErrorEvent(t *testing.T) {
 }
 
 func TestFinishReasonContentFilter_EventDetails(t *testing.T) {
-	provider := newFRProvider(frTextResponse("filtered content", "content_filter"))
+	// Error events published on both first (retrying) and second (exhausted) content_filter.
+	provider := newFRProvider(
+		frTextResponse("filtered content", "content_filter"),
+		frTextResponse("still filtered", "content_filter"),
+	)
 	bus := events.NewEventBus()
 	sub := bus.Subscribe("__fr_test3__")
 	agent, _ := NewAgent(Options{
@@ -352,15 +437,22 @@ func TestFinishReasonContentFilter_EventDetails(t *testing.T) {
 	})
 
 	_, err := agent.Run(context.Background(), "hi")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err == nil {
+		t.Fatal("expected ContentFilteredError on second content_filter")
 	}
 
 	evts := drainEvents(sub)
-	errEvt := findEvent(evts, EventTypeError)
-	if errEvt.Type == "" {
-		t.Fatal("expected error event for content_filter")
+	// Find the second error event (exhausted)
+	var errorEvts []events.UIEvent
+	for _, e := range evts {
+		if e.Type == EventTypeError {
+			errorEvts = append(errorEvts, e)
+		}
 	}
+	if len(errorEvts) < 2 {
+		t.Fatalf("expected at least 2 error events, got %d", len(errorEvts))
+	}
+	errEvt := errorEvts[1] // second event (exhausted)
 	data, ok := errEvt.Data.(map[string]interface{})
 	if !ok {
 		t.Fatalf("expected error event data to be map, got %T", errEvt.Data)
@@ -413,8 +505,13 @@ func TestFinishReasonLength_ResetsOnToolCalls(t *testing.T) {
 	}
 }
 
-func TestFinishReasonContentFilter_TurnCompleted(t *testing.T) {
-	provider := newFRProvider(frTextResponse("filtered", "content_filter"))
+func TestFinishReasonContentFilter_NoTurnCompletedOnError(t *testing.T) {
+	// When content_filter returns an error (second occurrence), no checkpoint
+	// is recorded because the turn didn't complete normally.
+	provider := newFRProvider(
+		frTextResponse("filtered", "content_filter"),
+		frTextResponse("still filtered", "content_filter"),
+	)
 	bus := events.NewEventBus()
 	sub := bus.Subscribe("__fr_test4__")
 	agent, _ := NewAgent(Options{
@@ -424,18 +521,23 @@ func TestFinishReasonContentFilter_TurnCompleted(t *testing.T) {
 	})
 
 	_, err := agent.Run(context.Background(), "hi")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err == nil {
+		t.Fatal("expected ContentFilteredError")
 	}
 
 	evts := drainEvents(sub)
-	if !findEventType(evts, EventTypeQueryCompleted) {
-		t.Error("expected query_completed event for content_filter")
+	// No query_completed because the turn errored out
+	if findEventType(evts, EventTypeQueryCompleted) {
+		t.Error("expected no query_completed event for content_filter error")
 	}
 }
 
 func TestFinishReasonContentFilter_WithEventBus(t *testing.T) {
-	provider := newFRProvider(frTextResponse("filtered", "content_filter"))
+	// Error events published on both first (retrying) and second (exhausted) content_filter.
+	provider := newFRProvider(
+		frTextResponse("filtered", "content_filter"),
+		frTextResponse("still filtered", "content_filter"),
+	)
 	bus := events.NewEventBus()
 	sub := bus.Subscribe("__fr_test5__")
 	agent, _ := NewAgent(Options{
@@ -445,13 +547,13 @@ func TestFinishReasonContentFilter_WithEventBus(t *testing.T) {
 	})
 
 	_, err := agent.Run(context.Background(), "hi")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err == nil {
+		t.Fatal("expected ContentFilteredError")
 	}
 
 	evts := drainEvents(sub)
 	if !findEventType(evts, EventTypeError) {
-		t.Error("expected error event for content_filter")
+		t.Error("expected error event for second content_filter")
 	}
 }
 
@@ -478,7 +580,11 @@ func TestFinishReasonLength_Stream(t *testing.T) {
 }
 
 func TestFinishReasonContentFilter_Stream(t *testing.T) {
-	provider := newFRProvider(frTextResponse("filtered", "content_filter"))
+	// Same retry-then-error behavior in streaming mode.
+	provider := newFRProvider(
+		frTextResponse("filtered", "content_filter"),
+		frTextResponse("still filtered", "content_filter"),
+	)
 	bus := events.NewEventBus()
 	sub := bus.Subscribe("__fr_test6__")
 	agent, _ := NewAgent(Options{
@@ -488,19 +594,42 @@ func TestFinishReasonContentFilter_Stream(t *testing.T) {
 	})
 
 	result, err := agent.RunStream(context.Background(), "hi")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err == nil {
+		t.Fatal("expected ContentFilteredError on second content_filter")
 	}
-	if result != "filtered" {
-		t.Errorf("expected %q, got %q", "filtered", result)
+	if result != "" {
+		t.Errorf("expected empty result on error, got %q", result)
 	}
-	if provider.idx != 1 {
-		t.Errorf("expected 1 provider call, got %d", provider.idx)
+	if provider.idx != 2 {
+		t.Errorf("expected 2 provider calls (retry once), got %d", provider.idx)
 	}
 
 	evts := drainEvents(sub)
 	if !findEventType(evts, EventTypeError) {
 		t.Error("expected error event for content_filter in streaming mode")
+	}
+}
+
+func TestFinishReasonContentFilter_Stream_RetrySucceeds(t *testing.T) {
+	// First content_filter triggers retry; second response succeeds in streaming mode.
+	provider := newFRProvider(
+		frTextResponse("filtered", "content_filter"),
+		frTextResponse("rephrased", "stop"),
+	)
+	agent, _ := NewAgent(Options{
+		Provider: provider,
+		Executor: &mockExecutor{},
+	})
+
+	result, err := agent.RunStream(context.Background(), "hi")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != "rephrased" {
+		t.Errorf("expected %q, got %q", "rephrased", result)
+	}
+	if provider.idx != 2 {
+		t.Errorf("expected 2 provider calls (retry once), got %d", provider.idx)
 	}
 }
 
@@ -555,25 +684,46 @@ func TestFinishReasonLength_DrainsEventChannel(t *testing.T) {
 }
 
 func TestFinishReasonContentFilter_WithTools(t *testing.T) {
-	// content_filter with tool calls should still finalize without executing tools.
-	provider := newFRProvider(&ChatResponse{
-		Choices: []ChatChoice{{
-			Message: Message{
-				Role:    "assistant",
-				Content: "filtered",
-				ToolCalls: []ToolCall{{
-					ID:   "call_1",
-					Type: "function",
-					Function: ToolCallFunction{
-						Name:      "dangerous_tool",
-						Arguments: `{}`,
-					},
-				}},
-			},
-			FinishReason: "content_filter",
-		}},
-		Usage: ChatUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15},
-	})
+	// content_filter with tool calls: first occurrence retries, second returns error.
+	// Tools should never execute when content_filter is returned.
+	provider := newFRProvider(
+		&ChatResponse{
+			Choices: []ChatChoice{{
+				Message: Message{
+					Role:    "assistant",
+					Content: "filtered",
+					ToolCalls: []ToolCall{{
+						ID:   "call_1",
+						Type: "function",
+						Function: ToolCallFunction{
+							Name:      "dangerous_tool",
+							Arguments: `{}`,
+						},
+					}},
+				},
+				FinishReason: "content_filter",
+			}},
+			Usage: ChatUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15},
+		},
+		&ChatResponse{
+			Choices: []ChatChoice{{
+				Message: Message{
+					Role:    "assistant",
+					Content: "still filtered",
+					ToolCalls: []ToolCall{{
+						ID:   "call_2",
+						Type: "function",
+						Function: ToolCallFunction{
+							Name:      "dangerous_tool",
+							Arguments: `{}`,
+						},
+					}},
+				},
+				FinishReason: "content_filter",
+			}},
+			Usage: ChatUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15},
+		},
+	)
 	executor := &mockExecutor{
 		results: []Message{{Role: "tool", Content: "should not execute", ToolCallID: "call_1"}},
 	}
@@ -582,17 +732,16 @@ func TestFinishReasonContentFilter_WithTools(t *testing.T) {
 		Executor: executor,
 	})
 
-	result, err := agent.Run(context.Background(), "hi")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	_, err := agent.Run(context.Background(), "hi")
+	if err == nil {
+		t.Fatal("expected ContentFilteredError on second content_filter")
 	}
-	if result != "filtered" {
-		t.Errorf("expected %q, got %q", "filtered", result)
+	if !IsContentFiltered(err) {
+		t.Fatalf("expected ContentFilteredError, got: %v", err)
 	}
-	if provider.idx != 1 {
-		t.Errorf("expected 1 provider call, got %d", provider.idx)
+	if provider.idx != 2 {
+		t.Errorf("expected 2 provider calls (retry once), got %d", provider.idx)
 	}
-
 }
 
 func TestFinishReasonStop_EmptyContent_Continues(t *testing.T) {

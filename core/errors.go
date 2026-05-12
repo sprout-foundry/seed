@@ -148,3 +148,24 @@ func IsAuthError(err error) bool {
 	var a *AuthError
 	return errors.As(err, &a)
 }
+
+// ContentFilteredError indicates the provider's content filter blocked the
+// response after a retry attempt was already made.
+type ContentFilteredError struct {
+	// Provider is the provider that returned the content filter.
+	Provider string
+}
+
+func (e *ContentFilteredError) Error() string {
+	base := "response filtered by content policy (retry exhausted)"
+	if e.Provider != "" {
+		base += " (" + e.Provider + ")"
+	}
+	return base
+}
+
+// IsContentFiltered reports whether err is a ContentFilteredError.
+func IsContentFiltered(err error) bool {
+	var c *ContentFilteredError
+	return errors.As(err, &c)
+}

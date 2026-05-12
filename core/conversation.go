@@ -47,6 +47,11 @@ type ConversationHandler struct {
 	// the response is accepted to avoid infinite loops. This counter is
 	// separate from continuationCount and resets when tool calls are executed.
 	tentativeRejectionCount int
+
+	// contentFilterRetry tracks whether we've already retried once for a
+	// content_filter finish_reason. On first occurrence, we retry. On second,
+	// we return a ContentFilteredError to the consumer.
+	contentFilterRetry bool
 }
 
 // maxContinuations is the maximum number of consecutive incomplete-response
@@ -89,6 +94,12 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 	a := ch.agent
 	a.outputMgr.ContentBuffer().Reset()
 	a.outputMgr.ReasoningBuffer().Reset()
+
+	// Reset per-query counters
+	ch.contentFilterRetry = false
+	ch.continuationCount = 0
+	ch.tentativeRejectionCount = 0
+	ch.turnCompleted = false
 
 	// Check pause
 	if ch.agent.paused {
@@ -212,20 +223,36 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 
 		case "content_filter":
 			// Content was filtered by the provider's safety system.
-			// This path sets turnCompleted because the user received a
-			// (filtered) response and the turn did complete — the model
-			// signaled "stop", not truncation. Contrast with length and
-			// stop/incomplete force-finalize, which skip checkpoints.
-			ch.agent.debugLog("[finish] content_filter — response was filtered\n")
+			// Uses a separate retry mechanism (contentFilterRetry bool) rather
+			// than sharing continuationCount: content_filter is a provider-side
+			// policy rejection, not a truncation issue. It gets exactly 1 retry
+			// regardless of other continuation budget consumed.
+			if !ch.contentFilterRetry {
+				ch.contentFilterRetry = true
+				ch.agent.debugLog("[finish] content_filter — first occurrence, retrying\n")
+				// Publish error event for observability (consumer can distinguish
+				// first-retry from retry-exhausted by the event message).
+				if ch.agent.eventPublisher != nil {
+					ch.agent.eventPublisher.Publish(EventTypeError, map[string]interface{}{
+						"message": "response filtered by content policy (retrying)",
+						"error":   "content_filter",
+					})
+				}
+				ch.enqueueTransientMessage(Message{
+					Role:    "user",
+					Content: "Your previous response was filtered. Please rephrase your response.",
+				})
+				continue
+			}
+			// Second occurrence — return error to consumer.
+			ch.agent.debugLog("[finish] content_filter — second occurrence, returning error\n")
 			if ch.agent.eventPublisher != nil {
 				ch.agent.eventPublisher.Publish(EventTypeError, map[string]interface{}{
-					"message": "response filtered by content policy",
+					"message": "response filtered by content policy (retry exhausted)",
 					"error":   "content_filter",
 				})
 			}
-			ch.turnCompleted = true
-			ch.turnEndIndex = ch.agent.state.Len() - 1
-			return ch.finalize(query)
+			return "", &ContentFilteredError{Provider: ch.agent.provider.Info().Model}
 
 		case "stop":
 			// "stop" — model completed normally.
