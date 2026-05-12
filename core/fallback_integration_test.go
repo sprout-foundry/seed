@@ -65,7 +65,7 @@ func TestFallback_JSONFence(t *testing.T) {
 		},
 	}
 	e := &mockExecutor{
-		tools:   []Tool{{Name: "search", Description: "Search", Parameters: ToolParameters{Type: "object"}}},
+		tools:   []Tool{{Function: ToolFunction{Name: "search", Description: "Search", Parameters: ToolParameters{Type: "object"}}}},
 		results: []Message{{Role: "tool", Content: "Results"}},
 	}
 	bus := events.NewEventBus()
@@ -88,7 +88,7 @@ func TestFallback_NoPatterns(t *testing.T) {
 		},
 	}
 	e := &mockExecutor{
-		tools:   []Tool{{Name: "search", Description: "Search", Parameters: ToolParameters{Type: "object"}}},
+		tools:   []Tool{{Function: ToolFunction{Name: "search", Description: "Search", Parameters: ToolParameters{Type: "object"}}}},
 		results: []Message{},
 	}
 	bus := events.NewEventBus()
@@ -116,7 +116,7 @@ func TestFallback_XMLToolCalls(t *testing.T) {
 		},
 	}
 	e := &mockExecutor{
-		tools:   []Tool{{Name: "search", Description: "Search", Parameters: ToolParameters{Type: "object"}}},
+		tools:   []Tool{{Function: ToolFunction{Name: "search", Description: "Search", Parameters: ToolParameters{Type: "object"}}}},
 		results: []Message{{Role: "tool", Content: "Results"}},
 	}
 	a, _ := NewAgent(Options{Provider: p, Executor: e})
@@ -145,7 +145,7 @@ func TestFallback_StructuredSkipsFallback(t *testing.T) {
 		},
 	}
 	e := &mockExecutor{
-		tools:   []Tool{{Name: "search", Description: "Search", Parameters: ToolParameters{Type: "object"}}},
+		tools:   []Tool{{Function: ToolFunction{Name: "search", Description: "Search", Parameters: ToolParameters{Type: "object"}}}},
 		results: []Message{{Role: "tool", Content: "Results", ToolCallID: "call_structured"}},
 	}
 	bus := events.NewEventBus()
@@ -181,7 +181,7 @@ func TestFallback_UnknownToolFiltered(t *testing.T) {
 		},
 	}
 	e := &mockExecutor{
-		tools:   []Tool{{Name: "search", Description: "Search", Parameters: ToolParameters{Type: "object"}}},
+		tools:   []Tool{{Function: ToolFunction{Name: "search", Description: "Search", Parameters: ToolParameters{Type: "object"}}}},
 		results: []Message{},
 	}
 	bus := events.NewEventBus()
@@ -206,7 +206,7 @@ func TestFallback_FunctionNamePattern(t *testing.T) {
 		},
 	}
 	e := &mockExecutor{
-		tools:   []Tool{{Name: "search", Description: "Search", Parameters: ToolParameters{Type: "object"}}},
+		tools:   []Tool{{Function: ToolFunction{Name: "search", Description: "Search", Parameters: ToolParameters{Type: "object"}}}},
 		results: []Message{{Role: "tool", Content: "Found it"}},
 	}
 	bus := events.NewEventBus()

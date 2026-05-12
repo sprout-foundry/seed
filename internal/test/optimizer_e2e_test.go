@@ -40,7 +40,7 @@ func TestE2E_Optimizer_FileReadDedup(t *testing.T) {
 	// Third iteration: final answer
 	h.Provider().AddTextResponse("The file contains the expected configuration.")
 
-	h.Executor().AddTool(core.Tool{Name: "read_file"})
+	h.Executor().AddTool(core.Tool{Function: core.ToolFunction{Name: "read_file"}})
 	h.Executor().AddToolResult("call_1", "host: localhost\nport: 5432")
 	h.Executor().AddToolResult("call_2", "host: localhost\nport: 5432")
 
@@ -121,7 +121,7 @@ func TestE2E_Optimizer_ShellCommandDedup(t *testing.T) {
 	// Third iteration: final answer
 	h.Provider().AddTextResponse("The directory has three files.")
 
-	h.Executor().AddTool(core.Tool{Name: "shell"})
+	h.Executor().AddTool(core.Tool{Function: core.ToolFunction{Name: "shell"}})
 	h.Executor().AddToolResult("call_1", "file1\nfile2\nfile3\n")
 	h.Executor().AddToolResult("call_2", "file1\nfile2\nfile3\n")
 
@@ -185,7 +185,7 @@ func TestE2E_Optimizer_Disabled_NoOptimization(t *testing.T) {
 	)
 	h.Provider().AddTextResponse("Done.")
 
-	h.Executor().AddTool(core.Tool{Name: "read_file"})
+	h.Executor().AddTool(core.Tool{Function: core.ToolFunction{Name: "read_file"}})
 	h.Executor().AddToolResult("call_1", "same content")
 	h.Executor().AddToolResult("call_2", "same content")
 
@@ -228,7 +228,7 @@ func TestE2E_Optimizer_Nil_NoPanic(t *testing.T) {
 	)
 	h.Provider().AddTextResponse("Done.")
 
-	h.Executor().AddTool(core.Tool{Name: "read_file"})
+	h.Executor().AddTool(core.Tool{Function: core.ToolFunction{Name: "read_file"}})
 	h.Executor().AddToolResult("call_1", "content")
 
 	// No optimizer provided (nil)

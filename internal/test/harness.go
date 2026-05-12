@@ -327,7 +327,7 @@ func (h *Harness) AssertLastRequestHasTool(name string) {
 	}
 	found := false
 	for _, tool := range req.Tools {
-		if tool.Name == name {
+		if tool.Function.Name == name {
 			found = true
 			break
 		}
@@ -374,7 +374,7 @@ func (h *Harness) eventTypes() []string {
 func (h *Harness) toolNames(tools []core.Tool) []string {
 	names := make([]string, len(tools))
 	for i, t := range tools {
-		names[i] = t.Name
+		names[i] = t.Function.Name
 	}
 	return names
 }

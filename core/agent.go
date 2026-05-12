@@ -178,7 +178,7 @@ func NewAgent(opts Options) (*Agent, error) {
 	// Build a set of known tool names for the fallback parser.
 	knownTools := make(map[string]bool)
 	for _, t := range opts.Executor.GetTools() {
-		knownTools[t.Name] = true
+		knownTools[t.Function.Name] = true
 	}
 
 	var fallbackParser *FallbackParser

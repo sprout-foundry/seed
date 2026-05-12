@@ -89,7 +89,7 @@ func TestPrepareMessages_ImagesStrippedForNonVision(t *testing.T) {
 	a.State().AddMessage(Message{
 		Role:    "user",
 		Content: "Look at this",
-		Images:  []ImageData{{URL: "http://example.com/img.png", MIMEType: "image/png"}},
+		Images:  []ImageData{{URL: "http://example.com/img.png", Type: "image/png"}},
 	})
 
 	ch := newConversationHandler(a)
@@ -122,7 +122,7 @@ func TestPrepareMessages_ImagesKeptForVision(t *testing.T) {
 	a.State().AddMessage(Message{
 		Role:    "user",
 		Content: "Look at this",
-		Images:  []ImageData{{URL: "http://example.com/img.png", MIMEType: "image/png"}},
+		Images:  []ImageData{{URL: "http://example.com/img.png", Type: "image/png"}},
 	})
 
 	ch := newConversationHandler(a)

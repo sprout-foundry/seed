@@ -88,8 +88,11 @@ func TestE2E_ToolsSentToProvider(t *testing.T) {
 	h.Provider().AddTextResponse("OK")
 
 	h.Executor().AddTool(core.Tool{
-		Name:        "search",
-		Description: "Search the web",
+		Type: "function",
+		Function: core.ToolFunction{
+			Name:        "search",
+			Description: "Search the web",
+		},
 	})
 
 	agent := h.NewAgent()
@@ -641,7 +644,7 @@ func TestE2E_ImagesStrippedForNonVision(t *testing.T) {
 	agent.State().AddMessage(core.Message{
 		Role:    "user",
 		Content: "Look at this",
-		Images:  []core.ImageData{{URL: "http://img.png", MIMEType: "image/png"}},
+		Images:  []core.ImageData{{URL: "http://img.png", Type: "image/png"}},
 	})
 
 	_, err := agent.Run(context.Background(), "test")
@@ -670,7 +673,7 @@ func TestE2E_ImagesKeptForVision(t *testing.T) {
 	agent.State().AddMessage(core.Message{
 		Role:    "user",
 		Content: "Look at this",
-		Images:  []core.ImageData{{URL: "http://img.png", MIMEType: "image/png"}},
+		Images:  []core.ImageData{{URL: "http://img.png", Type: "image/png"}},
 	})
 
 	_, err := agent.Run(context.Background(), "test")
@@ -1164,7 +1167,7 @@ func TestE2E_TentativeResponse_ContinuesToToolCall(t *testing.T) {
 	// Third call: final answer using the tool result
 	h.Provider().AddTextResponse("The configuration has database settings on port 5432 with localhost as the host.")
 
-	h.Executor().AddTool(core.Tool{Name: "read_file"})
+	h.Executor().AddTool(core.Tool{Function: core.ToolFunction{Name: "read_file"}})
 	h.Executor().AddToolResult("call_1", "database:\n  host: localhost\n  port: 5432")
 
 	agent := h.NewAgent()
@@ -2358,7 +2361,7 @@ func TestE2E_MalformedResponse_JSONFence(t *testing.T) {
 	h := NewHarnessWithT(t)
 
 	// Register a tool so the executor knows about it.
-	h.Executor().AddTool(core.Tool{Name: "read_file"})
+	h.Executor().AddTool(core.Tool{Function: core.ToolFunction{Name: "read_file"}})
 
 	// First response: malformed — tool call embedded in JSON fence inside content.
 	malformedContent := "I'll read the file for you.\n\n```json\n{\"tool_calls\":[{\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{\\\"path\\\":\\\"test.txt\\\"}\"}}]}\n```\n\nLet me know if you need anything else."
@@ -2400,7 +2403,7 @@ func TestE2E_MalformedResponse_XMLBlock(t *testing.T) {
 	// Simulates a model returning tool calls in XML format embedded in content.
 	h := NewHarnessWithT(t)
 
-	h.Executor().AddTool(core.Tool{Name: "search"})
+	h.Executor().AddTool(core.Tool{Function: core.ToolFunction{Name: "search"}})
 
 	// Malformed response with <tool> XML block containing tool_calls JSON.
 	malformedContent := "Let me search for that.\n<tool>{\"tool_calls\":[{\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"search\",\"arguments\":\"{\\\"query\\\":\\\"go testing\\\"}\"}}]}</tool>\nThat should help."
@@ -2444,8 +2447,8 @@ func TestE2E_MalformedResponse_MultipleIterations(t *testing.T) {
 	// across iterations, each with tool calls extracted by the fallback parser.
 	h := NewHarnessWithT(t)
 
-	h.Executor().AddTool(core.Tool{Name: "read_file"})
-	h.Executor().AddTool(core.Tool{Name: "shell"})
+	h.Executor().AddTool(core.Tool{Function: core.ToolFunction{Name: "read_file"}})
+	h.Executor().AddTool(core.Tool{Function: core.ToolFunction{Name: "shell"}})
 
 	// First malformed: read_file tool call
 	h.Provider().AddMalformedResponse(
@@ -2591,7 +2594,7 @@ func TestE2E_Optimizer_Integration_FileReadDedup(t *testing.T) {
 	h := NewHarnessWithT(t)
 
 	// Register the read_file tool.
-	h.Executor().AddTool(core.Tool{Name: "read_file"})
+	h.Executor().AddTool(core.Tool{Function: core.ToolFunction{Name: "read_file"}})
 
 	// Provider returns: tool call 1, tool call 2 (same file), final answer.
 	h.Provider().AddToolCallResponse(
@@ -3682,7 +3685,7 @@ func TestE2E_MalformedToolCalls_RetryAndReEmit(t *testing.T) {
 	// Call 3: final text answer
 	h.Provider().AddTextResponse("The file contains 'hello'.")
 
-	h.Executor().AddTool(core.Tool{Name: "read_file"})
+	h.Executor().AddTool(core.Tool{Function: core.ToolFunction{Name: "read_file"}})
 	h.Executor().AddToolResult("call_2", "hello")
 
 	agent := h.NewAgent()
@@ -3832,8 +3835,8 @@ func TestE2E_MalformedToolCalls_PartialDropped(t *testing.T) {
 	// Second response: final text answer
 	h.Provider().AddTextResponse("Done processing.")
 
-	h.Executor().AddTool(core.Tool{Name: "read_file"})
-	h.Executor().AddTool(core.Tool{Name: "broken_tool"})
+	h.Executor().AddTool(core.Tool{Function: core.ToolFunction{Name: "read_file"}})
+	h.Executor().AddTool(core.Tool{Function: core.ToolFunction{Name: "broken_tool"}})
 	h.Executor().AddToolResult("call_2", "data result")
 
 	agent := h.NewAgent()
@@ -4670,9 +4673,11 @@ func TestE2E_ChannelSuffixStripped(t *testing.T) {
 
 	// Register the tool with the clean name
 	h.Executor().AddTool(core.Tool{
-		Name:        "read_file",
-		Description: "Read a file",
-	})
+		Function: core.ToolFunction{
+			Name: "read_file",
+			Description: "Read a file",
+		},
+		})
 
 	// First response: tool call with <|channel|>0 suffix in the name
 	h.Provider().AddToolCallResponse(
@@ -4743,9 +4748,11 @@ func TestE2E_MissingToolCallID_SyntheticID(t *testing.T) {
 
 	// Register the tool so the executor recognizes it
 	h.Executor().AddTool(core.Tool{
-		Name:        "read_file",
-		Description: "Read a file",
-	})
+		Function: core.ToolFunction{
+			Name: "read_file",
+			Description: "Read a file",
+		},
+		})
 
 	// First response: tool call with EMPTY ID — normalizer must generate one
 	h.Provider().AddToolCallResponse(
@@ -4873,13 +4880,17 @@ func TestE2E_MissingToolCallID_MultipleCalls(t *testing.T) {
 	h := NewHarnessWithT(t)
 
 	h.Executor().AddTool(core.Tool{
-		Name:        "read_file",
-		Description: "Read a file",
-	})
+		Function: core.ToolFunction{
+			Name: "read_file",
+			Description: "Read a file",
+		},
+		})
 	h.Executor().AddTool(core.Tool{
-		Name:        "write_file",
-		Description: "Write a file",
-	})
+		Function: core.ToolFunction{
+			Name: "write_file",
+			Description: "Write a file",
+		},
+		})
 
 	// First response: two tool calls — first has ID, second doesn't
 	h.Provider().AddToolCallResponse(
@@ -5000,9 +5011,11 @@ func TestE2E_MalformedStructuredToolCall_Retry(t *testing.T) {
 
 	// Register the tool so the executor recognizes it
 	h.Executor().AddTool(core.Tool{
-		Name:        "read_file",
-		Description: "Read a file",
-	})
+		Function: core.ToolFunction{
+			Name: "read_file",
+			Description: "Read a file",
+		},
+		})
 
 	// First response: tool call with unrepairable JSON arguments.
 	// The normalizer's repairJSON will try to fix it, but "not json at all"
