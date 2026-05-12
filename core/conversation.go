@@ -23,6 +23,25 @@ type ConversationHandler struct {
 	// continuationCount tracks consecutive incomplete-response continuations.
 	// After maxContinuations without progress, the loop force-finalizes.
 	continuationCount int
+
+	// queryStartIndex is the index in state.Messages() where the user query
+	// message was added. Used for turn checkpoint recording.
+	queryStartIndex int
+
+	// turnEndIndex is the index of the final message in the turn (set when
+	// the loop exits normally). Paired with queryStartIndex to define the
+	// checkpoint range. Captured at loop-exit time so finalize() uses the
+	// correct boundary even if state is mutated afterward.
+	turnEndIndex int
+
+	// turnCompleted is true only when the loop exits via the normal
+	// completion path (no tool calls and no injected user input).
+	// It remains false when finalize() is called after:
+	//   - max iterations is reached without a clean exit
+	// For other failure paths (context cancelled, agent paused, chat error),
+	// finalize() is never reached because runLoop returns early.
+	// Used by finalize() to decide whether to record a turn checkpoint.
+	turnCompleted bool
 }
 
 // maxContinuations is the maximum number of consecutive incomplete-response
@@ -72,6 +91,7 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 	}
 
 	// Add user message
+	ch.queryStartIndex = ch.agent.state.Len()
 	ch.agent.state.AddMessage(Message{Role: "user", Content: query})
 
 	// Publish query started event
@@ -217,6 +237,8 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 			}
 
 			ch.agent.debugLog("[OK] Conversation complete\n")
+			ch.turnCompleted = true
+			ch.turnEndIndex = ch.agent.state.Len() - 1
 			completed = true
 			break
 		}

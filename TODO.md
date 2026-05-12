@@ -113,7 +113,7 @@
 [x] - CHECKPOINT: Implement `BuildCheckpointCompactedMessages()` — replace consumed checkpoints with summary messages, shift remaining indices. `core/turn_checkpoints.go`
 [x] - CHECKPOINT: Implement index shifting — update checkpoint StartIndex/EndIndex by delta after compaction removes messages. `core/turn_checkpoints.go`
 [x] - CHECKPOINT: Handle consecutive-assistant boundary — if summary + next message are both assistant with no tool calls, merge or drop. `core/turn_checkpoints.go`
-[] - CHECKPOINT: Wire recording into ConversationHandler — set `queryStartIndex` when user message added, record checkpoint in `finalize()`. `core/conversation.go`
+[x] - CHECKPOINT: Wire recording into ConversationHandler — set `queryStartIndex` when user message added, record checkpoint in `finalize()`. `core/conversation.go`
 [] - CHECKPOINT: Wire checkpoint compaction into `prepareMessages()` — use checkpoint-compacted messages before sending to provider. `core/conversation.go`
 [] - CHECKPOINT: Add e2e checkpoint recording test — completed turn -> checkpoint created with summary and actionable summary. `test/e2e_test.go`
 [] - CHECKPOINT: Add e2e checkpoint compaction test — multiple turns -> checkpoints consumed -> message count reduced. `test/e2e_test.go`

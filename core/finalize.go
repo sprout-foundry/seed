@@ -17,6 +17,22 @@ func (ch *ConversationHandler) finalize(query string) (string, error) {
 		}
 	}
 
+	// Record a turn checkpoint if the turn completed normally.
+	if ch.turnCompleted && ch.queryStartIndex >= 0 && ch.turnEndIndex >= ch.queryStartIndex {
+		if ch.turnEndIndex < len(messages) {
+			turnMessages := messages[ch.queryStartIndex : ch.turnEndIndex+1]
+			RecordTurnCheckpointAsync(ch.agent.state, turnMessages, ch.queryStartIndex, ch.turnEndIndex, 5*time.Second)
+		} else {
+			ch.agent.debugLog("[checkpoint] Skipping checkpoint: turnEndIndex %d >= messages len %d\n",
+				ch.turnEndIndex, len(messages))
+		}
+	} else if !ch.turnCompleted {
+		ch.agent.debugLog("[checkpoint] Skipping checkpoint: turn not completed\n")
+	} else {
+		ch.agent.debugLog("[checkpoint] Skipping checkpoint: invalid indices (queryStart=%d, turnEnd=%d)\n",
+			ch.queryStartIndex, ch.turnEndIndex)
+	}
+
 	// Publish query completed event
 	if ch.agent.eventBus != nil {
 		duration := time.Since(ch.conversationStart)
