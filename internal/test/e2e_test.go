@@ -3645,3 +3645,225 @@ func TestE2E_CheckpointIndexShifting_AfterCompaction(t *testing.T) {
 		t.Errorf("expected 4 checkpoint summaries in turn 5 request, got %d", foundSummaries)
 	}
 }
+
+// --- Malformed Structured Tool Call Tests ---
+
+func TestE2E_MalformedToolCalls_RetryAndReEmit(t *testing.T) {
+	// Provider returns a malformed tool call (unrepairable JSON args) on the
+	// first call. The normalizer drops it, the loop enqueues a transient
+	// retry message, and the second provider call returns a valid tool call
+	// that executes successfully.
+	h := NewHarnessWithT(t)
+
+	// Call 1: malformed tool call with unrepairable JSON arguments
+	h.Provider().AddToolCallResponse(
+		"Let me check.",
+		core.ToolCall{
+			ID: "call_1",
+			Function: core.ToolCallFunction{
+				Name:      "read_file",
+				Arguments: "not json at all", // unrepairable — will be dropped by normalizer
+			},
+		},
+	)
+
+	// Call 2: valid tool call (response to malformed retry prompt)
+	h.Provider().AddToolCallResponse(
+		"Reading the file.",
+		core.ToolCall{
+			ID: "call_2",
+			Function: core.ToolCallFunction{
+				Name:      "read_file",
+				Arguments: `{"path":"test.txt"}`,
+			},
+		},
+	)
+
+	// Call 3: final text answer
+	h.Provider().AddTextResponse("The file contains 'hello'.")
+
+	h.Executor().AddTool(core.Tool{Name: "read_file"})
+	h.Executor().AddToolResult("call_2", "hello")
+
+	agent := h.NewAgent()
+	result, err := agent.Run(context.Background(), "Read test.txt")
+
+	h.AssertNoError(err)
+	h.AssertEquals(result, "The file contains 'hello'.")
+	h.AssertProviderCalledN(3)
+	h.AssertExecutorCalledN(1)
+	// State: user + assistant(malformed, dropped) + assistant(valid) + tool_result + assistant(final)
+	h.AssertStateHasNMessages(agent, 5)
+
+	// Verify the transient retry message appears in the SECOND provider request
+	// (after the malformed call was normalized and dropped).
+	if len(h.Provider().Calls) < 2 {
+		t.Fatal("expected at least 2 provider calls")
+	}
+	secondReq := h.Provider().Calls[1]
+	foundRetryMsg := false
+	for _, msg := range secondReq.Messages {
+		if msg.Role == "user" && strings.Contains(msg.Content, "Your previous tool call was malformed") {
+			foundRetryMsg = true
+			break
+		}
+	}
+	if !foundRetryMsg {
+		t.Error("expected malformed retry transient message in second provider request")
+	}
+
+	// Verify the transient retry message does NOT appear in the first request
+	firstReq := h.Provider().Calls[0]
+	for _, msg := range firstReq.Messages {
+		if strings.Contains(msg.Content, "Your previous tool call was malformed") {
+			t.Error("transient retry message should not be in first provider request")
+		}
+	}
+
+	// Verify the transient retry message is NOT in agent state (it's transient, one-shot)
+	msgs := agent.State().Messages()
+	for _, msg := range msgs {
+		if strings.Contains(msg.Content, "Your previous tool call was malformed") {
+			t.Error("transient retry message should not be persisted in state")
+		}
+	}
+}
+
+func TestE2E_MalformedToolCalls_MaxContinuations(t *testing.T) {
+	// Provider keeps returning malformed tool calls (all dropped by the
+	// normalizer). After maxContinuations (3) retries, the loop force-finalizes.
+	h := NewHarnessWithT(t)
+
+	// Provide enough responses: 1 initial + 3 continuations + 1 force-finalized = 5
+	for i := 0; i < 10; i++ {
+		h.Provider().AddToolCallResponse(
+			fmt.Sprintf("Still trying %d...", i+1),
+			core.ToolCall{
+				ID: fmt.Sprintf("call_bad_%d", i),
+				Function: core.ToolCallFunction{
+					Name:      "broken_tool",
+					Arguments: "not json at all", // unrepairable — always dropped by normalizer
+				},
+			},
+		)
+	}
+
+	agent := h.NewAgent()
+	_, err := agent.Run(context.Background(), "test")
+
+	// No error — the loop force-finalizes after maxContinuations
+	h.AssertNoError(err)
+
+	// Provider called 4 times: 1 initial + 3 continuations (4th force-finalized)
+	h.AssertProviderCalledN(4)
+
+	// No tool ever executed — all calls were malformed
+	h.AssertExecutorCalledN(0)
+
+	// State: user + 4 assistant messages (one per provider call, all malformed)
+	h.AssertStateHasNMessages(agent, 5)
+
+	// Verify transient retry messages were enqueued in each retry request
+	// (but NOT persisted in state — they're one-shot, appended to API requests only)
+	msgs := agent.State().Messages()
+	for _, msg := range msgs {
+		if strings.Contains(msg.Content, "Your previous tool call was malformed") {
+			t.Error("transient retry messages should not be persisted in state")
+		}
+	}
+
+	// Verify the transient retry message appears in calls 1, 2, and 3 (zero-indexed),
+	// but NOT in call 0 (the initial malformed call has no transient yet).
+	// Call 4 (the force-finalized call) does not enqueue a new transient because
+	// continuationCount was not < maxContinuations at that point.
+	if len(h.Provider().Calls) < 4 {
+		t.Fatalf("expected at least 4 provider calls, got %d", len(h.Provider().Calls))
+	}
+
+	// Call 0: no transient message (first malformed call, no prior transient)
+	for _, msg := range h.Provider().Calls[0].Messages {
+		if strings.Contains(msg.Content, "Your previous tool call was malformed") {
+			t.Error("call 0 should not contain transient retry message")
+		}
+	}
+
+	// Calls 1, 2, 3: should contain transient retry messages from prior malformed calls
+	for i := 1; i <= 3; i++ {
+		req := h.Provider().Calls[i]
+		foundRetryMsg := false
+		for _, msg := range req.Messages {
+			if msg.Role == "user" && strings.Contains(msg.Content, "Your previous tool call was malformed") {
+				foundRetryMsg = true
+				break
+			}
+		}
+		if !foundRetryMsg {
+			t.Errorf("expected retry transient message in call %d provider request", i)
+		}
+	}
+}
+
+func TestE2E_MalformedToolCalls_PartialDropped(t *testing.T) {
+	// Provider returns two tool calls in one response: one malformed (unrepairable
+	// JSON) and one valid. The normalizer drops the malformed one but keeps the
+	// valid one. Because not ALL calls are malformed, no retry transient message
+	// is enqueued — the valid call executes normally and the loop continues.
+	h := NewHarnessWithT(t)
+
+	// Single response with two tool calls: 1 malformed + 1 valid
+	h.Provider().AddToolCallResponse(
+		"Let me check both.",
+		core.ToolCall{
+			ID: "call_1",
+			Function: core.ToolCallFunction{
+				Name:      "broken_tool",
+				Arguments: "not json at all", // malformed — dropped by normalizer
+			},
+		},
+		core.ToolCall{
+			ID: "call_2",
+			Function: core.ToolCallFunction{
+				Name:      "read_file",
+				Arguments: `{"path":"data.txt"}`, // valid — kept by normalizer
+			},
+		},
+	)
+
+	// Second response: final text answer
+	h.Provider().AddTextResponse("Done processing.")
+
+	h.Executor().AddTool(core.Tool{Name: "read_file"})
+	h.Executor().AddTool(core.Tool{Name: "broken_tool"})
+	h.Executor().AddToolResult("call_2", "data result")
+
+	agent := h.NewAgent()
+	result, err := agent.Run(context.Background(), "Process data")
+
+	h.AssertNoError(err)
+	h.AssertEquals(result, "Done processing.")
+	h.AssertProviderCalledN(2)
+	// Only one tool executed (the valid call_2); call_1 was dropped
+	h.AssertExecutorCalledN(1)
+
+	// State: user + assistant(mixed calls) + tool_result + assistant(final)
+	h.AssertStateHasNMessages(agent, 4)
+
+	// Verify the executor received only the valid tool call (call_2)
+	execCalls := h.Executor().LastCalls()
+	if len(execCalls) != 1 {
+		t.Fatalf("expected 1 executor call, got %d", len(execCalls))
+	}
+	if execCalls[0].ID != "call_2" {
+		t.Errorf("expected executor to call call_2, got %s", execCalls[0].ID)
+	}
+
+	// Verify the transient retry message is NOT in any provider request
+	// (because not ALL calls were malformed — no retry needed)
+	for i, req := range h.Provider().Calls {
+		for _, msg := range req.Messages {
+			if msg.Role == "user" && strings.Contains(msg.Content, "Your previous tool call was malformed") {
+				t.Errorf("malformed retry transient should NOT appear in call %d (partial drop, not all malformed)", i)
+			}
+		}
+	}
+}

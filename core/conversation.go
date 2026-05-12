@@ -246,16 +246,20 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 		}
 
 		// Execute tool calls
-		ch.continuationCount = 0 // tool calls are progress, reset continuation budget
 
 		// Normalize structured tool calls before execution.
+		// Track whether all calls were malformed so we can ask the model to re-emit.
+		allMalformed := false
 		if a.normalizer != nil && len(assistantMsg.ToolCalls) > 0 {
+			originalCount := len(assistantMsg.ToolCalls)
 			normalized := a.normalizer.Normalize(assistantMsg.ToolCalls)
-			dropped := len(assistantMsg.ToolCalls) - len(normalized)
+			dropped := originalCount - len(normalized)
 			if dropped > 0 {
 				a.debugLog("[normalize] Dropped %d malformed/duplicate tool calls (%d → %d)\n",
-					dropped, len(assistantMsg.ToolCalls), len(normalized))
+					dropped, originalCount, len(normalized))
 			}
+			// If every call was dropped, flag it for retry below.
+			allMalformed = len(normalized) == 0
 			assistantMsg.ToolCalls = normalized
 			// Update the last message in state so tool results are linked correctly.
 			msgs := a.state.Messages()
@@ -266,12 +270,32 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 		}
 
 		if len(assistantMsg.ToolCalls) == 0 {
+			// All structured tool calls were malformed — ask the model to
+			// re-emit them with proper formatting, then loop again.
+			if allMalformed {
+				if ch.continuationCount < maxContinuations {
+					ch.continuationCount++
+					ch.agent.debugLog("[normalize] All tool calls malformed (continuation %d/%d), asking model to re-emit\n",
+						ch.continuationCount, maxContinuations)
+					ch.enqueueTransientMessage(Message{
+						Role: "user",
+						Content: "Your previous tool call was malformed. " +
+							"Please re-emit it using the proper structured tool call format.",
+					})
+					continue
+				}
+				ch.agent.debugLog("[normalize] Max continuations (%d) reached for malformed calls, force-finalizing\n", maxContinuations)
+			}
 			a.debugLog("[normalize] No tool calls remaining after normalization, finalizing\n")
 			ch.turnCompleted = true
 			ch.turnEndIndex = ch.agent.state.Len() - 1
 			completed = true
 			break
 		}
+
+		// Valid tool calls present — they represent progress, so reset the
+		// continuation budget before executing.
+		ch.continuationCount = 0
 
 		ch.agent.debugLog("[tool] Executing %d tool calls\n", len(assistantMsg.ToolCalls))
 
