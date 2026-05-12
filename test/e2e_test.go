@@ -990,6 +990,120 @@ func TestE2E_TentativeResponse_MaxContinuations(t *testing.T) {
 	h.AssertStateHasNMessages(agent, 5)
 }
 
+func TestE2E_TentativeResponse_ContinuesToToolCall(t *testing.T) {
+	// Scenario: provider returns a tentative planning stub with no tool calls.
+	// The validator detects the tentative response and continues the loop.
+	// The next provider call returns actual tool calls, which execute.
+	// Finally, the provider returns a substantive answer.
+	//
+	// Flow:
+	// 1. Provider returns "Let me check the files." (tentative, no tool calls)
+	// 2. Validator detects tentative → loop continues with transient message
+	// 3. Provider returns tool call (read_file)
+	// 4. Tool executes, result recorded
+	// 5. Provider returns final answer
+	h := NewHarnessWithT(t)
+
+	// First call: tentative planning stub (no tool calls)
+	h.Provider().AddTextResponse("Let me check the files.")
+
+	// Second call: actual tool call after the loop continued
+	h.Provider().AddToolCallResponse(
+		"Reading the file",
+		core.ToolCall{
+			ID: "call_1",
+			Function: core.ToolCallFunction{
+				Name:      "read_file",
+				Arguments: `{"path":"config.yaml"}`,
+			},
+		},
+	)
+
+	// Third call: final answer using the tool result
+	h.Provider().AddTextResponse("The configuration has database settings on port 5432 with localhost as the host.")
+
+	h.Executor().AddTool(core.Tool{Name: "read_file"})
+	h.Executor().AddToolResult("call_1", "database:\n  host: localhost\n  port: 5432")
+
+	agent := h.NewAgent()
+	result, err := agent.Run(context.Background(), "What's in config.yaml?")
+	h.AssertNoError(err)
+	h.AssertEquals(result, "The configuration has database settings on port 5432 with localhost as the host.")
+
+	// Provider called 3 times: tentative stub → tool call → final answer
+	h.AssertProviderCalledN(3)
+	h.AssertExecutorCalledN(1)
+
+	// State: user + assistant(tentative) + assistant(tool call) + tool result + assistant(final)
+	h.AssertStateHasNMessages(agent, 5)
+
+	// Verify the tentative message is in state
+	messages := agent.State().Messages()
+	if messages[1].Role != "assistant" {
+		t.Errorf("expected message 2 to be assistant, got %q", messages[1].Role)
+	}
+	if messages[1].Content != "Let me check the files." {
+		t.Errorf("expected tentative content, got %q", messages[1].Content)
+	}
+
+	// Verify the tool call message follows the tentative one
+	if messages[2].Role != "assistant" {
+		t.Errorf("expected message 3 to be assistant (tool call), got %q", messages[2].Role)
+	}
+	if len(messages[2].ToolCalls) != 1 {
+		t.Errorf("expected message 3 to have 1 tool call, got %d", len(messages[2].ToolCalls))
+	}
+	if messages[2].ToolCalls[0].Function.Name != "read_file" {
+		t.Errorf("expected tool name 'read_file', got %q", messages[2].ToolCalls[0].Function.Name)
+	}
+	if messages[2].ToolCalls[0].ID != "call_1" {
+		t.Errorf("expected tool call ID 'call_1', got %q", messages[2].ToolCalls[0].ID)
+	}
+
+	// Verify the tool result
+	if messages[3].Role != "tool" {
+		t.Errorf("expected message 4 to be tool, got %q", messages[3].Role)
+	}
+
+	// Verify the final answer
+	if messages[4].Role != "assistant" {
+		t.Errorf("expected message 5 to be assistant, got %q", messages[4].Role)
+	}
+
+	// Verify the second provider request included the transient continuation message
+	// ("Please provide your actual response now.")
+	if len(h.Provider().Calls) < 2 {
+		t.Fatal("expected at least 2 provider calls")
+	}
+	foundTransient := false
+	for _, msg := range h.Provider().Calls[1].Messages {
+		if msg.Role == "user" && strings.Contains(msg.Content, "Please provide your actual response") {
+			foundTransient = true
+			break
+		}
+	}
+	if !foundTransient {
+		t.Error("expected transient continuation message in second provider request")
+	}
+
+	// Verify the transient message is NOT in state
+	for _, msg := range messages {
+		if msg.Role == "user" && strings.Contains(msg.Content, "Please provide your actual response") {
+			t.Error("transient continuation message should not be in state")
+		}
+	}
+
+	// Verify the first request did NOT include a transient continuation message
+	for _, msg := range h.Provider().Calls[0].Messages {
+		if strings.Contains(msg.Content, "Please provide your actual response") {
+			t.Error("transient continuation message should not be in first provider request")
+		}
+	}
+
+	// Verify accumulated token counts: 35 (tentative) + 80 (tool call) + 35 (final) = 150
+	h.AssertStateHasTokens(agent, 150)
+}
+
 func TestE2E_TentativeResponse_SubstantiveNotTentative(t *testing.T) {
 	// A response that starts with "Let me" but is over 40 words should NOT
 	// be treated as tentative — it's substantive enough to finalize.

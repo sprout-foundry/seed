@@ -83,8 +83,9 @@
 [x] - VALIDATE: Wire tentative check into `ConversationHandler` — on tentative response with no tool calls, continue loop instead of finalizing. `core/conversation.go`
 [] - VALIDATE: Wire tentative check into `ConversationHandler` — on tentative response with no tool calls, continue loop instead of finalizing. `core/conversation.go`
 [x] - VALIDATE: Add continuation budget — track consecutive continuations, force-finalize after 3 without progress. `core/conversation.go`
+[x] - VALIDATE: Add e2e test for truncated response continuation — provider returns incomplete response -> continuation -> complete response. `test/e2e_test.go`
 [] - VALIDATE: Add e2e test for truncated response continuation — provider returns incomplete response -> continuation -> complete response. `test/e2e_test.go`
-[] - VALIDATE: Add e2e test for tentative post-tool response — planning stub -> loop continues -> tool call executes. `test/e2e_test.go`
+[x] - VALIDATE: Add e2e test for tentative post-tool response — planning stub -> loop continues -> tool call executes. `test/e2e_test.go`
 
 ## Conversation Optimizer (SP-008)
 
