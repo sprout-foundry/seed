@@ -4363,3 +4363,75 @@ func TestE2E_ANSISanitization_PreservesNonANSIContent(t *testing.T) {
 	}
 	h.AssertEquals(userMsg, "simple query")
 }
+
+// --- Tool Call Normalization Tests ---
+
+func TestE2E_ChannelSuffixStripped(t *testing.T) {
+	// Some models append <|channel|>N suffix to tool names (e.g., "read_file<|channel|>0").
+	// The ToolCallNormalizer strips this suffix so the normalized name matches
+	// the registered tool. This test verifies the full flow:
+	//
+	// 1. Provider returns tool call with "read_file<|channel|>0" name
+	// 2. Normalizer strips "<|channel|>0" → "read_file"
+	// 3. Tool executes successfully (name matches registered tool)
+	// 4. Conversation completes with final answer
+	h := NewHarnessWithT(t)
+
+	// Register the tool with the clean name
+	h.Executor().AddTool(core.Tool{
+		Name:        "read_file",
+		Description: "Read a file",
+	})
+
+	// First response: tool call with <|channel|>0 suffix in the name
+	h.Provider().AddToolCallResponse(
+		"Reading the file.",
+		core.ToolCall{
+			ID: "call_1",
+			Function: core.ToolCallFunction{
+				Name:      "read_file<|channel|>0",
+				Arguments: `{"path":"config.yaml"}`,
+			},
+		},
+	)
+	// Second response: final answer after tool execution
+	h.Provider().AddTextResponse("The configuration file has been read successfully.")
+
+	// Executor returns the tool result (matched by tool call ID)
+	h.Executor().AddToolResult("call_1", "database:\n  host: localhost\n  port: 5432")
+
+	agent := h.NewAgent()
+	result, err := agent.Run(context.Background(), "Read config.yaml")
+	h.AssertNoError(err)
+	h.AssertEquals(result, "The configuration file has been read successfully.")
+
+	// Provider called twice: tool call iteration + final answer
+	h.AssertProviderCalledN(2)
+	h.AssertExecutorCalledN(1)
+
+	// State: user + assistant(tool call) + tool result + assistant(final)
+	h.AssertStateHasNMessages(agent, 4)
+
+	// Verify the normalized tool call was recorded in state
+	messages := agent.State().Messages()
+	if messages[1].Role != "assistant" {
+		t.Errorf("expected message 2 to be assistant, got %q", messages[1].Role)
+	}
+	if len(messages[1].ToolCalls) != 1 {
+		t.Fatalf("expected message 2 to have 1 tool call, got %d", len(messages[1].ToolCalls))
+	}
+	// The tool name in state should be normalized (suffix stripped)
+	toolName := messages[1].ToolCalls[0].Function.Name
+	if toolName != "read_file" {
+		t.Errorf("expected normalized tool name 'read_file', got %q", toolName)
+	}
+
+	// Verify the executor received the normalized tool call
+	execCalls := h.Executor().LastCalls()
+	if len(execCalls) != 1 {
+		t.Fatalf("expected 1 executor call, got %d", len(execCalls))
+	}
+	if execCalls[0].Function.Name != "read_file" {
+		t.Errorf("expected executor to receive normalized name 'read_file', got %q", execCalls[0].Function.Name)
+	}
+}
