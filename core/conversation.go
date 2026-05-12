@@ -280,11 +280,11 @@ func (ch *ConversationHandler) ProcessQuery(ctx context.Context, query string) (
 	chatFn := func(ctx context.Context, req *ChatRequest, iter int) (*ChatResponse, error) {
 		// Retry loop for transient/rate-limit errors
 		backoff := NewExponentialBackoff(
-			100*time.Millisecond, // initial delay
-			5*time.Second,        // max delay
-			2.0,                  // multiplier
-			3,                    // max attempts (1 initial + 2 retries)
-			0.0,                  // no jitter (deterministic for tests)
+			ch.agent.retryConfig.InitialDelayOrDefault(),
+			ch.agent.retryConfig.MaxDelayOrDefault(),
+			ch.agent.retryConfig.MultiplierOrDefault(),
+			ch.agent.retryConfig.MaxAttemptsOrDefault(),
+			ch.agent.retryConfig.JitterOrDefault(),
 		)
 		var lastErr error
 		for backoff.NextAttempt() {
