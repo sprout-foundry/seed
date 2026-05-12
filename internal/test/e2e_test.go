@@ -4054,3 +4054,207 @@ func TestE2E_FinishReasonLength_ResetsOnToolCalls(t *testing.T) {
 	h.AssertProviderCalledN(3)
 	h.AssertExecutorCalledN(1)
 }
+
+// --- Blank/Repetitive Response Detection Tests ---
+
+func TestE2E_BlankResponse_SingleBlankThenRecovery(t *testing.T) {
+	// Model returns blank once, then valid content on retry.
+	// Should complete normally — first blank sends reminder, second response succeeds.
+	h := NewHarnessWithT(t)
+	h.Provider().AddTextResponseWithFinish("", "stop")
+	h.Provider().AddTextResponseWithFinish("This is a valid response with enough words to complete successfully.", "stop")
+
+	agent := h.NewAgent()
+	result, err := agent.Run(context.Background(), "hi")
+
+	h.AssertNoError(err)
+	h.AssertEquals(result, "This is a valid response with enough words to complete successfully.")
+	h.AssertProviderCalledN(2)
+}
+
+func TestE2E_BlankResponse_TwoConsecutiveBlanks(t *testing.T) {
+	// Model returns blank twice. Should return BlankResponseError with Count=2.
+	h := NewHarnessWithT(t)
+	h.Provider().AddTextResponseWithFinish("", "stop")
+	h.Provider().AddTextResponseWithFinish("", "stop")
+
+	agent := h.NewAgent()
+	_, err := agent.Run(context.Background(), "hi")
+
+	h.AssertError(err)
+	if !core.IsBlankResponse(err) {
+		t.Fatalf("expected BlankResponseError, got: %v", err)
+	}
+	bErr := err.(*core.BlankResponseError)
+	if bErr.Count != 2 {
+		t.Errorf("expected count 2, got %d", bErr.Count)
+	}
+	if bErr.Provider != "mock-model" {
+		t.Errorf("expected provider 'mock-model', got %q", bErr.Provider)
+	}
+	h.AssertProviderCalledN(2)
+}
+
+func TestE2E_BlankResponse_RepetitiveThenBlank(t *testing.T) {
+	// Model returns repetitive content, then blank. Counter should accumulate.
+	// Should return BlankResponseError with Count=2.
+	//
+	// Setup: tool call first to establish a prior assistant message with the
+	// repetitive text, so subsequent responses can be compared against it.
+	h := NewHarnessWithT(t)
+
+	repetitiveText := "This is a very long repetitive response that has many words to pass the similarity threshold for detection"
+
+	// First: tool call with the repetitive text as content (establishes prior assistant msg)
+	h.Provider().AddToolCallResponse(
+		repetitiveText,
+		core.ToolCall{
+			ID: "call_1",
+			Function: core.ToolCallFunction{
+				Name:      "echo",
+				Arguments: `{"message":"test"}`,
+			},
+		},
+	)
+	h.Executor().AddToolResult("call_1", "tool result")
+
+	// Second: same text (repetitive vs prior assistant) — triggers 1st consecutive
+	h.Provider().AddTextResponseWithFinish(repetitiveText, "stop")
+	// Third: blank — triggers 2nd consecutive, returns error
+	h.Provider().AddTextResponseWithFinish("", "stop")
+
+	agent := h.NewAgent()
+	_, err := agent.Run(context.Background(), "hi")
+
+	h.AssertError(err)
+	if !core.IsBlankResponse(err) {
+		t.Fatalf("expected BlankResponseError, got: %v", err)
+	}
+	bErr := err.(*core.BlankResponseError)
+	if bErr.Count != 2 {
+		t.Errorf("expected count 2, got %d", bErr.Count)
+	}
+}
+
+func TestE2E_BlankResponse_BlankThenRepetitive(t *testing.T) {
+	// After a blank response, the previous assistant message is blank.
+	// contentSimilar("", repetitiveText) returns false because one is empty.
+	// So a repetitive response after blank won't match — it resets the counter.
+	// This test verifies: blank (1st) → repetitive (resets counter, not blank/repetitive) → completes.
+	h := NewHarnessWithT(t)
+
+	repetitiveText := "This is a very long repetitive response that has many words to pass the similarity threshold for detection"
+
+	// First: blank — triggers 1st consecutive
+	h.Provider().AddTextResponseWithFinish("", "stop")
+	// Second: different non-blank content — not repetitive vs blank, resets counter
+	h.Provider().AddTextResponseWithFinish(repetitiveText, "stop")
+
+	agent := h.NewAgent()
+	result, err := agent.Run(context.Background(), "hi")
+
+	h.AssertNoError(err)
+	h.AssertEquals(result, repetitiveText)
+	h.AssertProviderCalledN(2)
+}
+
+func TestE2E_BlankResponse_TwoConsecutiveRepetitive(t *testing.T) {
+	// Model returns same long text twice after an initial tool call.
+	// The tool call establishes a prior assistant message with the text.
+	// 1st repetitive: repetitive vs prior assistant (1st consecutive),
+	// 2nd repetitive: repetitive vs prior assistant (2nd consecutive) → BlankResponseError.
+	h := NewHarnessWithT(t)
+
+	repetitiveText := "This is a very long repetitive response that has many words to pass the similarity threshold for detection properly"
+
+	// First: tool call with the repetitive text (establishes prior assistant msg)
+	h.Provider().AddToolCallResponse(
+		repetitiveText,
+		core.ToolCall{
+			ID: "call_1",
+			Function: core.ToolCallFunction{
+				Name:      "echo",
+				Arguments: `{"message":"test"}`,
+			},
+		},
+	)
+	h.Executor().AddToolResult("call_1", "tool result")
+
+	// Second: same text (repetitive vs prior assistant) — triggers 1st consecutive
+	h.Provider().AddTextResponseWithFinish(repetitiveText, "stop")
+	// Third: same text (repetitive) — triggers 2nd consecutive, returns error
+	h.Provider().AddTextResponseWithFinish(repetitiveText, "stop")
+
+	agent := h.NewAgent()
+	_, err := agent.Run(context.Background(), "hi")
+
+	h.AssertError(err)
+	if !core.IsBlankResponse(err) {
+		t.Fatalf("expected BlankResponseError, got: %v", err)
+	}
+	bErr := err.(*core.BlankResponseError)
+	if bErr.Count != 2 {
+		t.Errorf("expected count 2, got %d", bErr.Count)
+	}
+}
+
+func TestE2E_BlankResponse_BlankThenToolCalls(t *testing.T) {
+	// Model returns blank, then tool calls. Counter should reset on tool execution.
+	h := NewHarnessWithT(t)
+
+	// First: blank response
+	h.Provider().AddTextResponseWithFinish("", "stop")
+	// Second: tool call (counter resets)
+	h.Provider().AddToolCallResponse(
+		"Let me check.",
+		core.ToolCall{
+			ID: "call_1",
+			Function: core.ToolCallFunction{
+				Name:      "read_file",
+				Arguments: `{"path":"test.txt"}`,
+			},
+		},
+	)
+	// Third: final answer after tool
+	h.Provider().AddTextResponseWithFinish("The file contains data.", "stop")
+
+	h.Executor().AddToolResult("call_1", "file content")
+
+	agent := h.NewAgent()
+	result, err := agent.Run(context.Background(), "Read a file")
+
+	h.AssertNoError(err)
+	h.AssertEquals(result, "The file contains data.")
+	h.AssertProviderCalledN(3)
+	h.AssertExecutorCalledN(1)
+}
+
+func TestBlankResponseError_ErrorFormat(t *testing.T) {
+	err := &core.BlankResponseError{Provider: "test-model", Count: 3}
+	expected := "model produced 3 consecutive blank or repetitive responses (test-model)"
+	if err.Error() != expected {
+		t.Errorf("expected %q, got %q", expected, err.Error())
+	}
+}
+
+func TestBlankResponseError_NoProvider(t *testing.T) {
+	err := &core.BlankResponseError{Count: 2}
+	if !strings.Contains(err.Error(), "2 consecutive blank or repetitive responses") {
+		t.Errorf("expected count in error, got: %v", err)
+	}
+}
+
+func TestIsBlankResponse(t *testing.T) {
+	if !core.IsBlankResponse(&core.BlankResponseError{}) {
+		t.Error("expected IsBlankResponse(true) for BlankResponseError")
+	}
+	if core.IsBlankResponse(&core.ContentFilteredError{}) {
+		t.Error("expected IsBlankResponse(false) for ContentFilteredError")
+	}
+	if core.IsBlankResponse(core.ErrNoProvider) {
+		t.Error("expected IsBlankResponse(false) for ErrNoProvider")
+	}
+	if core.IsBlankResponse(nil) {
+		t.Error("expected IsBlankResponse(false) for nil")
+	}
+}

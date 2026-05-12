@@ -791,7 +791,7 @@ func TestFinishReasonStop_WhitespaceOnly_Continues(t *testing.T) {
 }
 
 func TestFinishReasonStop_EmptyContent_MaxContinuations(t *testing.T) {
-	// After maxContinuations empty "stop" responses, force-finalize.
+	// After 2 consecutive empty "stop" responses, force-finalize with BlankResponseError.
 	provider := newFRProvider(
 		frTextResponse("", "stop"),
 		frTextResponse("", "stop"),
@@ -803,15 +803,19 @@ func TestFinishReasonStop_EmptyContent_MaxContinuations(t *testing.T) {
 		Executor: &mockExecutor{},
 	})
 
-	result, err := agent.Run(context.Background(), "hi")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	_, err := agent.Run(context.Background(), "hi")
+	if err == nil {
+		t.Fatal("expected BlankResponseError, got nil")
 	}
-	if provider.idx != 4 {
-		t.Errorf("expected 4 provider calls, got %d", provider.idx)
+	if !IsBlankResponse(err) {
+		t.Fatalf("expected BlankResponseError, got: %v", err)
 	}
-	if result != "" {
-		t.Errorf("expected empty result after max continuations, got %q", result)
+	bErr := err.(*BlankResponseError)
+	if bErr.Count != 2 {
+		t.Errorf("expected count 2, got %d", bErr.Count)
+	}
+	if provider.idx != 2 {
+		t.Errorf("expected 2 provider calls, got %d", provider.idx)
 	}
 }
 
@@ -884,8 +888,8 @@ func TestFinishReasonStop_WithToolCalls_DoesNotContinue(t *testing.T) {
 }
 
 func TestFinishReasonStop_EmptyContent_NoErrorEvent(t *testing.T) {
-	// Force-finalize after max continuations should NOT publish error events
-	// (parallel to TestFinishReasonLength_NoErrorEvent).
+	// Force-finalize after 2 consecutive blanks returns BlankResponseError
+	// but should NOT publish error events (the error is returned to the caller).
 	provider := newFRProvider(
 		frTextResponse("", "stop"),
 		frTextResponse("", "stop"),
@@ -901,8 +905,11 @@ func TestFinishReasonStop_EmptyContent_NoErrorEvent(t *testing.T) {
 	})
 
 	_, err := agent.Run(context.Background(), "hi")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err == nil {
+		t.Fatal("expected BlankResponseError, got nil")
+	}
+	if !IsBlankResponse(err) {
+		t.Fatalf("expected BlankResponseError, got: %v", err)
 	}
 
 	evts := drainEvents(sub)

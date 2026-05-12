@@ -169,3 +169,26 @@ func IsContentFiltered(err error) bool {
 	var c *ContentFilteredError
 	return errors.As(err, &c)
 }
+
+// BlankResponseError indicates the model produced consecutive blank or
+// repetitive responses and the conversation was force-finalized.
+type BlankResponseError struct {
+	// Provider is the provider that produced the blank responses.
+	Provider string
+	// Count is the number of consecutive blank/repetitive responses.
+	Count int
+}
+
+func (e *BlankResponseError) Error() string {
+	base := fmt.Sprintf("model produced %d consecutive blank or repetitive responses", e.Count)
+	if e.Provider != "" {
+		base += " (" + e.Provider + ")"
+	}
+	return base
+}
+
+// IsBlankResponse reports whether err is a BlankResponseError.
+func IsBlankResponse(err error) bool {
+	var b *BlankResponseError
+	return errors.As(err, &b)
+}

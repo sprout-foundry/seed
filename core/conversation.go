@@ -99,6 +99,7 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 	ch.contentFilterRetry = false
 	ch.continuationCount = 0
 	ch.tentativeRejectionCount = 0
+	ch.consecutiveBlank = 0
 	ch.turnCompleted = false
 
 	// Check pause
@@ -256,21 +257,37 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 
 		case "stop":
 			// "stop" — model completed normally.
-			// If content is empty/blank and no tool calls, treat as incomplete
-			// and ask the model to continue.
-			if ch.isBlankIteration(assistantMsg.Content) && len(assistantMsg.ToolCalls) == 0 {
-				if ch.continuationCount < maxContinuations {
-					ch.continuationCount++
-					ch.agent.debugLog("[finish] stop with empty content — treating as incomplete (continuation %d/%d), looping again\n",
-						ch.continuationCount, maxContinuations)
-					ch.enqueueTransientMessage(Message{
-						Role:    "user",
-						Content: "Your previous response was empty. Please provide a complete response.",
-					})
-					continue
+			// Check for blank or repetitive content when there are no tool calls.
+			if len(assistantMsg.ToolCalls) == 0 {
+				isBlank := ch.isBlankIteration(assistantMsg.Content)
+				isRepetitive := !isBlank && a.validator != nil && ch.isRepetitiveContent(assistantMsg.Content)
+
+				if isBlank || isRepetitive {
+					ch.consecutiveBlank++
+					if ch.consecutiveBlank == 1 {
+						// First blank/repetitive response — send a reminder.
+						reminder := "Your previous response was empty. Please provide a complete response."
+						if isRepetitive {
+							reminder = "Your previous response appears repetitive. Please provide new content."
+						}
+						ch.agent.debugLog("[finish] stop with %s content — 1st consecutive, sending reminder\n",
+							map[bool]string{true: "repetitive", false: "blank"}[isRepetitive])
+						ch.enqueueTransientMessage(Message{
+							Role:    "user",
+							Content: reminder,
+						})
+						continue
+					}
+					// Second consecutive blank/repetitive — force-finalize with error.
+					ch.agent.debugLog("[finish] stop with %s content — %d consecutive blank/repetitive responses, force-finalizing with error\n",
+						map[bool]string{true: "repetitive", false: "blank"}[isRepetitive], ch.consecutiveBlank)
+					return "", &BlankResponseError{
+						Provider: ch.agent.provider.Info().Model,
+						Count:    ch.consecutiveBlank,
+					}
 				}
-				ch.agent.debugLog("[finish] stop with empty content — max continuations (%d) reached, force-finalizing\n", maxContinuations)
-				return ch.finalize(query)
+				// Non-blank, non-repetitive content — reset the counter.
+				ch.consecutiveBlank = 0
 			}
 			// If content is structurally incomplete (truncated), ask the model
 			// to provide its final answer. This catches cases where the model
@@ -458,9 +475,10 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 		}
 
 		// Valid tool calls present — they represent progress, so reset the
-		// continuation budget before executing.
+		// continuation budget and blank counter before executing.
 		ch.continuationCount = 0
 		ch.tentativeRejectionCount = 0
+		ch.consecutiveBlank = 0
 
 		ch.agent.debugLog("[tool] Executing %d tool calls\n", len(assistantMsg.ToolCalls))
 
