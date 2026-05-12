@@ -116,7 +116,7 @@
 
 ## Turn Checkpoints (SP-010)
 
-[] - CHECKPOINT: Define `TurnCheckpoint` struct — `StartIndex`, `EndIndex`, `Summary`, `ActionableSummary` with JSON tags. `core/turn_checkpoints.go`
+[x] - CHECKPOINT: Define `TurnCheckpoint` struct — `StartIndex`, `EndIndex`, `Summary`, `ActionableSummary` with JSON tags. `core/turn_checkpoints.go`
 [] - CHECKPOINT: Add `[]TurnCheckpoint` to `State` — mutex-protected access with `AddCheckpoint`, `GetCheckpoints`, `SetCheckpoints`, `ClearCheckpoints`. `core/state.go`
 [] - CHECKPOINT: Add checkpoint serialization to ExportState/ImportState — checkpoints round-trip through JSON. `core/state.go`
 [] - CHECKPOINT: Implement Go-only summary builder — extract user question, tool calls, errors, files modified, final status from turn messages. `core/turn_checkpoints.go`
