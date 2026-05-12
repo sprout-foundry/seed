@@ -130,7 +130,7 @@
 [x] - FINISH: Handle `"stop"` with empty content — treat as incomplete, ask model to continue. `core/conversation.go`
 [x] - FINISH: Handle `"stop"` with incomplete content — send transient message asking for final answer. `core/conversation.go`
 [x] - FINISH: Handle `"stop"` with tentative content after tool results — implement `followsRecentToolResults()` scan, reject with specific message, accept after 2 rejections (match sprout). `core/conversation.go`
-[] - FINISH: Handle `"length"` — always continue (model hit token limit). `core/conversation.go`
+[x] - FINISH: Handle `"length"` — always continue (model hit token limit). `core/conversation.go`
 [] - FINISH: Handle `"content_filter"` — retry once, then return error to consumer on second occurrence. `core/conversation.go`
 [] - BLANK: Implement `isBlankIteration(content)` — check if content is empty/whitespace. `core/conversation.go`
 [] - BLANK: Implement `isRepetitiveContent(content)` — compare against previous assistant message. `core/conversation.go`
@@ -138,7 +138,7 @@
 [] - ANSI: Add `sanitizeANSI(content)` — strip ANSI escape codes from content. `core/conversation.go`
 [] - NORMALIZE: Add e2e test — `<|channel|>0` suffix stripped → tool name matches → executes. `test/e2e_test.go`
 [] - FINISH: Add e2e test — `finish_reason: "stop"` with empty content → continuation → complete response. `test/e2e_test.go`
-[] - FINISH: Add e2e test — `finish_reason: "length"` → continuation. `test/e2e_test.go`
+[x] - FINISH: Add e2e test — `finish_reason: "length"` → continuation. `test/e2e_test.go`
 [] - FINISH: Add e2e test — `finish_reason: "content_filter"` → retry once → second occurrence → error returned. `test/e2e_test.go`
 [] - NORMALIZE: Add e2e test — malformed structured tool call → transient message → model re-emits. `test/e2e_test.go`
 [] - NORMALIZE: Add e2e test — missing tool call ID → synthetic ID generated → tool result linked. `test/e2e_test.go`

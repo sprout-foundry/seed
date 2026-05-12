@@ -3867,3 +3867,190 @@ func TestE2E_MalformedToolCalls_PartialDropped(t *testing.T) {
 		}
 	}
 }
+
+// --- Finish Reason: "length" e2e tests ---
+
+func TestE2E_FinishReasonLength_Continuation(t *testing.T) {
+	// Provider returns finish_reason="length" (model hit token limit).
+	// The loop should continue with a transient continuation message,
+	// and the second provider call returns the rest of the response.
+	h := NewHarnessWithT(t)
+	h.Provider().AddTextResponseWithFinish("This is a long", "length")
+	h.Provider().AddTextResponse(" response that completes the answer with enough words to be considered complete.")
+
+	agent := h.NewAgent()
+	result, err := agent.Run(context.Background(), "hi")
+
+	h.AssertNoError(err)
+	h.AssertEquals(result, " response that completes the answer with enough words to be considered complete.")
+
+	// Provider called twice: initial truncated + continuation
+	h.AssertProviderCalledN(2)
+
+	// State: user + assistant(truncated) + assistant(complete)
+	h.AssertStateHasNMessages(agent, 3)
+
+	// Verify state message content
+	msgs := agent.State().Messages()
+	if msgs[0].Content != "hi" {
+		t.Errorf("expected message 1 to be 'hi', got %q", msgs[0].Content)
+	}
+	if msgs[1].Content != "This is a long" {
+		t.Errorf("expected message 2 to be 'This is a long', got %q", msgs[1].Content)
+	}
+
+	// Verify the transient continuation message appears in the second request
+	if len(h.Provider().Calls) < 2 {
+		t.Fatal("expected at least 2 provider calls")
+	}
+	foundTransient := false
+	for _, msg := range h.Provider().Calls[1].Messages {
+		if msg.Role == "user" && strings.Contains(msg.Content, "Please continue") {
+			foundTransient = true
+			break
+		}
+	}
+	if !foundTransient {
+		t.Error("expected transient continuation message in second provider request")
+	}
+
+	// Verify the transient message is NOT in state
+	for _, msg := range agent.State().Messages() {
+		if msg.Role == "user" && strings.Contains(msg.Content, "Please continue") {
+			t.Error("transient continuation message should not be in state")
+		}
+	}
+
+	// Verify no error events published (length is not an error)
+	errorEvents := h.FindEvents(events.EventTypeError)
+	if len(errorEvents) > 0 {
+		t.Errorf("expected no error events for length finish reason, got %d", len(errorEvents))
+	}
+
+	// Verify metrics_update events (one per iteration)
+	metricsEvents := h.FindEvents(events.EventTypeMetricsUpdate)
+	if len(metricsEvents) != 2 {
+		t.Fatalf("expected 2 metrics_update events, got %d", len(metricsEvents))
+	}
+	// Verify accumulated tokens: 35 (first) + 35 (second) = 70
+	lastMetrics := metricsEvents[1].Data.(map[string]interface{})
+	totalTokens, ok := lastMetrics["total_tokens"].(int)
+	if !ok || totalTokens != 70 {
+		t.Errorf("expected total_tokens 70, got %v (type: %T)", totalTokens, totalTokens)
+	}
+}
+
+func TestE2E_FinishReasonLength_MaxContinuations(t *testing.T) {
+	// Provider keeps returning finish_reason="length". After maxContinuations
+	// (3) consecutive continuations, the loop force-finalizes.
+	h := NewHarnessWithT(t)
+	h.Provider().AddTextResponseWithFinish("chunk1", "length")
+	h.Provider().AddTextResponseWithFinish("chunk2", "length")
+	h.Provider().AddTextResponseWithFinish("chunk3", "length")
+	h.Provider().AddTextResponseWithFinish("chunk4", "length")
+
+	agent := h.NewAgent()
+	result, err := agent.Run(context.Background(), "hi")
+
+	h.AssertNoError(err)
+	// 4th call force-finalized (continuationCount was 3, not < 3)
+	h.AssertEquals(result, "chunk4")
+
+	// Provider called 4 times: 1 initial + 3 continuations (4th force-finalized)
+	h.AssertProviderCalledN(4)
+
+	// State: user + 4 assistant messages
+	h.AssertStateHasNMessages(agent, 5)
+
+	// Force-finalization due to max continuations should NOT record a checkpoint
+	// (turnCompleted is false for this path). Give async checkpoint goroutine time.
+	time.Sleep(100 * time.Millisecond)
+	checkpoints := agent.State().GetCheckpoints()
+	if len(checkpoints) != 0 {
+		t.Errorf("expected no checkpoint after max continuations force-finalize, got %d", len(checkpoints))
+	}
+
+	// Verify no error events published (length is not an error)
+	errorEvents := h.FindEvents(events.EventTypeError)
+	if len(errorEvents) > 0 {
+		t.Errorf("expected no error events for length finish reason, got %d", len(errorEvents))
+	}
+
+	// Verify transient continuation messages appear in calls 1, 2, and 3
+	for i := 1; i <= 3; i++ {
+		req := h.Provider().Calls[i]
+		foundTransient := false
+		for _, msg := range req.Messages {
+			if msg.Role == "user" && strings.Contains(msg.Content, "Please continue") {
+				foundTransient = true
+				break
+			}
+		}
+		if !foundTransient {
+			t.Errorf("expected transient continuation message in call %d provider request", i)
+		}
+	}
+}
+
+func TestE2E_FinishReasonLength_Stream_Continuation(t *testing.T) {
+	// Same as non-streaming but using RunStream.
+	h := NewHarnessWithT(t)
+	h.Provider().AddTextResponseWithFinish("partial", "length")
+	h.Provider().AddTextResponse(" done with enough words to be a complete response that passes validation.")
+
+	agent := h.NewAgent()
+	result, err := agent.RunStream(context.Background(), "hi")
+
+	h.AssertNoError(err)
+	h.AssertEquals(result, " done with enough words to be a complete response that passes validation.")
+
+	// Provider called twice
+	h.AssertProviderCalledN(2)
+}
+
+func TestE2E_FinishReasonLength_NoErrorEvent(t *testing.T) {
+	// Verify that finish_reason="length" does NOT publish error events.
+	h := NewHarnessWithT(t)
+	h.Provider().AddTextResponseWithFinish("truncated", "length")
+	h.Provider().AddTextResponse(" complete response with enough words to pass the validator checks.")
+
+	agent := h.NewAgent()
+	_, err := agent.Run(context.Background(), "hi")
+	h.AssertNoError(err)
+
+	// No error events should be published for length finish reason
+	errorEvents := h.FindEvents(events.EventTypeError)
+	if len(errorEvents) > 0 {
+		t.Errorf("expected no error events for length finish reason, got %d", len(errorEvents))
+	}
+}
+
+func TestE2E_FinishReasonLength_ResetsOnToolCalls(t *testing.T) {
+	// A "length" response followed by a tool call should reset the
+	// continuation budget. The tool call represents progress.
+	h := NewHarnessWithT(t)
+	h.Provider().AddTextResponseWithFinish("thinking...", "length")
+	h.Provider().AddToolCallResponse(
+		"",
+		core.ToolCall{
+			ID: "call_1",
+			Function: core.ToolCallFunction{
+				Name:      "echo",
+				Arguments: `{"message":"test"}`,
+			},
+		},
+	)
+	h.Provider().AddTextResponse("Final answer with enough words to be a complete response that passes validation.")
+
+	h.Executor().AddToolResult("call_1", "tool result")
+
+	agent := h.NewAgent()
+	result, err := agent.Run(context.Background(), "hi")
+
+	h.AssertNoError(err)
+	h.AssertEquals(result, "Final answer with enough words to be a complete response that passes validation.")
+
+	// Provider called 3 times: length → tool call → final
+	h.AssertProviderCalledN(3)
+	h.AssertExecutorCalledN(1)
+}
