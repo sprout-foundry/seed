@@ -57,9 +57,11 @@
 [] - FALLBACK: Create `FallbackParser` struct with `knownToolNames` callback — accept `FallbackParserOptions{KnownToolNames func(string) bool, Debug bool}` so consumers register their tools. `core/fallback_parser.go`
 [x] - FALLBACK: Implement JSON code fence extraction — parse tool_calls arrays and single tool call objects from fenced JSON blocks. `core/fallback_parser.go`
 [x] - FALLBACK: Implement bare JSON segment extraction — scan for balanced braces/brackets outside code fences containing tool call data. `core/fallback_parser.go`
+[x] - FALLBACK: Implement XML function block extraction — parse `<function=name>` with `<parameter=name>value</parameter>` children. `core/fallback_parser.go`
 [] - FALLBACK: Implement XML function block extraction — parse `<function=name>` with `<parameter=name>value</parameter>` children. `core/fallback_parser.go`
+[x] - FALLBACK: Implement function-name pattern extraction — detect `name: tool_name` followed by balanced JSON arguments. `core/fallback_parser.go`
 [] - FALLBACK: Implement function-name pattern extraction — detect `name: tool_name` followed by balanced JSON arguments. `core/fallback_parser.go`
-[] - FALLBACK: Implement named tool block extraction — detect `tool_name { ... }` where tool_name passes `knownToolNames` check. `core/fallback_parser.go`
+[x] - FALLBACK: Implement named tool block extraction — detect `tool_name { ... }` where tool_name passes `knownToolNames` check. `core/fallback_parser.go`
 [] - FALLBACK: Implement tool call normalization — generate synthetic IDs (`fallback_{name}_{nano}`), normalize `Type` to `"function"`, ensure valid JSON arguments. `core/fallback_parser.go`
 [] - FALLBACK: Implement deduplication and content cleanup — dedupe by name+arguments, remove extracted blocks from content, normalize whitespace. `core/fallback_parser.go`
 [] - FALLBACK: Implement `ShouldUseFallback()` — quick pattern scan for tool-call-like patterns when structured tool_calls is empty. `core/fallback_parser.go`

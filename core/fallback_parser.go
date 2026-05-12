@@ -106,7 +106,7 @@ type rawBlock struct {
 }
 
 // ---------------------------------------------------------------------------
-// Six extraction strategies
+// Extraction strategies
 // ---------------------------------------------------------------------------
 
 func (fp *FallbackParser) extractAll(content string) []rawBlock {
@@ -117,6 +117,7 @@ func (fp *FallbackParser) extractAll(content string) []rawBlock {
 	blocks = append(blocks, fp.extractToolUseBlocks(content)...)
 	blocks = append(blocks, fp.extractFunctionNamePatterns(content)...)
 	blocks = append(blocks, fp.extractBareJSON(content)...)
+	blocks = append(blocks, fp.extractNamedToolBlocks(content)...)
 	return blocks
 }
 
@@ -1030,8 +1031,99 @@ func (fp *FallbackParser) unescapeJSONString(s string) string {
 }
 
 // ---------------------------------------------------------------------------
-// Merge, dedupe, normalize, clean
+// Strategy 7: Named tool block extraction
 // ---------------------------------------------------------------------------
+
+// extractNamedToolBlocks detects patterns like:
+//
+//	search {
+//	  "query": "hello"
+//	}
+//
+// Where a known tool name is followed by balanced braces containing JSON arguments.
+// Uses stripCodeFences to avoid double-extraction of content inside ```json fences.
+func (fp *FallbackParser) extractNamedToolBlocks(content string) []rawBlock {
+	// Strip code fences so we don't re-extract content that's already
+	// inside a fenced block (Strategy 1 handles those).
+	stripped := fp.stripCodeFences(content)
+	var blocks []rawBlock
+
+	idx := 0
+	for idx < len(stripped) {
+		// Skip to a valid identifier start (letter or underscore)
+		if !isIdentStart(stripped[idx]) {
+			idx++
+			continue
+		}
+
+		// Extract the full identifier
+		identStart := idx
+		for idx < len(stripped) && isIdentChar(stripped[idx]) {
+			idx++
+		}
+		identEnd := idx
+		name := stripped[identStart:identEnd]
+
+		// Check if this is a known tool (if filter is set)
+		if fp.knownToolNames != nil && !fp.knownToolNames(name) {
+			continue
+		}
+
+		// After the identifier, skip whitespace
+		for idx < len(stripped) && (stripped[idx] == ' ' || stripped[idx] == '\t' || stripped[idx] == '\n' || stripped[idx] == '\r') {
+			idx++
+		}
+
+		// Expect '{' immediately after whitespace
+		if idx >= len(stripped) || stripped[idx] != '{' {
+			continue
+		}
+
+		braceStart := idx
+		braceEnd, err := fp.matchBrace(stripped, braceStart)
+		if err != nil {
+			continue
+		}
+
+		// Extract the full JSON object including braces
+		argsStr := strings.TrimSpace(stripped[braceStart : braceEnd+1])
+
+		// Validate that the content is valid JSON
+		if !json.Valid([]byte(argsStr)) {
+			continue
+		}
+
+		// Create the tool call
+		tc := ToolCall{
+			Type:     "function",
+			Function: ToolCallFunction{Name: name, Arguments: argsStr},
+		}
+
+		// The block spans from the identifier start to the end of the closing brace
+		blockEnd := braceEnd + 1
+		blocks = append(blocks, rawBlock{
+			start:  identStart,
+			end:    blockEnd,
+			parsed: []ToolCall{tc},
+		})
+
+		// Continue scanning after this block
+		idx = blockEnd
+	}
+	return blocks
+}
+
+// isIdentStart returns true if the byte can start a Go-like identifier
+// (letter or underscore).
+func isIdentStart(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || b == '_'
+}
+
+// isIdentChar returns true if the byte can appear in a Go-like identifier
+// (letter, digit, underscore, or hyphen).
+func isIdentChar(b byte) bool {
+	return isIdentStart(b) || (b >= '0' && b <= '9') || b == '-'
+}
 
 func (fp *FallbackParser) mergeAndDedupe(blocks []rawBlock) []rawBlock {
 	if len(blocks) <= 1 {

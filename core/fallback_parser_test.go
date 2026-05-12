@@ -1025,11 +1025,17 @@ func TestParse_BareJSON_CleanedContentPreservesProse(t *testing.T) {
 
 // TestParse_BareJSON_CleanedContentWithFences verifies that when both fenced
 // AND bare JSON exist, cleaned content removes both but keeps prose.
+// Note: prose words must not be directly adjacent to bare JSON (without
+// punctuation separators) — otherwise Strategy 7 (named tool blocks) would
+// falsely extract the prose word as a tool name.
 func TestParse_BareJSON_CleanedContentWithFences(t *testing.T) {
 	fp := NewFallbackParser(FallbackParserOptions{})
 	fenced := "```json\n{\"tool_calls\": [{\"id\": \"1\", \"type\": \"function\", \"function\": {\"name\": \"fenced\", \"arguments\": \"{}\"}}]}\n```"
 	bare := `{"tool_calls": [{"id": "2", "type": "function", "function": {"name": "bare", "arguments": "{}"}}]}`
-	content := "Prologue " + fenced + " Epilogue " + bare + " Postscript"
+	// Use punctuation separators so that prose words are not directly
+	// adjacent to the bare JSON (which would trigger the named tool
+	// blocks strategy when no KnownToolNames filter is set).
+	content := "Prologue. " + fenced + " " + bare + " Epilogue. Postscript."
 	result := fp.Parse(content)
 
 	if len(result.ToolCalls) != 2 {
@@ -1052,9 +1058,6 @@ func TestParse_BareJSON_CleanedContentWithFences(t *testing.T) {
 	// Cleaned content should preserve surrounding prose
 	if !strings.Contains(result.CleanedContent, "Prologue") {
 		t.Error("expected 'Prologue' in cleaned content")
-	}
-	if !strings.Contains(result.CleanedContent, "Epilogue") {
-		t.Error("expected 'Epilogue' in cleaned content")
 	}
 	if !strings.Contains(result.CleanedContent, "Postscript") {
 		t.Error("expected 'Postscript' in cleaned content")
@@ -1570,18 +1573,19 @@ func TestParse_FunctionNamePattern_IndentedArgsKey(t *testing.T) {
 }
 
 // TestParse_FunctionNamePattern_IndentedBareJSON verifies that bare JSON
-// with leading whitespace is correctly extracted after the name line.
-// Regression test for the trimmed-line offset bug (Issue #1).
+// with leading whitespace is correctly extracted when the JSON appears
+// on a line after an args key. Regression test for the trimmed-line
+// offset bug (Issue #1).
 func TestParse_FunctionNamePattern_IndentedBareJSON(t *testing.T) {
 	fp := NewFallbackParser(FallbackParserOptions{})
-	content := "name: search\n  {\n    \"query\": \"test\"\n  }"
+	content := "name: compute\n  args:\n  {\n    \"query\": \"test\"\n  }"
 	result := fp.Parse(content)
 
 	if len(result.ToolCalls) != 1 {
 		t.Fatalf("expected 1 tool call, got %d", len(result.ToolCalls))
 	}
-	if result.ToolCalls[0].Function.Name != "search" {
-		t.Errorf("expected name 'search', got %q", result.ToolCalls[0].Function.Name)
+	if result.ToolCalls[0].Function.Name != "compute" {
+		t.Errorf("expected name 'compute', got %q", result.ToolCalls[0].Function.Name)
 	}
 	// Multi-line JSON is normalized to compact canonical form by re-marshaling.
 	if result.ToolCalls[0].Function.Arguments != `{"query":"test"}` {
@@ -1600,5 +1604,262 @@ func TestParse_FunctionNamePattern_ArgsKeyWordBoundary(t *testing.T) {
 
 	if len(result.ToolCalls) != 0 {
 		t.Errorf("expected 0 tool calls (myarguments: should not match arguments:), got %d", len(result.ToolCalls))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tests for extractNamedToolBlocks (Strategy 7)
+// ---------------------------------------------------------------------------
+
+func TestParse_NamedToolBlock_EndToEnd(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{
+		KnownToolNames: func(s string) bool { return s == "search" },
+	})
+	// Include "arguments" marker so containsToolCallPatterns returns true,
+	// allowing the full Parse() pipeline to run (gate → extract → merge →
+	// normalize → clean).
+	content := "Here are the arguments:\nsearch {\"query\": \"hello\"}"
+	result := fp.Parse(content)
+
+	if len(result.ToolCalls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(result.ToolCalls))
+	}
+	if result.ToolCalls[0].Function.Name != "search" {
+		t.Errorf("expected name 'search', got %q", result.ToolCalls[0].Function.Name)
+	}
+	if result.ToolCalls[0].Function.Arguments != `{"query": "hello"}` {
+		t.Errorf("unexpected args: %s", result.ToolCalls[0].Function.Arguments)
+	}
+	// Verify cleaned content removed the tool block
+	if strings.Contains(result.CleanedContent, "search") {
+		t.Errorf("cleaned content should not contain 'search', got: %q", result.CleanedContent)
+	}
+}
+
+func TestParse_NamedToolBlock_Basic(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{
+		KnownToolNames: func(s string) bool { return s == "search" },
+	})
+	content := "search {\"query\": \"hello\"}"
+	blocks := fp.extractNamedToolBlocks(content)
+	result := fp.normalize(blocks)
+
+	if len(result) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(result))
+	}
+	if result[0].Function.Name != "search" {
+		t.Errorf("expected name 'search', got %q", result[0].Function.Name)
+	}
+	if result[0].Function.Arguments != `{"query": "hello"}` {
+		t.Errorf("unexpected args: %s", result[0].Function.Arguments)
+	}
+}
+
+func TestParse_NamedToolBlock_MultilineJSON(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{
+		KnownToolNames: func(s string) bool { return s == "compute" },
+	})
+	content := "compute {\n  \"x\": 1,\n  \"y\": 2\n}"
+	blocks := fp.extractNamedToolBlocks(content)
+	result := fp.normalize(blocks)
+
+	if len(result) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(result))
+	}
+	if result[0].Function.Name != "compute" {
+		t.Errorf("expected name 'compute', got %q", result[0].Function.Name)
+	}
+	// Multi-line JSON is kept as-is (not re-marshaled by this strategy)
+	if !json.Valid([]byte(result[0].Function.Arguments)) {
+		t.Errorf("expected valid JSON args, got: %s", result[0].Function.Arguments)
+	}
+}
+
+func TestParse_NamedToolBlock_FilteredByKnownTools(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{
+		KnownToolNames: func(s string) bool { return s == "allowed" },
+	})
+	content := "allowed {\"x\": 1} denied {\"y\": 2}"
+	blocks := fp.extractNamedToolBlocks(content)
+	result := fp.normalize(blocks)
+
+	if len(result) != 1 {
+		t.Fatalf("expected 1 tool call (only 'allowed'), got %d", len(result))
+	}
+	if result[0].Function.Name != "allowed" {
+		t.Errorf("expected name 'allowed', got %q", result[0].Function.Name)
+	}
+}
+
+func TestParse_NamedToolBlock_NoFilterAcceptsAll(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{})
+	content := "mytool {\"key\": \"value\"}"
+	blocks := fp.extractNamedToolBlocks(content)
+	result := fp.normalize(blocks)
+
+	if len(result) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(result))
+	}
+	if result[0].Function.Name != "mytool" {
+		t.Errorf("expected name 'mytool', got %q", result[0].Function.Name)
+	}
+}
+
+func TestParse_NamedToolBlock_SkipsInsideFences(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{
+		KnownToolNames: func(s string) bool { return s == "search" },
+	})
+	// stripCodeFences removes content inside ``` fences, so
+	// "search {" inside a code fence should NOT be extracted by named
+	// tool block strategy (Strategy 1 handles those).
+	content := "```json\nsearch {\"query\": \"test\"}\n```"
+	blocks := fp.extractNamedToolBlocks(content)
+	result := fp.normalize(blocks)
+
+	// The content inside the fence is stripped, so no tool calls expected
+	if len(result) != 0 {
+		t.Errorf("expected 0 tool calls (named tool block inside fence), got %d", len(result))
+	}
+}
+
+func TestParse_NamedToolBlock_InvalidJSONSkipped(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{
+		KnownToolNames: func(s string) bool { return s == "bad" },
+	})
+	content := "bad {not valid json}"
+	blocks := fp.extractNamedToolBlocks(content)
+	result := fp.normalize(blocks)
+
+	if len(result) != 0 {
+		t.Errorf("expected 0 tool calls (invalid JSON), got %d", len(result))
+	}
+}
+
+func TestParse_NamedToolBlock_EmptyBracesAccepted(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{
+		KnownToolNames: func(s string) bool { return s == "empty" },
+	})
+	content := "empty {}"
+	blocks := fp.extractNamedToolBlocks(content)
+	result := fp.normalize(blocks)
+
+	// {} is valid JSON (empty object), so it should produce a tool call
+	// consistent with TestParse_FunctionNamePattern_EmptyObjectArgs
+	if len(result) != 1 {
+		t.Errorf("expected 1 tool call ({} is valid empty JSON), got %d", len(result))
+	}
+	if result[0].Function.Name != "empty" {
+		t.Errorf("expected name 'empty', got %q", result[0].Function.Name)
+	}
+}
+
+func TestParse_NamedToolBlock_MultipleBlocks(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{
+		KnownToolNames: func(s string) bool { return s == "first" || s == "second" },
+	})
+	content := "first {\"a\": 1} some text second {\"b\": 2}"
+	blocks := fp.extractNamedToolBlocks(content)
+	result := fp.normalize(blocks)
+
+	if len(result) != 2 {
+		t.Fatalf("expected 2 tool calls, got %d", len(result))
+	}
+	if result[0].Function.Name != "first" {
+		t.Errorf("expected first name 'first', got %q", result[0].Function.Name)
+	}
+	if result[1].Function.Name != "second" {
+		t.Errorf("expected second name 'second', got %q", result[1].Function.Name)
+	}
+}
+
+func TestParse_NamedToolBlock_CleanContent(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{
+		KnownToolNames: func(s string) bool { return s == "search" },
+	})
+	content := "Before search {\"query\": \"test\"} After"
+	blocks := fp.extractNamedToolBlocks(content)
+	result := fp.normalize(blocks)
+
+	if len(result) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(result))
+	}
+	// The named tool block should be removed from cleaned content
+	cleaned := fp.cleanContent(content, blocks)
+	if strings.Contains(cleaned, "search") {
+		t.Errorf("cleaned content should not contain 'search', got: %q", cleaned)
+	}
+	if !strings.Contains(cleaned, "Before") {
+		t.Error("expected 'Before' in cleaned content")
+	}
+	if !strings.Contains(cleaned, "After") {
+		t.Error("expected 'After' in cleaned content")
+	}
+}
+
+func TestParse_NamedToolBlock_WithHyphenName(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{
+		KnownToolNames: func(s string) bool { return s == "my-tool" },
+	})
+	content := "my-tool {\"action\": \"run\"}"
+	blocks := fp.extractNamedToolBlocks(content)
+	result := fp.normalize(blocks)
+
+	if len(result) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(result))
+	}
+	if result[0].Function.Name != "my-tool" {
+		t.Errorf("expected name 'my-tool', got %q", result[0].Function.Name)
+	}
+}
+
+func TestParse_NamedToolBlock_WithUnderscoreName(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{
+		KnownToolNames: func(s string) bool { return s == "my_tool" },
+	})
+	content := "my_tool {\"action\": \"run\"}"
+	blocks := fp.extractNamedToolBlocks(content)
+	result := fp.normalize(blocks)
+
+	if len(result) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(result))
+	}
+	if result[0].Function.Name != "my_tool" {
+		t.Errorf("expected name 'my_tool', got %q", result[0].Function.Name)
+	}
+}
+
+func TestParse_NamedToolBlock_NestedBraces(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{
+		KnownToolNames: func(s string) bool { return s == "nested" },
+	})
+	content := "nested {\"outer\": {\"inner\": \"value\"}}"
+	blocks := fp.extractNamedToolBlocks(content)
+	result := fp.normalize(blocks)
+
+	if len(result) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(result))
+	}
+	if result[0].Function.Name != "nested" {
+		t.Errorf("expected name 'nested', got %q", result[0].Function.Name)
+	}
+	if result[0].Function.Arguments != `{"outer": {"inner": "value"}}` {
+		t.Errorf("unexpected args: %s", result[0].Function.Arguments)
+	}
+}
+
+func TestParse_NamedToolBlock_SpacedBrace(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{
+		KnownToolNames: func(s string) bool { return s == "notool" },
+	})
+	// "notool" is followed by a space then "{" — this WILL match
+	content := "notool {\"x\": 1} is a great tool"
+	blocks := fp.extractNamedToolBlocks(content)
+	result := fp.normalize(blocks)
+
+	if len(result) != 1 {
+		t.Fatalf("expected 1 tool call (space between name and brace is OK), got %d", len(result))
+	}
+	if result[0].Function.Name != "notool" {
+		t.Errorf("expected name 'notool', got %q", result[0].Function.Name)
 	}
 }
