@@ -175,9 +175,71 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 
 		assistantMsg := resp.ToMessage()
 
+		// Dispatch on finish reason from the first choice.
+		// This provides explicit handling for each termination signal
+		// the model can send, rather than inferring from content alone.
+		finishReason := ""
+		if len(resp.Choices) > 0 {
+			finishReason = resp.Choices[0].FinishReason
+		}
+		switch finishReason {
+		case "length":
+			// Model hit the max token limit — response is truncated.
+			// Continue the conversation to let the model finish.
+			if ch.continuationCount < maxContinuations {
+				ch.continuationCount++
+				ch.agent.debugLog("[finish] length — truncated response (continuation %d/%d), looping again\n",
+					ch.continuationCount, maxContinuations)
+				ch.enqueueTransientMessage(Message{
+					Role:    "user",
+					Content: "Please continue your response from where you left off.",
+				})
+				continue
+			}
+			ch.agent.debugLog("[finish] length — max continuations (%d) reached, force-finalizing\n", maxContinuations)
+			return ch.finalize(query)
+
+		case "content_filter":
+			// Content was filtered by the provider's safety system.
+			ch.agent.debugLog("[finish] content_filter — response was filtered\n")
+			if ch.agent.eventPublisher != nil {
+				ch.agent.eventPublisher.Publish(EventTypeError, map[string]interface{}{
+					"message": "response filtered by content policy",
+					"error":   "content_filter",
+				})
+			}
+			ch.turnCompleted = true
+			ch.turnEndIndex = ch.agent.state.Len() - 1
+			return ch.finalize(query)
+
+		case "stop", "tool_calls", "":
+			// "stop" — model completed normally.
+			// "tool_calls" — model made tool calls, fall through to tool execution.
+			// ""  — no finish reason (common when tool_calls are present).
+			// Fall through to the existing tool-call / completion logic below.
+
+		default:
+			// Unknown finish reason — treat conservatively as incomplete
+			// and attempt continuation if budget allows.
+			ch.agent.debugLog("[finish] unknown finish reason %q\n", finishReason)
+			if ch.continuationCount < maxContinuations {
+				ch.continuationCount++
+				ch.agent.debugLog("[finish] unknown — attempting continuation (%d/%d)\n",
+					ch.continuationCount, maxContinuations)
+				ch.enqueueTransientMessage(Message{
+					Role:    "user",
+					Content: "Please continue.",
+				})
+				continue
+			}
+			ch.agent.debugLog("[finish] unknown — max continuations (%d) reached, force-finalizing\n", maxContinuations)
+			return ch.finalize(query)
+		}
+
 		// Fallback: if no structured tool calls but content has patterns,
 		// run the fallback parser and inject extracted calls.
-		if len(resp.Choices) > 0 && len(assistantMsg.ToolCalls) == 0 && a.fallbackParser != nil {
+		// Skip if the finish reason already finalized the turn.
+		if !completed && len(resp.Choices) > 0 && len(assistantMsg.ToolCalls) == 0 && a.fallbackParser != nil {
 			if a.fallbackParser.ShouldUseFallback(assistantMsg.Content, false) {
 				result := a.fallbackParser.Parse(assistantMsg.Content)
 				if len(result.ToolCalls) > 0 {
