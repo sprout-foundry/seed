@@ -594,3 +594,199 @@ func TestFinishReasonContentFilter_WithTools(t *testing.T) {
 	}
 
 }
+
+func TestFinishReasonStop_EmptyContent_Continues(t *testing.T) {
+	// "stop" with empty content should be treated as incomplete and continue.
+	provider := newFRProvider(
+		frTextResponse("", "stop"),
+		frTextResponse("Here is the answer.", "stop"),
+	)
+	agent, _ := NewAgent(Options{
+		Provider: provider,
+		Executor: &mockExecutor{},
+	})
+
+	result, err := agent.Run(context.Background(), "hi")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != "Here is the answer." {
+		t.Errorf("expected %q, got %q", "Here is the answer.", result)
+	}
+	if provider.idx != 2 {
+		t.Errorf("expected 2 provider calls, got %d", provider.idx)
+	}
+}
+
+func TestFinishReasonStop_WhitespaceOnly_Continues(t *testing.T) {
+	// "stop" with whitespace-only content should also continue.
+	provider := newFRProvider(
+		frTextResponse("   \n\t  ", "stop"),
+		frTextResponse("Real content.", "stop"),
+	)
+	agent, _ := NewAgent(Options{
+		Provider: provider,
+		Executor: &mockExecutor{},
+	})
+
+	result, err := agent.Run(context.Background(), "hi")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != "Real content." {
+		t.Errorf("expected %q, got %q", "Real content.", result)
+	}
+	if provider.idx != 2 {
+		t.Errorf("expected 2 provider calls, got %d", provider.idx)
+	}
+}
+
+func TestFinishReasonStop_EmptyContent_MaxContinuations(t *testing.T) {
+	// After maxContinuations empty "stop" responses, force-finalize.
+	provider := newFRProvider(
+		frTextResponse("", "stop"),
+		frTextResponse("", "stop"),
+		frTextResponse("", "stop"),
+		frTextResponse("", "stop"),
+	)
+	agent, _ := NewAgent(Options{
+		Provider: provider,
+		Executor: &mockExecutor{},
+	})
+
+	result, err := agent.Run(context.Background(), "hi")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if provider.idx != 4 {
+		t.Errorf("expected 4 provider calls, got %d", provider.idx)
+	}
+	if result != "" {
+		t.Errorf("expected empty result after max continuations, got %q", result)
+	}
+}
+
+func TestFinishReasonStop_EmptyContent_Stream_Continues(t *testing.T) {
+	// "stop" with empty content should also continue in streaming mode.
+	provider := newFRProvider(
+		frTextResponse("", "stop"),
+		frTextResponse("Streaming answer.", "stop"),
+	)
+	agent, _ := NewAgent(Options{
+		Provider: provider,
+		Executor: &mockExecutor{},
+	})
+
+	result, err := agent.RunStream(context.Background(), "hi")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != "Streaming answer." {
+		t.Errorf("expected %q, got %q", "Streaming answer.", result)
+	}
+	if provider.idx != 2 {
+		t.Errorf("expected 2 provider calls, got %d", provider.idx)
+	}
+}
+
+func TestFinishReasonStop_WithToolCalls_DoesNotContinue(t *testing.T) {
+	// "stop" with empty content but tool calls present should NOT continue —
+	// tool calls represent progress and the existing logic handles them.
+	provider := newFRProvider(
+		&ChatResponse{
+			Choices: []ChatChoice{{
+				Message: Message{
+					Role:    "assistant",
+					Content: "",
+					ToolCalls: []ToolCall{{
+						ID:   "call_1",
+						Type: "function",
+						Function: ToolCallFunction{
+							Name:      "echo",
+							Arguments: `{"message":"hello"}`,
+						},
+					}},
+				},
+				FinishReason: "stop",
+			}},
+			Usage: ChatUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15},
+		},
+		frTextResponse("After tool.", "stop"),
+	)
+	executor := &mockExecutor{
+		results: []Message{{Role: "tool", Content: "echo result", ToolCallID: "call_1"}},
+	}
+	agent, _ := NewAgent(Options{
+		Provider: provider,
+		Executor: executor,
+	})
+
+	result, err := agent.Run(context.Background(), "hi")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Should have executed tool, then continued to second response
+	if result != "After tool." {
+		t.Errorf("expected %q, got %q", "After tool.", result)
+	}
+	if provider.idx != 2 {
+		t.Errorf("expected 2 provider calls, got %d", provider.idx)
+	}
+}
+
+func TestFinishReasonStop_EmptyContent_NoErrorEvent(t *testing.T) {
+	// Force-finalize after max continuations should NOT publish error events
+	// (parallel to TestFinishReasonLength_NoErrorEvent).
+	provider := newFRProvider(
+		frTextResponse("", "stop"),
+		frTextResponse("", "stop"),
+		frTextResponse("", "stop"),
+		frTextResponse("", "stop"),
+	)
+	bus := events.NewEventBus()
+	sub := bus.Subscribe("__fr_test_empty__")
+	agent, _ := NewAgent(Options{
+		Provider:       provider,
+		Executor:       &mockExecutor{},
+		EventPublisher: bus,
+	})
+
+	_, err := agent.Run(context.Background(), "hi")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	evts := drainEvents(sub)
+	if findEventType(evts, EventTypeError) {
+		t.Errorf("expected no error events for stop/empty force-finalize")
+	}
+}
+
+func TestFinishReasonStop_EmptyContent_NilToolCalls(t *testing.T) {
+	// "stop" with empty content and nil ToolCalls (not just empty slice) should continue.
+	provider := newFRProvider(
+		&ChatResponse{
+			Choices: []ChatChoice{{
+				Message:      Message{Role: "assistant", Content: "", ToolCalls: nil},
+				FinishReason: "stop",
+			}},
+			Usage: ChatUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15},
+		},
+		frTextResponse("Recovery content.", "stop"),
+	)
+	agent, _ := NewAgent(Options{
+		Provider: provider,
+		Executor: &mockExecutor{},
+	})
+
+	result, err := agent.Run(context.Background(), "hi")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != "Recovery content." {
+		t.Errorf("expected %q, got %q", "Recovery content.", result)
+	}
+	if provider.idx != 2 {
+		t.Errorf("expected 2 provider calls, got %d", provider.idx)
+	}
+}

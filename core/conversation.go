@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 )
@@ -212,8 +213,27 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 			ch.turnEndIndex = ch.agent.state.Len() - 1
 			return ch.finalize(query)
 
-		case "stop", "tool_calls", "":
+		case "stop":
 			// "stop" — model completed normally.
+			// If content is empty/blank and no tool calls, treat as incomplete
+			// and ask the model to continue.
+			if isBlankContent(assistantMsg.Content) && len(assistantMsg.ToolCalls) == 0 {
+				if ch.continuationCount < maxContinuations {
+					ch.continuationCount++
+					ch.agent.debugLog("[finish] stop with empty content — treating as incomplete (continuation %d/%d), looping again\n",
+						ch.continuationCount, maxContinuations)
+					ch.enqueueTransientMessage(Message{
+						Role:    "user",
+						Content: "Your previous response was empty. Please provide a complete response.",
+					})
+					continue
+				}
+				ch.agent.debugLog("[finish] stop with empty content — max continuations (%d) reached, force-finalizing\n", maxContinuations)
+				return ch.finalize(query)
+			}
+			// Fall through to the existing tool-call / completion logic below.
+
+		case "tool_calls", "":
 			// "tool_calls" — model made tool calls, fall through to tool execution.
 			// ""  — no finish reason (common when tool_calls are present).
 			// Fall through to the existing tool-call / completion logic below.
@@ -570,4 +590,9 @@ func (ch *ConversationHandler) enqueueTransientMessage(msg Message) {
 	ch.transientMu.Lock()
 	defer ch.transientMu.Unlock()
 	ch.transientMsgs = append(ch.transientMsgs, msg)
+}
+
+// isBlankContent checks if the content is empty or contains only whitespace.
+func isBlankContent(content string) bool {
+	return len(strings.TrimSpace(content)) == 0
 }
