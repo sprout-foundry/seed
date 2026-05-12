@@ -2,6 +2,7 @@
 package core
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -484,6 +485,273 @@ func TestResponseValidator_DebugLogCalled(t *testing.T) {
 		},
 	})
 	_ = rv.IsIncomplete("test...")
+	if !logCalled {
+		t.Error("expected debugLog to be called")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// LooksLikeTentativePostToolResponse
+// ---------------------------------------------------------------------------
+
+func TestLooksLikeTentativePostToolResponse_AllPrefixes(t *testing.T) {
+	rv := newTestValidator(t)
+
+	tests := []struct {
+		name    string
+		content string
+		want    bool
+	}{
+		// "let me" variants
+		{"lowercase let me", "let me check the file", true},
+		{"uppercase Let me", "Let me check the file", true},
+		{"titlecase Let Me", "Let Me check the file", true},
+		{"let me with ellipsis", "let me check the file...", true},
+		{"let me with trailing space", "let me check the file   ", true},
+
+		// "i'll" variants
+		{"lowercase i'll", "i'll look into that", true},
+		{"uppercase I'll", "I'll look into that", true},
+		{"I'll with ellipsis", "I'll look into that...", true},
+		{"i'll with period", "I'll look into that.", true},
+
+		// "i will" variant
+		{"lowercase i will", "i will do that", true},
+		{"uppercase I will", "I will do that", true},
+
+		// "i need to" variant
+		{"lowercase i need to", "i need to run a test", true},
+		{"uppercase I need to", "I need to run a test", true},
+
+		// "i'm going to" variant
+		{"lowercase i'm going to", "i'm going to search for it", true},
+		{"uppercase I'm going to", "I'm going to search for it", true},
+
+		// "im going to" variant (no apostrophe)
+		{"lowercase im going to", "im going to check", true},
+		{"uppercase Im going to", "Im going to check", true},
+
+		// "i'll start by" variant
+		{"lowercase i'll start by", "i'll start by reading the file", true},
+		{"uppercase I'll start by", "I'll start by reading the file", true},
+
+		// "i will start by" variant
+		{"lowercase i will start by", "i will start by checking", true},
+		{"uppercase I will start by", "I will start by checking", true},
+
+		// "first, let me" variant
+		{"lowercase first, let me", "first, let me check the file", true},
+		{"uppercase First, let me", "First, let me check the file", true},
+
+		// "first i'll" variant
+		{"lowercase first i'll", "first i'll start checking", true},
+		{"uppercase First i'll", "First i'll start checking", true},
+
+		// "one moment" variant
+		{"lowercase one moment", "one moment, let me check", true},
+		{"uppercase One moment", "One moment, let me check", true},
+
+		// "give me" variant
+		{"lowercase give me", "give me a second to check", true},
+		{"uppercase Give me", "Give me a second to check", true},
+
+		// "i'll need to" variant
+		{"lowercase i'll need to", "i'll need to look at this", true},
+		{"uppercase I'll need to", "I'll need to look at this", true},
+
+		// "let me think" variant
+		{"lowercase let me think", "let me think about this", true},
+		{"uppercase Let me think", "Let me think about this", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := rv.LooksLikeTentativePostToolResponse(tt.content)
+			if got != tt.want {
+				t.Errorf("LooksLikeTentativePostToolResponse(%q) = %v, want %v", tt.content, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestLooksLikeTentativePostToolResponse_WordThreshold(t *testing.T) {
+	rv := newTestValidator(t)
+
+	// "let me " = 2 words, "word " * N = N words, "end" = 1 word → total = N + 3
+	// For 39 words: N = 36, for 40 words: N = 37
+
+	tests := []struct {
+		name    string
+		content string
+		want    bool
+	}{
+		{
+			name:    "39 words with prefix",
+			content: "let me " + strings.Repeat("word ", 36) + "end", // 2 + 36 + 1 = 39
+			want:    true,
+		},
+		{
+			name:    "40 words with prefix",
+			content: "let me " + strings.Repeat("word ", 37) + "end", // 2 + 37 + 1 = 40
+			want:    false,
+		},
+		// Short with prefix
+		{
+			name:    "5 words with prefix",
+			content: "let me check the file now",
+			want:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := rv.LooksLikeTentativePostToolResponse(tt.content)
+			if got != tt.want {
+				t.Errorf("LooksLikeTentativePostToolResponse(%q) = %v, want %v (word count: %d)", tt.content, got, tt.want, len(strings.Fields(tt.content)))
+			}
+		})
+	}
+}
+
+func TestLooksLikeTentativePostToolResponse_SubstantiveLongResponses(t *testing.T) {
+	rv := newTestValidator(t)
+
+	// Build a 40+ word substantive response starting with a planning prefix.
+	substantiveLong1 := "Let me explain what happened here. We ran the tests and they all passed today. " +
+		"The code is functioning correctly and there are no errors to report. " +
+		"Everything looks good and we can proceed with the deployment without issues." // 39 words... need 40+
+
+	// Let me verify: Let(1) me(2) explain(3) what(4) happened(5) here(6) We(7) ran(8) the(9) tests(10)
+	// and(11) they(12) all(13) passed(14) today(15) The(16) code(17) is(18) functioning(19) correctly(20)
+	// and(21) there(22) are(23) no(24) errors(25) to(26) report(27) Everything(28) looks(29) good(30)
+	// and(31) we(32) can(33) proceed(34) with(35) the(36) deployment(37) without(38) issues(39) = 39 words
+	// Need one more word to be 40.
+	substantiveLong1 = strings.TrimSpace(substantiveLong1) + " now" // 40 words
+
+	substantiveLong2 := "I will summarize the key findings from the analysis. The data shows " +
+		"significant improvements in performance and reliability across all measured metrics today " +
+		"for the entire team to review and act upon accordingly going forward with confidence " +
+		"in the results and outcomes for all stakeholders involved in this project." // 49 words
+
+	tests := []struct {
+		name    string
+		content string
+		want    bool
+	}{
+		{
+			name:    "long response starting with let me (40 words)",
+			content: substantiveLong1,
+			want:    false,
+		},
+		{
+			name:    "long response starting with I will (40+ words)",
+			content: substantiveLong2,
+			want:    false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			wordCount := len(strings.Fields(tt.content))
+			got := rv.LooksLikeTentativePostToolResponse(tt.content)
+			if got != tt.want {
+				t.Errorf("LooksLikeTentativePostToolResponse(%q) = %v, want %v (word count: %d)", tt.content, got, tt.want, wordCount)
+			}
+		})
+	}
+}
+
+func TestLooksLikeTentativePostToolResponse_EmptyAndWhitespace(t *testing.T) {
+	rv := newTestValidator(t)
+
+	tests := []struct {
+		name    string
+		content string
+		want    bool
+	}{
+		{"empty string", "", false},
+		{"whitespace only", "   ", false},
+		{"newlines only", "\n\n", false},
+		{"tabs only", "\t\t", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := rv.LooksLikeTentativePostToolResponse(tt.content)
+			if got != tt.want {
+				t.Errorf("LooksLikeTentativePostToolResponse(%q) = %v, want %v", tt.content, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestLooksLikeTentativePostToolResponse_NoPrefixMatch(t *testing.T) {
+	rv := newTestValidator(t)
+
+	tests := []struct {
+		name    string
+		content string
+		want    bool
+	}{
+		{"plain answer", "Here is the result you requested.", false},
+		{"answer starting with I", "I found the file you were looking for.", false},
+		{"answer starting with let", "Let's look at the code together.", false},
+		{"answer starting with give", "Give you the answer: yes, it works.", false},
+		{"answer starting with one", "One of the issues was a null pointer.", false},
+		{"answer starting with first", "First of all, the tests passed.", false},
+		{"answer starting with think", "Think carefully about the requirements.", false},
+		{"answer starting with will", "Will this work? Yes, it should.", false},
+		{"answer starting with need", "Need more information before proceeding.", false},
+		{"random text", "The quick brown fox jumps over the lazy dog.", false},
+		{"answer with planning words in middle", "The file was found. Let me check its permissions.", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := rv.LooksLikeTentativePostToolResponse(tt.content)
+			if got != tt.want {
+				t.Errorf("LooksLikeTentativePostToolResponse(%q) = %v, want %v", tt.content, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestLooksLikeTentativePostToolResponse_LeadingWhitespace(t *testing.T) {
+	rv := newTestValidator(t)
+
+	tests := []struct {
+		name    string
+		content string
+		want    bool
+	}{
+		{"leading space", " let me check", true},
+		{"leading newline and space", "\n\t let me check", true},
+		{"leading tabs", "\t\tlet me check", true},
+		{"leading spaces on empty", "   ", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := rv.LooksLikeTentativePostToolResponse(tt.content)
+			if got != tt.want {
+				t.Errorf("LooksLikeTentativePostToolResponse(%q) = %v, want %v", tt.content, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestLooksLikeTentativePostToolResponse_DebugLog(t *testing.T) {
+	rv := NewResponseValidator(ResponseValidatorOptions{})
+	// Should not panic with nil debugLog
+	_ = rv.LooksLikeTentativePostToolResponse("let me check")
+
+	var logCalled bool
+	rv2 := NewResponseValidator(ResponseValidatorOptions{
+		DebugLog: func(format string, args ...interface{}) {
+			logCalled = true
+		},
+	})
+	_ = rv2.LooksLikeTentativePostToolResponse("let me check")
 	if !logCalled {
 		t.Error("expected debugLog to be called")
 	}

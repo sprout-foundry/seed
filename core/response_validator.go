@@ -177,3 +177,66 @@ func (rv *ResponseValidator) hasIncompleteCodeBlock(content string) bool {
 	codeBlockCount := strings.Count(content, "```")
 	return codeBlockCount%2 != 0
 }
+
+// tentativePrefixes are planning-language prefixes that suggest the LLM is
+// about to perform an action rather than providing a substantive answer.
+// Ordered so that longer prefixes which are supersets of shorter ones are
+// checked first, preventing shorter substrings from incorrectly matching
+// (e.g., "i'll start by" must match before "i'll").
+var tentativePrefixes = []string{
+	"first, let me",
+	"first i'll",
+	"i'll need to",
+	"i'll start by",
+	"i will start by",
+	"i'm going to",
+	"im going to",
+	"i need to",
+	"i will",
+	"i'll",
+	"let me think",
+	"one moment",
+	"give me",
+	"let me",
+}
+
+// tentativeWordThreshold is the word-count threshold above which responses
+// are considered too substantive to be mere planning language.
+const tentativeWordThreshold = 40
+
+// LooksLikeTentativePostToolResponse detects when the LLM has run tools but
+// instead of giving a real response, it's just planning what to do next.
+//
+// These "tentative" responses should trigger another loop iteration. A response
+// is considered tentative when:
+//
+//   - It is under 40 words (longer responses are considered substantive even if
+//     they start with planning language)
+//   - It starts with a planning prefix (case-insensitive), such as "Let me...",
+//     "I'll...", "I need to...", "I'm going to...", etc.
+func (rv *ResponseValidator) LooksLikeTentativePostToolResponse(content string) bool {
+	if len(content) == 0 {
+		return false
+	}
+
+	// Long responses are considered substantive regardless of prefix.
+	wordCount := len(strings.Fields(content))
+	if wordCount >= tentativeWordThreshold {
+		rv.log("[validate] LooksLikeTentativePostToolResponse: false (too long: %d words)",
+			wordCount)
+		return false
+	}
+
+	// Lowercase and trim for prefix matching.
+	trimmed := strings.ToLower(strings.TrimSpace(content))
+
+	for _, prefix := range tentativePrefixes {
+		if strings.HasPrefix(trimmed, prefix) {
+			rv.log("[validate] LooksLikeTentativePostToolResponse: true (matched prefix %q)", prefix)
+			return true
+		}
+	}
+
+	rv.log("[validate] LooksLikeTentativePostToolResponse: false (no prefix match)")
+	return false
+}
