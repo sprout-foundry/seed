@@ -1,7 +1,6 @@
 package core
 
 import (
-	"fmt"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -459,4 +458,3 @@ func (c *Compactor) truncateHead(s string, headRunes int) string {
 }
 
 // suppress unused import
-var _ = fmt.Sprintf

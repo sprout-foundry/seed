@@ -5264,3 +5264,215 @@ func TestE2E_MissingToolCallID_GeneratesSyntheticID(t *testing.T) {
 	// Verify accumulated token counts: 80 (tool call) + 35 (final) = 115
 	h.AssertStateHasTokens(agent, 115)
 }
+
+func TestE2E_DuplicateToolCalls_OnlyUniqueExecute(t *testing.T) {
+	// Scenario: provider returns 4 tool calls in a single response, but 2 of them
+	// are duplicates of call_1 (same ID + same arguments). The ToolCallNormalizer
+	// deduplicates by ID+arguments, so only the 2 unique calls (call_1 and call_2)
+	// are executed.
+	//
+	// Flow:
+	// 1. Provider returns 4 tool calls:
+	//    - call_1: read_file {path:"/tmp/test.txt"} (unique)
+	//    - call_1: read_file {path:"/tmp/test.txt"} (duplicate)
+	//    - call_2: shell {cmd:"ls"} (unique)
+	//    - call_1: read_file {path:"/tmp/test.txt"} (duplicate)
+	// 2. Normalizer deduplicates → 2 unique calls remain
+	// 3. Executor receives exactly 2 tool calls
+	// 4. Tool results returned for call_1 and call_2
+	// 5. Provider returns final answer
+	// 6. Conversation completes
+	h := NewHarnessWithT(t)
+
+	// Register tools so the executor recognizes them
+	h.Executor().AddTool(core.Tool{
+		Function: core.ToolFunction{
+			Name:        "read_file",
+			Description: "Read a file",
+		},
+	})
+	h.Executor().AddTool(core.Tool{
+		Function: core.ToolFunction{
+			Name:        "shell",
+			Description: "Execute a shell command",
+		},
+	})
+
+	// First response: 4 tool calls (2 are duplicates of call_1)
+	h.Provider().AddToolCallResponse(
+		"Reading the file and listing the directory.",
+		core.ToolCall{
+			ID: "call_1",
+			Function: core.ToolCallFunction{
+				Name:      "read_file",
+				Arguments: `{"path":"/tmp/test.txt"}`,
+			},
+		},
+		core.ToolCall{
+			ID: "call_1",
+			Function: core.ToolCallFunction{
+				Name:      "read_file",
+				Arguments: `{"path":"/tmp/test.txt"}`,
+			},
+		},
+		core.ToolCall{
+			ID: "call_2",
+			Function: core.ToolCallFunction{
+				Name:      "shell",
+				Arguments: `{"cmd":"ls"}`,
+			},
+		},
+		core.ToolCall{
+			ID: "call_1",
+			Function: core.ToolCallFunction{
+				Name:      "read_file",
+				Arguments: `{"path":"/tmp/test.txt"}`,
+			},
+		},
+	)
+
+	// Second response: final answer
+	h.Provider().AddTextResponse("The file test.txt exists and the directory contains: file.txt")
+
+	// Executor returns results for each unique tool call
+	h.Executor().AddToolResult("call_1", "file content: hello")
+	h.Executor().AddToolResult("call_2", "file.txt")
+
+	agent := h.NewAgent()
+	result, err := agent.Run(context.Background(), "Read /tmp/test.txt and list directory")
+	h.AssertNoError(err)
+	h.AssertEquals(result, "The file test.txt exists and the directory contains: file.txt")
+
+	// Provider called twice: tool call iteration + final answer
+	h.AssertProviderCalledN(2)
+
+	// Executor called once (single Execute call with 2 tool calls)
+	h.AssertExecutorCalledN(1)
+
+	// Verify executor received exactly 2 tool calls (not 4)
+	execCalls := h.Executor().LastCalls()
+	if len(execCalls) != 2 {
+		t.Fatalf("expected 2 executor calls (deduplicated), got %d", len(execCalls))
+	}
+
+	// Verify the two unique tool calls are present
+	calledNames := make(map[string]bool)
+	calledIDs := make(map[string]bool)
+	for _, tc := range execCalls {
+		calledNames[tc.Function.Name] = true
+		calledIDs[tc.ID] = true
+	}
+	if !calledNames["read_file"] {
+		t.Error("expected read_file tool call to be in executor calls")
+	}
+	if !calledNames["shell"] {
+		t.Error("expected shell tool call to be in executor calls")
+	}
+	if !calledIDs["call_1"] {
+		t.Error("expected call_1 to be in executor calls")
+	}
+	if !calledIDs["call_2"] {
+		t.Error("expected call_2 to be in executor calls")
+	}
+
+	// State: user + assistant(tool calls, 2 entries after dedup) + 2 tool results + assistant(final) = 5
+	h.AssertStateHasNMessages(agent, 5)
+
+	// Verify tool_start events — should have exactly 2 (not 4)
+	h.AssertEventPublished(events.EventTypeToolStart)
+	toolStartEvents := h.FindEvents(events.EventTypeToolStart)
+	if len(toolStartEvents) != 2 {
+		t.Fatalf("expected 2 tool_start events (deduplicated), got %d", len(toolStartEvents))
+	}
+
+	// Verify tool_start event IDs
+	tsIDs := make(map[string]bool)
+	for _, evt := range toolStartEvents {
+		data, ok := evt.Data.(map[string]interface{})
+		if !ok {
+			t.Fatalf("expected tool_start event data to be map[string]interface{}, got %T", evt.Data)
+		}
+		id, ok := data["tool_call_id"].(string)
+		if !ok {
+			t.Fatalf("expected tool_call_id to be string, got %T", data["tool_call_id"])
+		}
+		tsIDs[id] = true
+	}
+	if !tsIDs["call_1"] {
+		t.Error("expected tool_start event for call_1")
+	}
+	if !tsIDs["call_2"] {
+		t.Error("expected tool_start event for call_2")
+	}
+
+	// Verify tool_end events — should have exactly 2 (not 4)
+	h.AssertEventPublished(events.EventTypeToolEnd)
+	toolEndEvents := h.FindEvents(events.EventTypeToolEnd)
+	if len(toolEndEvents) != 2 {
+		t.Fatalf("expected 2 tool_end events (deduplicated), got %d", len(toolEndEvents))
+	}
+
+	// Verify tool_end event IDs
+	teIDs := make(map[string]bool)
+	for _, evt := range toolEndEvents {
+		data, ok := evt.Data.(map[string]interface{})
+		if !ok {
+			t.Fatalf("expected tool_end event data to be map[string]interface{}, got %T", evt.Data)
+		}
+		id, ok := data["tool_call_id"].(string)
+		if !ok {
+			t.Fatalf("expected tool_call_id to be string, got %T", data["tool_call_id"])
+		}
+		teIDs[id] = true
+	}
+	if !teIDs["call_1"] {
+		t.Error("expected tool_end event for call_1")
+	}
+	if !teIDs["call_2"] {
+		t.Error("expected tool_end event for call_2")
+	}
+
+	// Verify accumulated token counts: 80 (tool call iteration) + 35 (final) = 115
+	h.AssertStateHasTokens(agent, 115)
+
+	// Verify query lifecycle events
+	h.AssertEventPublished(events.EventTypeQueryStarted)
+	h.AssertEventPublished(events.EventTypeQueryCompleted)
+
+	// Verify state messages structure
+	messages := agent.State().Messages()
+	if messages[0].Role != "user" {
+		t.Errorf("expected message 1 to be user, got %q", messages[0].Role)
+	}
+	if messages[1].Role != "assistant" {
+		t.Errorf("expected message 2 to be assistant, got %q", messages[1].Role)
+	}
+	if len(messages[1].ToolCalls) != 2 {
+		t.Fatalf("expected assistant message to have 2 tool calls (after dedup), got %d", len(messages[1].ToolCalls))
+	}
+	// Verify the assistant message has the correct tool call IDs
+	if messages[1].ToolCalls[0].ID != "call_1" {
+		t.Errorf("expected first tool call ID 'call_1', got %q", messages[1].ToolCalls[0].ID)
+	}
+	if messages[1].ToolCalls[1].ID != "call_2" {
+		t.Errorf("expected second tool call ID 'call_2', got %q", messages[1].ToolCalls[1].ID)
+	}
+	// Message 3 should be tool result for call_1
+	if messages[2].Role != "tool" {
+		t.Errorf("expected message 3 to be tool, got %q", messages[2].Role)
+	}
+	if messages[2].ToolCallID != "call_1" {
+		t.Errorf("expected tool result for call_1, got %q", messages[2].ToolCallID)
+	}
+	// Message 4 should be tool result for call_2
+	if messages[3].Role != "tool" {
+		t.Errorf("expected message 4 to be tool, got %q", messages[3].Role)
+	}
+	if messages[3].ToolCallID != "call_2" {
+		t.Errorf("expected tool result for call_2, got %q", messages[3].ToolCallID)
+	}
+	// Message 5 should be final answer
+	if messages[4].Role != "assistant" {
+		t.Errorf("expected message 5 to be assistant, got %q", messages[4].Role)
+	}
+}

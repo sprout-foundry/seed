@@ -27,8 +27,8 @@ type ToolCallFunction struct {
 // The structure matches the OpenAI function-calling wire format where
 // tool definitions are nested under a "function" key.
 type Tool struct {
-	Type     string         `json:"type"`
-	Function ToolFunction   `json:"function"`
+	Type     string       `json:"type"`
+	Function ToolFunction `json:"function"`
 }
 
 // ToolFunction describes a tool's identity and parameter schema.
