@@ -204,6 +204,33 @@ var tentativePrefixes = []string{
 // are considered too substantive to be mere planning language.
 const tentativeWordThreshold = 40
 
+// LooksTruncated checks if a response appears structurally truncated.
+// It is a subset of IsIncomplete that excludes the shortness heuristic,
+// making it safe for use in the conversation continuation loop where short
+// but complete answers (e.g., "Done.") should not trigger a retry.
+//
+// It returns true if any of these conditions are detected:
+//
+// - Trailing "..." (ellipsis at end)
+// - Abrupt ending (ends with comma or hyphen)
+// - Unclosed code blocks (odd number of ``` markers)
+func (rv *ResponseValidator) LooksTruncated(content string) bool {
+	if len(content) == 0 {
+		return false
+	}
+
+	hasPatterns := rv.hasIncompletePatterns(content)
+	hasAbrupt := rv.hasAbruptEnding(content)
+	hasBadCode := rv.hasIncompleteCodeBlock(content)
+
+	result := hasPatterns || hasAbrupt || hasBadCode
+
+	rv.log("[validate] LooksTruncated: %v (patterns=%v, abrupt=%v, code=%v)",
+		result, hasPatterns, hasAbrupt, hasBadCode)
+
+	return result
+}
+
 // LooksLikeTentativePostToolResponse detects when the LLM has run tools but
 // instead of giving a real response, it's just planning what to do next.
 //

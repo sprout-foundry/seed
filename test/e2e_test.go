@@ -686,6 +686,120 @@ func TestE2E_ConcurrentAgents(t *testing.T) {
 	}
 }
 
+// --- Incomplete Response Continuation Tests ---
+
+func TestE2E_IncompleteResponse_TrailingEllipsis(t *testing.T) {
+	// Provider returns a response ending with ellipsis, indicating truncation.
+	// The validator should detect this as incomplete and continue the loop.
+	h := NewHarnessWithT(t)
+	h.Provider().AddTextResponse("Here is the answer...")
+	// Second response must be long enough (>10 words) so it's not flagged as too short.
+	h.Provider().AddTextResponse("This is the complete answer that I was going to provide from the start.")
+
+	agent := h.NewAgent()
+	result, err := agent.Run(context.Background(), "test")
+	h.AssertNoError(err)
+	h.AssertEquals(result, "This is the complete answer that I was going to provide from the start.")
+
+	// Provider called twice: initial incomplete response + continuation
+	h.AssertProviderCalledN(2)
+
+	// State: user query, assistant(incomplete), assistant(final continuation)
+	h.AssertStateHasNMessages(agent, 3)
+}
+
+func TestE2E_IncompleteResponse_AbruptEnding(t *testing.T) {
+	// Provider returns a response ending with a comma, indicating truncation.
+	h := NewHarnessWithT(t)
+	h.Provider().AddTextResponse("The file contains,")
+	// Second response must be at least 10 words so it's not flagged as too short.
+	h.Provider().AddTextResponse("It has a very long content inside the file that we are looking at today.")
+
+	agent := h.NewAgent()
+	result, err := agent.Run(context.Background(), "test")
+	h.AssertNoError(err)
+	h.AssertEquals(result, "It has a very long content inside the file that we are looking at today.")
+
+	// Provider called twice
+	h.AssertProviderCalledN(2)
+
+	// State: user + assistant(incomplete) + assistant(final)
+	h.AssertStateHasNMessages(agent, 3)
+}
+
+func TestE2E_IncompleteResponse_MaxContinuations(t *testing.T) {
+	// Provider keeps returning incomplete responses. After 3 consecutive
+	// continuations (maxContinuations=3), the loop force-finalizes.
+	// Total provider calls: 1 initial + 3 continuations = 4
+	h := NewHarnessWithT(t)
+	h.Provider().AddTextResponse("First incomplete...")
+	h.Provider().AddTextResponse("Second incomplete...")
+	h.Provider().AddTextResponse("Third incomplete...")
+	h.Provider().AddTextResponse("Fourth and last...")
+
+	agent := h.NewAgent()
+	result, err := agent.Run(context.Background(), "test")
+	h.AssertNoError(err)
+	h.AssertEquals(result, "Fourth and last...")
+
+	// Provider called 4 times: 1 initial + 3 continuations (4th call force-finalized)
+	h.AssertProviderCalledN(4)
+
+	// State: user + 4 assistant messages (one per iteration)
+	h.AssertStateHasNMessages(agent, 5)
+}
+
+func TestE2E_IncompleteResponse_CompleteShortAnswer(t *testing.T) {
+	// "Done." is a known complete short answer — should NOT trigger continuation.
+	h := NewHarnessWithT(t)
+	h.Provider().AddTextResponse("Done.")
+
+	agent := h.NewAgent()
+	result, err := agent.Run(context.Background(), "test")
+	h.AssertNoError(err)
+	h.AssertEquals(result, "Done.")
+
+	// Provider called only once — no continuation triggered
+	h.AssertProviderCalledN(1)
+
+	// State: user + assistant
+	h.AssertStateHasNMessages(agent, 2)
+}
+
+func TestE2E_IncompleteResponse_WithToolCalls(t *testing.T) {
+	// Provider returns an incomplete response WITH tool calls.
+	// Tool calls take precedence over the incomplete check, so the tool
+	// executes and continuationCount resets. The incomplete response is
+	// still recorded in state as the last assistant message.
+	h := NewHarnessWithT(t)
+	h.Provider().AddToolCallResponse(
+		"Let me check...",
+		core.ToolCall{
+			ID: "call_1",
+			Function: core.ToolCallFunction{
+				Name:      "read_file",
+				Arguments: `{"path":"test.txt"}`,
+			},
+		},
+	)
+	// The final response must be at least 10 words so it's not flagged as too short.
+	h.Provider().AddTextResponse("The file contents are hello world and that is all you need to know now.")
+
+	h.Executor().AddToolResult("call_1", "hello world")
+
+	agent := h.NewAgent()
+	result, err := agent.Run(context.Background(), "Read test.txt")
+	h.AssertNoError(err)
+	h.AssertEquals(result, "The file contents are hello world and that is all you need to know now.")
+
+	// Provider called twice: tool call iteration + final answer
+	h.AssertProviderCalledN(2)
+	h.AssertExecutorCalledN(1)
+
+	// State: user + assistant(tool call, incomplete) + tool result + assistant(final)
+	h.AssertStateHasNMessages(agent, 4)
+}
+
 // --- InjectInput Tests ---
 
 func TestE2E_InjectInput_Accepted(t *testing.T) {
@@ -1783,4 +1897,68 @@ func TestE2E_MalformedResponse_MultipleIterations(t *testing.T) {
 
 	// State: user + assistant(malformed1) + tool result1 + assistant(malformed2) + tool result2 + assistant(final)
 	h.AssertStateHasNMessages(agent, 6)
+}
+
+// --- Streaming Incomplete Response Tests ---
+
+func TestE2E_IncompleteResponse_Streaming_TrailingEllipsis(t *testing.T) {
+	// Provider streams a response ending with ellipsis (structural truncation marker).
+	// The validator should detect this as incomplete and continue the loop.
+	// The second call streams a complete answer (>10 words, no truncation markers).
+	h := NewHarnessWithT(t)
+
+	// First call: incomplete streaming response (ends with "...")
+	h.Provider().
+		WithStreaming().
+		AddStreamChunks("Here is the answer...").
+		AddTextResponse("Here is the answer...")
+
+	// Second call: complete streaming response (no truncation, >10 words)
+	h.Provider().
+		AddStreamChunks("This is the complete answer that I was going to provide from the start.").
+		AddTextResponse("This is the complete answer that I was going to provide from the start.")
+
+	agent := h.NewAgent()
+	result, err := agent.RunStream(context.Background(), "test")
+	h.AssertNoError(err)
+
+	// RunStream returns empty when buffer has content (buffer preferred over choices)
+	h.AssertEquals(result, "")
+
+	// Streaming buffer should contain both streamed contents concatenated
+	buf := agent.StreamingBuffer()
+	h.AssertEquals(buf.String(), "Here is the answer...This is the complete answer that I was going to provide from the start.")
+
+	// Provider called twice: initial incomplete response + continuation with complete answer
+	h.AssertProviderCalledN(2)
+
+	// State: user query + assistant(incomplete) + assistant(final continuation)
+	h.AssertStateHasNMessages(agent, 3)
+}
+
+func TestE2E_IncompleteResponse_Streaming_CompleteShortAnswer(t *testing.T) {
+	// "Done." is a known complete short answer — should NOT trigger continuation.
+	h := NewHarnessWithT(t)
+
+	h.Provider().
+		WithStreaming().
+		AddStreamChunks("Done.").
+		AddTextResponse("Done.")
+
+	agent := h.NewAgent()
+	result, err := agent.RunStream(context.Background(), "test")
+	h.AssertNoError(err)
+
+	// RunStream returns empty when buffer has content (buffer preferred over choices)
+	h.AssertEquals(result, "")
+
+	// Streaming buffer contains the streamed content
+	buf := agent.StreamingBuffer()
+	h.AssertEquals(buf.String(), "Done.")
+
+	// Provider called only once — no continuation triggered (known complete short answer)
+	h.AssertProviderCalledN(1)
+
+	// State: user + assistant
+	h.AssertStateHasNMessages(agent, 2)
 }

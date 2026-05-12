@@ -19,7 +19,15 @@ type ConversationHandler struct {
 
 	transientMu   sync.Mutex
 	transientMsgs []Message
+
+	// continuationCount tracks consecutive incomplete-response continuations.
+	// After maxContinuations without progress, the loop force-finalizes.
+	continuationCount int
 }
+
+// maxContinuations is the maximum number of consecutive incomplete-response
+// continuations before force-finalizing to prevent infinite loops.
+const maxContinuations = 3
 
 func newConversationHandler(a *Agent) *ConversationHandler {
 	return &ConversationHandler{
@@ -112,8 +120,31 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 
 		assistantMsg := resp.ToMessage()
 
+		// Fallback: if no structured tool calls but content has patterns,
+		// run the fallback parser and inject extracted calls.
+		if len(resp.Choices) > 0 && len(assistantMsg.ToolCalls) == 0 && a.fallbackParser != nil {
+			if a.fallbackParser.ShouldUseFallback(assistantMsg.Content, false) {
+				result := a.fallbackParser.Parse(assistantMsg.Content)
+				if len(result.ToolCalls) > 0 {
+					a.debugLog("[fallback] Parsed %d tool calls from content\n", len(result.ToolCalls))
+					assistantMsg.ToolCalls = result.ToolCalls
+					assistantMsg.Content = result.CleanedContent
+					// Update the last message in state (already recorded by chatFn)
+					// so that tool results are not orphaned in the next iteration.
+					msgs := a.state.Messages()
+					if len(msgs) > 0 {
+						msgs[len(msgs)-1] = assistantMsg
+						a.state.SetMessages(msgs)
+					}
+				}
+			}
+		}
+
 		// No tool calls? Check for injected input before deciding to break.
 		if len(resp.Choices) == 0 || len(assistantMsg.ToolCalls) == 0 {
+			// Injected user input takes priority over truncation recovery.
+			// If the user sent input while the model was responding, we prefer
+			// to process the user's message rather than auto-continuing.
 			select {
 			case injectedInput := <-ch.agent.inputInjectionChan:
 				ch.agent.state.AddMessage(Message{Role: "user", Content: injectedInput})
@@ -121,12 +152,32 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 				continue
 			default:
 			}
+
+			// Check if the response appears truncated — if so, ask the model
+			// to continue rather than finalizing. Uses LooksTruncated (not
+			// IsIncomplete) to avoid flagging short but complete answers like
+			// "Done." as needing continuation.
+			if a.validator != nil && a.validator.LooksTruncated(assistantMsg.Content) {
+				if ch.continuationCount < maxContinuations {
+					ch.continuationCount++
+					ch.agent.debugLog("[validate] Incomplete response detected (continuation %d/%d), looping again\n",
+						ch.continuationCount, maxContinuations)
+					ch.enqueueTransientMessage(Message{
+						Role:    "user",
+						Content: "Please continue your response from where you left off.",
+					})
+					continue
+				}
+				ch.agent.debugLog("[validate] Max continuations (%d) reached, force-finalizing\n", maxContinuations)
+			}
+
 			ch.agent.debugLog("[OK] Conversation complete\n")
 			completed = true
 			break
 		}
 
 		// Execute tool calls
+		ch.continuationCount = 0 // tool calls are progress, reset continuation budget
 		ch.agent.debugLog("[tool] Executing %d tool calls\n", len(assistantMsg.ToolCalls))
 
 		// Check for context cancellation before executing tools

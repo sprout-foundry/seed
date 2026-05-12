@@ -37,6 +37,9 @@ type Agent struct {
 
 	paused             bool
 	inputInjectionChan chan string
+
+	fallbackParser *FallbackParser
+	validator      *ResponseValidator
 }
 
 // NewAgent creates a new Agent from the given options. Returns an error if
@@ -54,6 +57,12 @@ func NewAgent(opts Options) (*Agent, error) {
 		systemPrompt = DefaultSystemPrompt
 	}
 
+	// Build a set of known tool names for the fallback parser.
+	knownTools := make(map[string]bool)
+	for _, t := range opts.Executor.GetTools() {
+		knownTools[t.Name] = true
+	}
+
 	return &Agent{
 		provider:           opts.Provider,
 		executor:           opts.Executor,
@@ -65,6 +74,8 @@ func NewAgent(opts Options) (*Agent, error) {
 		state:              NewState(),
 		outputMgr:          NewOutputManager(opts.EventBus),
 		inputInjectionChan: make(chan string, 1),
+		fallbackParser:     NewFallbackParser(FallbackParserOptions{KnownToolNames: func(name string) bool { return knownTools[name] }}),
+		validator:          NewResponseValidator(ResponseValidatorOptions{DebugLog: func(format string, args ...interface{}) { if opts.Debug { fmt.Printf(format, args...) }} }),
 	}, nil
 }
 
