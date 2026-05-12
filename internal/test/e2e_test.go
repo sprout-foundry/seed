@@ -3466,3 +3466,182 @@ func TestE2E_CheckpointCompaction_MultipleTurns(t *testing.T) {
 		t.Error("expected recent user query 'Fourth question' in provider request")
 	}
 }
+
+func TestE2E_CheckpointIndexShifting_AfterCompaction(t *testing.T) {
+	// Scenario: compaction removes messages from the API request, but checkpoint
+	// indices reference state.Messages() which only appends. After multiple turns
+	// with compaction, remaining checkpoints must still have valid indices that
+	// can be re-applied on subsequent calls.
+	//
+	// Flow:
+	// 1. Run 3 turns to create 3 checkpoints (indices [0,1], [2,3], [4,5])
+	// 2. Run turn 4 — checkpoint compaction replaces [0,5] with summaries
+	// 3. Verify all 3 checkpoints still have valid indices into state.Messages()
+	// 4. Run turn 5 — compaction should still work; now 4 checkpoints exist
+	//    (turn 4 added a 4th), so 4 summaries replace [0,7]
+	// 5. Verify checkpoints remain valid after the second compaction pass
+	h := NewHarnessWithT(t)
+	h.Provider().AddTextResponse("First answer to your question.")
+	h.Provider().AddTextResponse("Second answer to your question.")
+	h.Provider().AddTextResponse("Third answer to your question.")
+	h.Provider().AddTextResponse("Fourth answer to your question.")
+	h.Provider().AddTextResponse("Fifth answer to your question.")
+
+	agent := h.NewAgent()
+
+	// Turns 1-3: build up checkpoints
+	_, err := agent.Run(context.Background(), "First question about the project")
+	h.AssertNoError(err)
+
+	_, err = agent.Run(context.Background(), "Second question about the code")
+	h.AssertNoError(err)
+
+	_, err = agent.Run(context.Background(), "Third question about testing")
+	h.AssertNoError(err)
+
+	// Wait for async checkpoint recording (3 turns = 3 checkpoints)
+	checkpoints := waitForCheckpoints(t, agent, 3)
+	if len(checkpoints) < 3 {
+		t.Fatalf("expected at least 3 checkpoints, got %d", len(checkpoints))
+	}
+
+	// Verify checkpoint indices are valid within state.Messages()
+	rawMsgCount := agent.State().Len()
+	if rawMsgCount != 6 {
+		t.Fatalf("expected 6 raw state messages after 3 turns, got %d", rawMsgCount)
+	}
+
+	// Verify specific checkpoint indices: [0,1], [2,3], [4,5]
+	sort.Slice(checkpoints, func(i, j int) bool {
+		return checkpoints[i].StartIndex < checkpoints[j].StartIndex
+	})
+	expectedIndices := []struct{ start, end int }{{0, 1}, {2, 3}, {4, 5}}
+	for i, cp := range checkpoints {
+		if cp.StartIndex < 0 || cp.StartIndex >= rawMsgCount {
+			t.Errorf("checkpoint %d: StartIndex %d out of bounds [0, %d)", i, cp.StartIndex, rawMsgCount)
+		}
+		if cp.EndIndex < 0 || cp.EndIndex >= rawMsgCount {
+			t.Errorf("checkpoint %d: EndIndex %d out of bounds [0, %d)", i, cp.EndIndex, rawMsgCount)
+		}
+		if cp.StartIndex > cp.EndIndex {
+			t.Errorf("checkpoint %d: StartIndex %d > EndIndex %d", i, cp.StartIndex, cp.EndIndex)
+		}
+		if i < len(expectedIndices) {
+			if cp.StartIndex != expectedIndices[i].start {
+				t.Errorf("checkpoint %d: expected StartIndex %d, got %d", i, expectedIndices[i].start, cp.StartIndex)
+			}
+			if cp.EndIndex != expectedIndices[i].end {
+				t.Errorf("checkpoint %d: expected EndIndex %d, got %d", i, expectedIndices[i].end, cp.EndIndex)
+			}
+		}
+	}
+
+	// Turn 4: triggers checkpoint compaction. All 3 checkpoints are consumable,
+	// so their ranges [0,1], [2,3], [4,5] are replaced with summaries.
+	_, err = agent.Run(context.Background(), "Fourth question")
+	h.AssertNoError(err)
+
+	// Provider called 4 times total (one per turn)
+	h.AssertProviderCalledN(4)
+
+	// State now has 8 messages (6 original + user + assistant from turn 4)
+	rawMsgCount = agent.State().Len()
+	if rawMsgCount != 8 {
+		t.Fatalf("expected 8 raw state messages after 4 turns, got %d", rawMsgCount)
+	}
+
+	// Wait for turn 4's async checkpoint (now 4 total)
+	checkpoints = waitForCheckpoints(t, agent, 4)
+	if len(checkpoints) < 4 {
+		t.Fatalf("expected at least 4 checkpoints after turn 4, got %d", len(checkpoints))
+	}
+
+	// Verify checkpoints still have valid indices into the expanded state.
+	// Checkpoint indices reference state.Messages() which only appends,
+	// so [0,1], [2,3], [4,5], [6,7] are still valid within 8 messages.
+	sort.Slice(checkpoints, func(i, j int) bool {
+		return checkpoints[i].StartIndex < checkpoints[j].StartIndex
+	})
+	expectedIndices = []struct{ start, end int }{{0, 1}, {2, 3}, {4, 5}, {6, 7}}
+	for i, cp := range checkpoints {
+		if cp.StartIndex < 0 || cp.StartIndex >= rawMsgCount {
+			t.Errorf("checkpoint %d: StartIndex %d out of bounds [0, %d) after turn 4", i, cp.StartIndex, rawMsgCount)
+		}
+		if cp.EndIndex < 0 || cp.EndIndex >= rawMsgCount {
+			t.Errorf("checkpoint %d: EndIndex %d out of bounds [0, %d) after turn 4", i, cp.EndIndex, rawMsgCount)
+		}
+		if cp.StartIndex > cp.EndIndex {
+			t.Errorf("checkpoint %d: StartIndex %d > EndIndex %d after turn 4", i, cp.StartIndex, cp.EndIndex)
+		}
+		if i < len(expectedIndices) {
+			if cp.StartIndex != expectedIndices[i].start {
+				t.Errorf("checkpoint %d: expected StartIndex %d, got %d", i, expectedIndices[i].start, cp.StartIndex)
+			}
+			if cp.EndIndex != expectedIndices[i].end {
+				t.Errorf("checkpoint %d: expected EndIndex %d, got %d", i, expectedIndices[i].end, cp.EndIndex)
+			}
+		}
+	}
+
+	// Turn 5: compaction should still work with all 4 checkpoints.
+	// All 4 checkpoints [0,1], [2,3], [4,5], [6,7] are consumable and will be
+	// replaced with summaries. Only the turn 5 query (idx 8) is uncovered.
+	_, err = agent.Run(context.Background(), "Fifth question")
+	h.AssertNoError(err)
+
+	// Provider called 5 times total (one per turn)
+	h.AssertProviderCalledN(5)
+
+	// State now has 10 messages (8 + user + assistant from turn 5)
+	rawMsgCount = agent.State().Len()
+	if rawMsgCount != 10 {
+		t.Fatalf("expected 10 raw state messages after 5 turns, got %d", rawMsgCount)
+	}
+
+	// Verify checkpoints still have valid indices after the second compaction pass.
+	checkpoints = agent.State().GetCheckpoints()
+	if len(checkpoints) < 4 {
+		t.Fatalf("expected at least 4 checkpoints after turn 5, got %d", len(checkpoints))
+	}
+	sort.Slice(checkpoints, func(i, j int) bool {
+		return checkpoints[i].StartIndex < checkpoints[j].StartIndex
+	})
+	for i, cp := range checkpoints {
+		if cp.StartIndex < 0 || cp.StartIndex >= rawMsgCount {
+			t.Errorf("checkpoint %d: StartIndex %d out of bounds [0, %d) after turn 5", i, cp.StartIndex, rawMsgCount)
+		}
+		if cp.EndIndex < 0 || cp.EndIndex >= rawMsgCount {
+			t.Errorf("checkpoint %d: EndIndex %d out of bounds [0, %d) after turn 5", i, cp.EndIndex, rawMsgCount)
+		}
+		if cp.StartIndex > cp.EndIndex {
+			t.Errorf("checkpoint %d: StartIndex %d > EndIndex %d after turn 5", i, cp.StartIndex, cp.EndIndex)
+		}
+	}
+
+	// Verify the last provider request still had compacted messages.
+	// At API call time, state had 9 messages (10 - 1 for the not-yet-added assistant).
+	// 4 checkpoints cover [0,7], leaving message [8] (turn 5 query) uncovered.
+	// Compacted: 1 system + 4 summaries + 1 uncovered = 6 messages.
+	lastReq := h.Provider().LastRequest()
+	if lastReq == nil {
+		t.Fatal("expected provider to have been called")
+	}
+	// Should be fewer than the no-compaction baseline (9 raw + 1 system = 10).
+	if len(lastReq.Messages) >= 10 {
+		t.Errorf("expected compaction to reduce messages below 10, got %d", len(lastReq.Messages))
+	}
+	// Exact count: 1 system + 4 summaries + 1 uncovered query = 6
+	if len(lastReq.Messages) != 6 {
+		t.Errorf("expected 6 messages after compaction, got %d", len(lastReq.Messages))
+	}
+	// Verify 4 summaries are present.
+	foundSummaries := 0
+	for _, msg := range lastReq.Messages {
+		if strings.Contains(msg.Content, "User asked: ") {
+			foundSummaries++
+		}
+	}
+	if foundSummaries != 4 {
+		t.Errorf("expected 4 checkpoint summaries in turn 5 request, got %d", foundSummaries)
+	}
+}
