@@ -19,6 +19,9 @@ type State struct {
 	totalCost        float64
 	promptTokens     int
 	completionTokens int
+
+	// Turn checkpoints for context compaction
+	checkpoints []TurnCheckpoint
 }
 
 // NewState creates a new State.
@@ -154,4 +157,34 @@ func (s *State) ImportState(data []byte) error {
 	s.promptTokens = state.PromptTokens
 	s.completionTokens = state.CompletionTokens
 	return nil
+}
+
+// AddCheckpoint appends a turn checkpoint to the state.
+func (s *State) AddCheckpoint(cp TurnCheckpoint) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.checkpoints = append(s.checkpoints, cp)
+}
+
+// GetCheckpoints returns a copy of the checkpoint list.
+func (s *State) GetCheckpoints() []TurnCheckpoint {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]TurnCheckpoint, len(s.checkpoints))
+	copy(out, s.checkpoints)
+	return out
+}
+
+// SetCheckpoints replaces the checkpoint list.
+func (s *State) SetCheckpoints(cps []TurnCheckpoint) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.checkpoints = cps
+}
+
+// ClearCheckpoints removes all checkpoints.
+func (s *State) ClearCheckpoints() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.checkpoints = s.checkpoints[:0]
 }

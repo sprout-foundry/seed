@@ -395,3 +395,117 @@ func TestState_LastAssistantMessage_Concurrent(t *testing.T) {
 		t.Fatal("expected assistant message, got nil")
 	}
 }
+
+func TestState_AddAndGetCheckpoint(t *testing.T) {
+	s := NewState()
+
+	cp := TurnCheckpoint{
+		StartIndex:        0,
+		EndIndex:          3,
+		Summary:           "User asked about Go",
+		ActionableSummary: "- Answered Go question",
+	}
+	s.AddCheckpoint(cp)
+
+	cps := s.GetCheckpoints()
+	if len(cps) != 1 {
+		t.Fatalf("expected 1 checkpoint, got %d", len(cps))
+	}
+	if cps[0].Summary != "User asked about Go" {
+		t.Errorf("expected summary 'User asked about Go', got %q", cps[0].Summary)
+	}
+	if cps[0].StartIndex != 0 || cps[0].EndIndex != 3 {
+		t.Errorf("expected indices [0,3], got [%d,%d]", cps[0].StartIndex, cps[0].EndIndex)
+	}
+}
+
+func TestState_CheckpointsReturnsCopy(t *testing.T) {
+	s := NewState()
+	s.AddCheckpoint(TurnCheckpoint{Summary: "first"})
+	s.AddCheckpoint(TurnCheckpoint{Summary: "second"})
+
+	copied := s.GetCheckpoints()
+	copied[0].Summary = "mutated"
+
+	// Original should be unchanged
+	cps := s.GetCheckpoints()
+	if cps[0].Summary != "first" {
+		t.Errorf("GetCheckpoints should return a copy; expected 'first', got %q", cps[0].Summary)
+	}
+}
+
+func TestState_SetCheckpoints(t *testing.T) {
+	s := NewState()
+	s.AddCheckpoint(TurnCheckpoint{Summary: "old"})
+
+	s.SetCheckpoints([]TurnCheckpoint{
+		{StartIndex: 0, EndIndex: 1, Summary: "new1"},
+		{StartIndex: 2, EndIndex: 5, Summary: "new2"},
+	})
+
+	cps := s.GetCheckpoints()
+	if len(cps) != 2 {
+		t.Fatalf("expected 2 checkpoints, got %d", len(cps))
+	}
+	if cps[0].Summary != "new1" {
+		t.Errorf("expected 'new1', got %q", cps[0].Summary)
+	}
+	if cps[1].Summary != "new2" {
+		t.Errorf("expected 'new2', got %q", cps[1].Summary)
+	}
+}
+
+func TestState_ClearCheckpoints(t *testing.T) {
+	s := NewState()
+	s.AddCheckpoint(TurnCheckpoint{Summary: "1"})
+	s.AddCheckpoint(TurnCheckpoint{Summary: "2"})
+	s.AddCheckpoint(TurnCheckpoint{Summary: "3"})
+
+	s.ClearCheckpoints()
+
+	cps := s.GetCheckpoints()
+	if len(cps) != 0 {
+		t.Errorf("expected 0 checkpoints after clear, got %d", len(cps))
+	}
+
+	// Verify we can still add after clearing
+	s.AddCheckpoint(TurnCheckpoint{Summary: "after-clear"})
+	cps = s.GetCheckpoints()
+	if len(cps) != 1 || cps[0].Summary != "after-clear" {
+		t.Errorf("expected 1 checkpoint after clear+add, got %d", len(cps))
+	}
+}
+
+func TestState_ConcurrentCheckpointAccess(t *testing.T) {
+	s := NewState()
+
+	done := make(chan struct{})
+
+	// Concurrent readers
+	go func() {
+		for i := 0; i < 100; i++ {
+			_ = s.GetCheckpoints()
+		}
+		done <- struct{}{}
+	}()
+
+	// Concurrent writers
+	go func() {
+		for i := 0; i < 100; i++ {
+			s.AddCheckpoint(TurnCheckpoint{
+				StartIndex: i,
+				EndIndex:   i + 1,
+				Summary:    "test",
+			})
+		}
+		done <- struct{}{}
+	}()
+
+	<-done
+	<-done
+
+	cps := s.GetCheckpoints()
+	if len(cps) != 100 {
+		t.Errorf("expected 100 checkpoints, got %d", len(cps))
+	}
+}
