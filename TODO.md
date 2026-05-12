@@ -89,8 +89,9 @@
 
 ## Conversation Optimizer (SP-008)
 
+[x] - OPTIMIZE: Create `ConversationOptimizer` struct — track file reads by filepath, shell commands by command string, enable/disable flag, `knownToolFn` callback. `core/conversation_optimizer.go`
 [] - OPTIMIZE: Create `ConversationOptimizer` struct — track file reads by filepath, shell commands by command string, enable/disable flag, `knownToolFn` callback. `core/conversation_optimizer.go`
-[] - OPTIMIZE: Implement file read tracking — hash content, keep only latest read per filepath, replace earlier reads with `[Earlier file read: {path}]`. `core/conversation_optimizer.go`
+[x] - OPTIMIZE: Implement file read tracking — hash content, keep only latest read per filepath, replace earlier reads with `[Earlier file read: {path}]`. `core/conversation_optimizer.go`
 [] - OPTIMIZE: Implement shell command tracking — detect transient commands (ls, find, pwd, cat, echo, head, tail, wc), keep only latest output. `core/conversation_optimizer.go`
 [] - OPTIMIZE: Implement `OptimizeConversation()` — lightweight pre-API-call pass that deduplicates redundant reads and commands. `core/conversation_optimizer.go`
 [] - OPTIMIZE: Wire into `prepareMessages()` — run optimizer before static compactor when enabled. `core/conversation.go`

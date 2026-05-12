@@ -1,6 +1,7 @@
 package core
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -21,6 +22,11 @@ const (
 // maxFileReadRecords bounds the number of historical reads tracked per file.
 // This keeps the dedup comparison window O(n) amortized.
 const maxFileReadRecords = 5
+
+// maxShellCmdRecords bounds the number of unique outputs tracked per command.
+// Transient commands that produce ever-varying output (e.g., `ls` in a busy dir)
+// could otherwise grow the dedup map without bound.
+const maxShellCmdRecords = 10
 
 // ConversationOptimizerOptions configures the optimizer.
 type ConversationOptimizerOptions struct {
@@ -83,15 +89,16 @@ func (opt *ConversationOptimizer) OptimizeConversation(messages []Message) []Mes
 	}
 
 	// --- File-read deduplication ---
-	// Track: filepath → map[content] → list of message indices.
+	// Track: filepath → map[contentHash] → list of message indices.
 	// Only replaces earlier reads that have identical content to a later read.
+	// Hashing avoids storing large content strings as map keys.
 	type readRecord struct {
 		index int
 	}
 	fileReads := make(map[string]map[string][]readRecord)
 
 	// --- Shell-command deduplication ---
-	// Track: full command string → map[content] → latest messageIndex.
+	// Track: full command string → map[contentHash] → latest messageIndex.
 	// Only replaces earlier output that matches the latest output for transient commands.
 	shellCmdLatest := make(map[string]map[string]int)
 
@@ -117,20 +124,23 @@ func (opt *ConversationOptimizer) OptimizeConversation(messages []Message) []Mes
 				fileReads[m.filePath] = byFile
 			}
 
+			// Hash the content for efficient comparison and storage.
+			contentHash := hashContent(msg.Content)
+
 			// Replace any earlier read of the same file that has identical content.
-			records, ok := byFile[msg.Content]
+			records, ok := byFile[contentHash]
 			if ok {
 				for _, rec := range records {
 					messages[rec.index].Content = fmt.Sprintf("[Earlier file read: %s]", m.filePath)
 				}
 			}
 
-			byFile[msg.Content] = append(records, readRecord{index: i})
+			byFile[contentHash] = append(records, readRecord{index: i})
 
 			// Bound the records per file to keep comparisons O(n) amortized.
-			for content, recs := range byFile {
+			for contentHash, recs := range byFile {
 				if len(recs) > maxFileReadRecords {
-					byFile[content] = recs[len(recs)-maxFileReadRecords:]
+					byFile[contentHash] = recs[len(recs)-maxFileReadRecords:]
 				}
 			}
 
@@ -149,12 +159,30 @@ func (opt *ConversationOptimizer) OptimizeConversation(messages []Message) []Mes
 				shellCmdLatest[m.command] = byCmd
 			}
 
+			// Hash the content for efficient comparison and storage.
+			contentHash := hashContent(msg.Content)
+
 			// If there's a previous output with the same content, replace it.
-			if prevIdx, exists := byCmd[msg.Content]; exists {
+			if prevIdx, exists := byCmd[contentHash]; exists {
 				messages[prevIdx].Content = fmt.Sprintf("[Earlier command output: %s]", m.command)
 			}
 			// Record this output as the latest for its content.
-			byCmd[msg.Content] = i
+			byCmd[contentHash] = i
+
+			// Evict the oldest entry if the map exceeds the cap.
+			if len(byCmd) > maxShellCmdRecords {
+				oldestHash := ""
+				oldestIdx := len(messages)
+				for h, idx := range byCmd {
+					if idx < oldestIdx {
+						oldestIdx = idx
+						oldestHash = h
+					}
+				}
+				if oldestHash != "" {
+					delete(byCmd, oldestHash)
+				}
+			}
 		}
 	}
 
@@ -199,4 +227,13 @@ func isTransientCommand(base string) bool {
 		return true
 	}
 	return false
+}
+
+// hashContent returns a short hex hash of the content for efficient
+// comparison and map-key storage. Uses SHA-256 truncated to 16 hex chars
+// (64 bits) which is more than sufficient for collision resistance in
+// this context — we only need to distinguish different file/command outputs.
+func hashContent(content string) string {
+	h := sha256.Sum256([]byte(content))
+	return fmt.Sprintf("%x", h[:8]) // 16 hex chars
 }

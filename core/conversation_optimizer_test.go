@@ -2,11 +2,45 @@ package core
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 )
 
 // --- ConversationOptimizer Unit Tests ---
+
+func TestHashContent(t *testing.T) {
+	// Same content produces same hash.
+	h1 := hashContent("file contents here")
+	h2 := hashContent("file contents here")
+	if h1 != h2 {
+		t.Errorf("same content should produce same hash: %q vs %q", h1, h2)
+	}
+
+	// Different content produces different hash.
+	h3 := hashContent("different content")
+	if h1 == h3 {
+		t.Errorf("different content should produce different hash: %q", h1)
+	}
+
+	// Hash length is 16 hex chars (8 bytes).
+	if len(h1) != 16 {
+		t.Errorf("hash length should be 16, got %d", len(h1))
+	}
+
+	// Empty content produces a valid hash.
+	emptyHash := hashContent("")
+	if len(emptyHash) != 16 {
+		t.Errorf("empty content hash length should be 16, got %d", len(emptyHash))
+	}
+
+	// Large content produces a valid hash (memory efficiency test).
+	large := strings.Repeat("x", 100000)
+	largeHash := hashContent(large)
+	if len(largeHash) != 16 {
+		t.Errorf("large content hash length should be 16, got %d", len(largeHash))
+	}
+}
 
 func TestConversationOptimizer_Disabled(t *testing.T) {
 	opt := NewConversationOptimizer(ConversationOptimizerOptions{
@@ -637,5 +671,99 @@ func TestExtractStringArg(t *testing.T) {
 	got = extractStringArg(`{"path":123}`, "path")
 	if got != "" {
 		t.Errorf("expected empty for non-string, got %q", got)
+	}
+}
+
+func TestConversationOptimizer_ShellCommandCap(t *testing.T) {
+	opt := NewConversationOptimizer(ConversationOptimizerOptions{
+		Enabled: true,
+		KnownToolFn: func(name string) ToolCategory {
+			if name == "shell" {
+				return ToolCategoryShellCommand
+			}
+			return ToolCategoryUnknown
+		},
+	})
+
+	// Run `ls` many times with unique output to exceed maxShellCmdRecords.
+	// Each unique output should be tracked, but the map should be capped.
+	var messages []Message
+	messages = append(messages, Message{Role: "user", Content: "run ls"})
+	for i := 0; i < maxShellCmdRecords+5; i++ {
+		messages = append(messages, Message{
+			Role:    "assistant",
+			Content: fmt.Sprintf("ls run %d", i),
+			ToolCalls: []ToolCall{
+				{ID: fmt.Sprintf("c%d", i), Function: ToolCallFunction{Name: "shell", Arguments: `{"cmd":"ls"}`}},
+			},
+		})
+		messages = append(messages, Message{
+			Role:       "tool",
+			Content:    fmt.Sprintf("output %d", i),
+			ToolCallID: fmt.Sprintf("c%d", i),
+		})
+	}
+
+	result := opt.OptimizeConversation(messages)
+
+	// All outputs are unique, so none should be replaced.
+	// The important thing is that it doesn't crash or hang.
+	for i := 0; i < maxShellCmdRecords+5; i++ {
+		idx := 1 + i*2 + 1 // tool result index
+		if result[idx].Content != fmt.Sprintf("output %d", i) {
+			t.Errorf("unique output %d should not be replaced, got %q", i, result[idx].Content)
+		}
+	}
+}
+
+func TestConversationOptimizer_FileReadCap(t *testing.T) {
+	opt := NewConversationOptimizer(ConversationOptimizerOptions{
+		Enabled: true,
+		KnownToolFn: func(name string) ToolCategory {
+			if name == "read_file" {
+				return ToolCategoryFileRead
+			}
+			return ToolCategoryUnknown
+		},
+	})
+
+	// Read the same file many times with identical content to exceed maxFileReadRecords.
+	var messages []Message
+	messages = append(messages, Message{Role: "user", Content: "read many times"})
+	for i := 0; i < maxFileReadRecords+3; i++ {
+		messages = append(messages, Message{
+			Role:    "assistant",
+			Content: fmt.Sprintf("read %d", i),
+			ToolCalls: []ToolCall{
+				{ID: fmt.Sprintf("c%d", i), Function: ToolCallFunction{Name: "read_file", Arguments: `{"path":"f.txt"}`}},
+			},
+		})
+		messages = append(messages, Message{
+			Role:       "tool",
+			Content:    "same content every time",
+			ToolCallID: fmt.Sprintf("c%d", i),
+		})
+	}
+
+	result := opt.OptimizeConversation(messages)
+
+	// All but the last read should be replaced with placeholder.
+	// The last read should be kept.
+	lastIdx := len(result) - 1
+	if result[lastIdx].Content != "same content every time" {
+		t.Errorf("last read should be kept, got %q", result[lastIdx].Content)
+	}
+
+	// Count how many reads were replaced.
+	replaced := 0
+	for i := 0; i < maxFileReadRecords+3; i++ {
+		idx := 1 + i*2 + 1 // tool result index
+		if strings.Contains(result[idx].Content, "[Earlier file read:") {
+			replaced++
+		}
+	}
+	// All but the last should be replaced
+	if replaced != maxFileReadRecords+2 {
+		t.Errorf("expected %d replaced reads, got %d", maxFileReadRecords+2, replaced)
 	}
 }
