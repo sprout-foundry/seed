@@ -4262,6 +4262,48 @@ func TestE2E_BlankResponse_SingleBlankThenRecovery(t *testing.T) {
 	h.AssertProviderCalledN(2)
 }
 
+func TestE2E_BlankIteration_FullFlow(t *testing.T) {
+	// Model returns blank twice. Full flow: blank → reminder → blank → error.
+	h := NewHarnessWithT(t)
+	h.Provider().AddTextResponseWithFinish("", "stop")
+	h.Provider().AddTextResponseWithFinish("", "stop")
+
+	agent := h.NewAgent()
+	_, err := agent.Run(context.Background(), "hi")
+
+	// Verify error is BlankResponseError with Count=2
+	h.AssertError(err)
+	if !core.IsBlankResponse(err) {
+		t.Fatalf("expected BlankResponseError, got: %v", err)
+	}
+	bErr := err.(*core.BlankResponseError)
+	if bErr.Count != 2 {
+		t.Errorf("expected count 2, got %d", bErr.Count)
+	}
+
+	// Verify provider was called exactly 2 times
+	h.AssertProviderCalledN(2)
+
+	// Verify the second provider call included the reminder message
+	calls := h.Provider().Calls
+	if len(calls) < 2 {
+		t.Fatal("expected at least 2 provider calls")
+	}
+	secondCall := calls[1]
+
+	// Find the reminder message in the second call's messages
+	reminderFound := false
+	for _, msg := range secondCall.Messages {
+		if msg.Role == "user" && msg.Content == "Your previous response was empty. Please provide a complete response." {
+			reminderFound = true
+			break
+		}
+	}
+	if !reminderFound {
+		t.Errorf("expected reminder message in second provider call, got messages: %v", secondCall.Messages)
+	}
+}
+
 func TestE2E_BlankResponse_TwoConsecutiveBlanks(t *testing.T) {
 	// Model returns blank twice. Should return BlankResponseError with Count=2.
 	h := NewHarnessWithT(t)
