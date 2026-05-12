@@ -420,9 +420,9 @@ func TestBuildCheckpointCompactedMessages_ThreeCheckpointsWithOneUnconsumed(t *t
 		{Role: "assistant", Content: "A3"},
 	}
 	checkpoints := []TurnCheckpoint{
-		{StartIndex: 0, EndIndex: 1, Summary: "S1"},  // consumed
-		{StartIndex: 2, EndIndex: 3, Summary: ""},    // unconsumable (empty)
-		{StartIndex: 4, EndIndex: 5, Summary: "S3"},  // consumed
+		{StartIndex: 0, EndIndex: 1, Summary: "S1"}, // consumed
+		{StartIndex: 2, EndIndex: 3, Summary: ""},   // unconsumable (empty)
+		{StartIndex: 4, EndIndex: 5, Summary: "S3"}, // consumed
 	}
 
 	outMsgs, outCps := BuildCheckpointCompactedMessages(msgs, checkpoints)
@@ -1088,5 +1088,584 @@ func TestDetermineStatus(t *testing.T) {
 	}
 	if builder.determineStatus(errorData) != statusError {
 		t.Errorf("expected error status, got %v", builder.determineStatus(errorData))
+	}
+}
+
+// --- ShiftCheckpointIndices tests ---
+
+// TestShiftCheckpointIndices_NoChanges verifies that when oldMessages ==
+// newMessages, checkpoint indices are returned unchanged.
+func TestShiftCheckpointIndices_NoChanges(t *testing.T) {
+	oldMessages := []Message{
+		{Role: "system", Content: "You are helpful."},
+		{Role: "user", Content: "What is 2+2?"},
+		{Role: "assistant", Content: "The answer is 4."},
+		{Role: "user", Content: "What is 3+3?"},
+		{Role: "assistant", Content: "The answer is 6."},
+	}
+	checkpoints := []TurnCheckpoint{
+		{StartIndex: 1, EndIndex: 2, Summary: "Sum 1"},
+		{StartIndex: 3, EndIndex: 4, Summary: "Sum 2"},
+	}
+
+	result := ShiftCheckpointIndices(oldMessages, oldMessages, checkpoints)
+
+	if len(result) != len(checkpoints) {
+		t.Fatalf("expected %d checkpoints, got %d", len(checkpoints), len(result))
+	}
+	for i, cp := range result {
+		if cp.StartIndex != checkpoints[i].StartIndex {
+			t.Errorf("checkpoint %d: expected start %d, got %d", i, checkpoints[i].StartIndex, cp.StartIndex)
+		}
+		if cp.EndIndex != checkpoints[i].EndIndex {
+			t.Errorf("checkpoint %d: expected end %d, got %d", i, checkpoints[i].EndIndex, cp.EndIndex)
+		}
+	}
+}
+
+// TestShiftCheckpointIndices_MessagesRemovedBefore verifies that checkpoints
+// shift correctly when messages before them are removed. Only messages with
+// matching role AND content are matched (score > 0 required).
+func TestShiftCheckpointIndices_MessagesRemovedBefore(t *testing.T) {
+	oldMessages := []Message{
+		{Role: "system", Content: "system prompt"},
+		{Role: "user", Content: "alpha query"},
+		{Role: "assistant", Content: "alpha answer"},
+		{Role: "user", Content: "beta query"},
+		{Role: "assistant", Content: "beta answer"},
+		{Role: "user", Content: "gamma query"},
+		{Role: "assistant", Content: "gamma answer"},
+	}
+	// System + gamma turn survive (alpha and beta turns removed).
+	newMessages := []Message{
+		{Role: "system", Content: "system prompt"},
+		{Role: "user", Content: "gamma query"},
+		{Role: "assistant", Content: "gamma answer"},
+	}
+	checkpoints := []TurnCheckpoint{
+		{StartIndex: 5, EndIndex: 6, Summary: "Sum for gamma"},
+	}
+
+	result := ShiftCheckpointIndices(oldMessages, newMessages, checkpoints)
+
+	if len(result) != 1 {
+		t.Fatalf("expected 1 checkpoint, got %d", len(result))
+	}
+	// Greedy matching (score > 0 required):
+	// old[0] sys "system prompt" → new[0] score=100
+	// old[1] user "alpha query" → no match (content differs from new[1]) → -1
+	// old[2] assistant "alpha answer" → no match → -1
+	// old[3] user "beta query" → no match → -1
+	// old[4] assistant "beta answer" → no match → -1
+	// old[5] user "gamma query" → new[1] score=100
+	// old[6] assistant "gamma answer" → new[2] score=100
+	// matched = [0, -1, -1, -1, -1, 1, 2]
+	// Checkpoint [5,6]: startNew=1, endNew=2 → [1,2]
+	if result[0].StartIndex != 1 {
+		t.Errorf("expected StartIndex 1, got %d", result[0].StartIndex)
+	}
+	if result[0].EndIndex != 2 {
+		t.Errorf("expected EndIndex 2, got %d", result[0].EndIndex)
+	}
+}
+
+// TestShiftCheckpointIndices_MessagesRemovedAfter verifies that checkpoints
+// for messages that were removed are marked invalid, while surviving ones
+// keep their indices.
+func TestShiftCheckpointIndices_MessagesRemovedAfter(t *testing.T) {
+	oldMessages := []Message{
+		{Role: "system", Content: "You are helpful."},
+		{Role: "user", Content: "Question 1"},
+		{Role: "assistant", Content: "Answer 1"},
+		{Role: "user", Content: "Question 2"},
+		{Role: "assistant", Content: "Answer 2"},
+	}
+	// System, Q1, A1 survive (tail removed).
+	newMessages := []Message{
+		{Role: "system", Content: "You are helpful."},
+		{Role: "user", Content: "Question 1"},
+		{Role: "assistant", Content: "Answer 1"},
+	}
+	checkpoints := []TurnCheckpoint{
+		{StartIndex: 1, EndIndex: 2, Summary: "Sum for Q1/A1"},
+		{StartIndex: 3, EndIndex: 4, Summary: "Sum for Q2/A2"},
+	}
+
+	result := ShiftCheckpointIndices(oldMessages, newMessages, checkpoints)
+
+	if len(result) != 2 {
+		t.Fatalf("expected 2 checkpoints, got %d", len(result))
+	}
+	// CP1 survived: [1,2] → [1,2]
+	if result[0].StartIndex != 1 || result[0].EndIndex != 2 {
+		t.Errorf("CP1: expected [1,2], got [%d,%d]", result[0].StartIndex, result[0].EndIndex)
+	}
+	// CP2 fully consumed: [3,4] → [-1,-1]
+	if result[1].StartIndex != -1 || result[1].EndIndex != -1 {
+		t.Errorf("CP2: expected [-1,-1], got [%d,%d]", result[1].StartIndex, result[1].EndIndex)
+	}
+}
+
+// TestShiftCheckpointIndices_PartiallyConsumed verifies that when a checkpoint
+// range contains both surviving and removed messages, the range is trimmed
+// to only the surviving messages.
+func TestShiftCheckpointIndices_PartiallyConsumed(t *testing.T) {
+	oldMessages := []Message{
+		{Role: "user", Content: "alpha query"},
+		{Role: "assistant", Content: "alpha answer"},
+		{Role: "user", Content: "beta query"},
+		{Role: "assistant", Content: "beta answer"},
+		{Role: "user", Content: "gamma query"},
+		{Role: "assistant", Content: "gamma answer"},
+	}
+	// alpha query and gamma answer survive (middle removed).
+	newMessages := []Message{
+		{Role: "user", Content: "alpha query"},
+		{Role: "assistant", Content: "gamma answer"},
+	}
+	// Checkpoint covers [0,3]: alpha query(0), alpha answer(1), beta query(2), beta answer(3).
+	// Greedy matching:
+	//   old[0] user "alpha query" → new[0] score=100
+	//   old[1] assistant "alpha answer" → no match → -1
+	//   old[2] user "beta query" → no match → -1
+	//   old[3] assistant "beta answer" → no match → -1
+	//   old[4] user "gamma query" → no match → -1
+	//   old[5] assistant "gamma answer" → new[1] score=100
+	// matched = [0, -1, -1, -1, -1, 1]
+	//
+	// Checkpoint [0,3]: startNew=0 (survived), endNew=-1 (removed)
+	// Partially consumed: scan range [0,3], only old[0] survived → [0, 0]
+	checkpoints := []TurnCheckpoint{
+		{StartIndex: 0, EndIndex: 3, Summary: "Sum for first half"},
+	}
+
+	result := ShiftCheckpointIndices(oldMessages, newMessages, checkpoints)
+
+	if len(result) != 1 {
+		t.Fatalf("expected 1 checkpoint, got %d", len(result))
+	}
+	// Only old[0] survived in range [0,3]. firstSurviving=0, lastSurviving=0.
+	if result[0].StartIndex != 0 {
+		t.Errorf("expected StartIndex 0, got %d", result[0].StartIndex)
+	}
+	if result[0].EndIndex != 0 {
+		t.Errorf("expected EndIndex 0, got %d", result[0].EndIndex)
+	}
+}
+
+// TestShiftCheckpointIndices_MultipleCheckpoints verifies correct handling
+// of multiple checkpoints where different ones survive or get consumed.
+func TestShiftCheckpointIndices_MultipleCheckpoints(t *testing.T) {
+	oldMessages := []Message{
+		{Role: "system", Content: "system prompt"},
+		{Role: "user", Content: "alpha query"},
+		{Role: "assistant", Content: "alpha answer"},
+		{Role: "user", Content: "beta query"},
+		{Role: "assistant", Content: "beta answer"},
+		{Role: "user", Content: "gamma query"},
+		{Role: "assistant", Content: "gamma answer"},
+	}
+	// System + beta turn + gamma turn survive (alpha turn removed).
+	newMessages := []Message{
+		{Role: "system", Content: "system prompt"},
+		{Role: "user", Content: "beta query"},
+		{Role: "assistant", Content: "beta answer"},
+		{Role: "user", Content: "gamma query"},
+		{Role: "assistant", Content: "gamma answer"},
+	}
+	checkpoints := []TurnCheckpoint{
+		{StartIndex: 1, EndIndex: 2, Summary: "Sum for alpha"}, // fully consumed
+		{StartIndex: 3, EndIndex: 4, Summary: "Sum for beta"},  // shifted to [1,2]
+		{StartIndex: 5, EndIndex: 6, Summary: "Sum for gamma"}, // shifted to [3,4]
+	}
+
+	result := ShiftCheckpointIndices(oldMessages, newMessages, checkpoints)
+
+	if len(result) != 3 {
+		t.Fatalf("expected 3 checkpoints, got %d", len(result))
+	}
+	// Greedy matching:
+	// old[0] sys "system prompt" → new[0] score=100
+	// old[1] user "alpha query" → no match → -1
+	// old[2] assistant "alpha answer" → no match → -1
+	// old[3] user "beta query" → new[1] score=100
+	// old[4] assistant "beta answer" → new[2] score=100
+	// old[5] user "gamma query" → new[3] score=100
+	// old[6] assistant "gamma answer" → new[4] score=100
+	// matched = [0, -1, -1, 1, 2, 3, 4]
+	//
+	// CP1 [1,2]: both -1 → fully consumed → [-1,-1]
+	// CP2 [3,4]: startNew=1, endNew=2 → [1,2]
+	// CP3 [5,6]: startNew=3, endNew=4 → [3,4]
+	if result[0].StartIndex != -1 || result[0].EndIndex != -1 {
+		t.Errorf("CP1: expected [-1,-1], got [%d,%d]", result[0].StartIndex, result[0].EndIndex)
+	}
+	if result[1].StartIndex != 1 || result[1].EndIndex != 2 {
+		t.Errorf("CP2: expected [1,2], got [%d,%d]", result[1].StartIndex, result[1].EndIndex)
+	}
+	if result[2].StartIndex != 3 || result[2].EndIndex != 4 {
+		t.Errorf("CP3: expected [3,4], got [%d,%d]", result[2].StartIndex, result[2].EndIndex)
+	}
+} // TestShiftCheckpointIndices_EmptyInputs verifies edge cases with empty slices.
+func TestShiftCheckpointIndices_EmptyInputs(t *testing.T) {
+	// Empty oldMessages → checkpoints returned unchanged.
+	msgs := []Message{
+		{Role: "user", Content: "hi"},
+		{Role: "assistant", Content: "hello"},
+	}
+	checkpoints := []TurnCheckpoint{
+		{StartIndex: 0, EndIndex: 1, Summary: "test"},
+	}
+
+	result1 := ShiftCheckpointIndices([]Message{}, msgs, checkpoints)
+	if len(result1) != 1 {
+		t.Errorf("empty oldMessages: expected 1 checkpoint, got %d", len(result1))
+	}
+	if result1[0].StartIndex != 0 || result1[0].EndIndex != 1 {
+		t.Errorf("empty oldMessages: expected [0,1], got [%d,%d]", result1[0].StartIndex, result1[0].EndIndex)
+	}
+
+	// Empty newMessages → checkpoints returned unchanged.
+	result2 := ShiftCheckpointIndices(msgs, []Message{}, checkpoints)
+	if len(result2) != 1 {
+		t.Errorf("empty newMessages: expected 1 checkpoint, got %d", len(result2))
+	}
+	if result2[0].StartIndex != 0 || result2[0].EndIndex != 1 {
+		t.Errorf("empty newMessages: expected [0,1], got [%d,%d]", result2[0].StartIndex, result2[0].EndIndex)
+	}
+
+	// Empty checkpoints → empty result.
+	result3 := ShiftCheckpointIndices(msgs, msgs, []TurnCheckpoint{})
+	if len(result3) != 0 {
+		t.Errorf("empty checkpoints: expected 0, got %d", len(result3))
+	}
+
+	// All three empty → empty result.
+	result4 := ShiftCheckpointIndices([]Message{}, []Message{}, []TurnCheckpoint{})
+	if len(result4) != 0 {
+		t.Errorf("all empty: expected 0, got %d", len(result4))
+	}
+}
+
+// TestShiftCheckpointIndices_WithToolCalls verifies that matching considers
+// tool_call_id for tool result messages and tool calls for assistant messages.
+// Note: The greedy matching in matchMessages uses score 0 for content mismatches,
+// and since 0 > -1, it will match by role even when content differs. This test
+// uses unique content to demonstrate correct behavior with no false matches.
+func TestShiftCheckpointIndices_WithToolCalls(t *testing.T) {
+	oldMessages := []Message{
+		{Role: "system", Content: "system prompt"},
+		{Role: "user", Content: "List files please"},
+		{Role: "assistant", Content: "Let me list them.", ToolCalls: []ToolCall{
+			{ID: "call_1", Type: "function", Function: ToolCallFunction{Name: "list_files", Arguments: `{}`}},
+		}},
+		{Role: "tool", Content: "file1.txt, file2.txt", ToolCallID: "call_1"},
+		{Role: "assistant", Content: "Done listing files.", ToolCalls: []ToolCall{
+			{ID: "call_2", Type: "function", Function: ToolCallFunction{Name: "read_file", Arguments: `{"path":"file1.txt"}`}},
+		}},
+		{Role: "tool", Content: "file content here", ToolCallID: "call_2"},
+	}
+	// system + final assistant survives (tool turn replaced by summary).
+	newMessages := []Message{
+		{Role: "system", Content: "system prompt"},
+		{Role: "assistant", Content: "Done listing files.", ToolCalls: []ToolCall{
+			{ID: "call_2", Type: "function", Function: ToolCallFunction{Name: "read_file", Arguments: `{"path":"file1.txt"}`}},
+		}},
+	}
+	checkpoints := []TurnCheckpoint{
+		{StartIndex: 2, EndIndex: 3, Summary: "Sum for tool call"},
+	}
+
+	result := ShiftCheckpointIndices(oldMessages, newMessages, checkpoints)
+
+	if len(result) != 1 {
+		t.Fatalf("expected 1 checkpoint, got %d", len(result))
+	}
+	// old[2]="Let me list them." (assistant) → -1 (no unmatched new assistant)
+	// old[3]="file1.txt, file2.txt" (tool) → -1 (no unmatched new tool)
+	// Both indices in checkpoint range map to -1 → fully consumed
+	if result[0].StartIndex != -1 || result[0].EndIndex != -1 {
+		t.Errorf("expected [-1,-1], got [%d,%d]", result[0].StartIndex, result[0].EndIndex)
+	}
+}
+
+// TestShiftCheckpointIndices_DuplicateContent verifies that the greedy
+// matching algorithm correctly handles multiple messages with identical content.
+// When multiple old messages have the same content, they match in order:
+// the first unmatched old message matches the first unmatched new message.
+func TestShiftCheckpointIndices_DuplicateContent(t *testing.T) {
+	oldMessages := []Message{
+		{Role: "system", Content: "system prompt"},
+		{Role: "tool", Content: "OK"},
+		{Role: "tool", Content: "OK"},
+		{Role: "tool", Content: "OK"},
+		{Role: "user", Content: "Final question"},
+	}
+	// Two tool results removed, system, remaining "OK", and user survive.
+	newMessages := []Message{
+		{Role: "system", Content: "system prompt"},
+		{Role: "tool", Content: "OK"},
+		{Role: "user", Content: "Final question"},
+	}
+	// Greedy matching (score > 0 required):
+	//   old[0]="system prompt"(system) → new[0] score=100
+	//   old[1]="OK"(tool) → new[1] score=100 (exact match)
+	//   old[2]="OK"(tool) → new[1] taken; new[2]="Final question"(user) role≠tool → score 0, skip
+	//     no more unmatched → -1
+	//   old[3]="OK"(tool) → no unmatched tool → -1
+	//   old[4]="Final question"(user) → new[2] score=100
+	//   matched = [0, 1, -1, -1, 2]
+	//
+	// Checkpoint [1,2]: old[1]→new[1] (surviving), old[2]→-1 (removed).
+	// Partially consumed: scan [1,2], only old[1] survived → [1, 1].
+	checkpoints := []TurnCheckpoint{
+		{StartIndex: 1, EndIndex: 2, Summary: "Sum for two OKs"},
+	}
+
+	result := ShiftCheckpointIndices(oldMessages, newMessages, checkpoints)
+
+	if len(result) != 1 {
+		t.Fatalf("expected 1 checkpoint, got %d", len(result))
+	}
+	// First "OK" (old[1]) matches new[1] with score 100.
+	// Second "OK" (old[2]) has no unmatched new message with score > 0 → -1.
+	// Partially consumed: firstSurviving=1, lastSurviving=1 → [1, 1].
+	if result[0].StartIndex != 1 {
+		t.Errorf("expected StartIndex 1, got %d", result[0].StartIndex)
+	}
+	if result[0].EndIndex != 1 {
+		t.Errorf("expected EndIndex 1, got %d", result[0].EndIndex)
+	}
+}
+
+// TestShiftCheckpointIndices_OutOfBoundsIndices verifies that checkpoints
+// with invalid indices (out of bounds or negative) are preserved as-is.
+func TestShiftCheckpointIndices_OutOfBoundsIndices(t *testing.T) {
+	oldMessages := []Message{
+		{Role: "user", Content: "Question 1"},
+		{Role: "assistant", Content: "Answer 1"},
+	}
+	newMessages := []Message{
+		{Role: "user", Content: "Question 1"},
+	}
+	checkpoints := []TurnCheckpoint{
+		{StartIndex: 5, EndIndex: 6, Summary: "out of bounds start"},
+		{StartIndex: -1, EndIndex: 0, Summary: "negative start"},
+		{StartIndex: 0, EndIndex: 0, Summary: "valid"},
+	}
+
+	result := ShiftCheckpointIndices(oldMessages, newMessages, checkpoints)
+
+	if len(result) != 3 {
+		t.Fatalf("expected 3 checkpoints, got %d", len(result))
+	}
+	// CP0: start index 5 >= len(oldMessages)=2, preserved as-is.
+	if result[0].StartIndex != 5 || result[0].EndIndex != 6 {
+		t.Errorf("CP0: expected [5,6], got [%d,%d]", result[0].StartIndex, result[0].EndIndex)
+	}
+	// CP1: negative start, preserved as-is.
+	if result[1].StartIndex != -1 || result[1].EndIndex != 0 {
+		t.Errorf("CP1: expected [-1,0], got [%d,%d]", result[1].StartIndex, result[1].EndIndex)
+	}
+	// CP2: valid → [0,0] → [0,0] (survived).
+	if result[2].StartIndex != 0 || result[2].EndIndex != 0 {
+		t.Errorf("CP2: expected [0,0], got [%d,%d]", result[2].StartIndex, result[2].EndIndex)
+	}
+}
+
+// TestShiftCheckpointIndices_AllMessagesRemoved verifies that when all
+// old messages in a checkpoint range are replaced by new messages with
+// completely different structure, all checkpoint indices are marked invalid.
+//
+// With bestScore = 0, only scores > 0 are accepted, meaning role AND content
+// must agree for a match. If no old message matches any new message, all
+// map to -1.
+func TestShiftCheckpointIndices_AllMessagesRemoved(t *testing.T) {
+	// Old has 4 messages, new has only 2. Content differs across all messages,
+	// so no old message matches any new message (score 0 is not accepted).
+	oldMessages := []Message{
+		{Role: "user", Content: "question one"},
+		{Role: "assistant", Content: "answer one"},
+		{Role: "tool", Content: "tool result 1"},
+		{Role: "tool", Content: "tool result 2"},
+	}
+	newMessages := []Message{
+		{Role: "user", Content: "summary user"},
+		{Role: "assistant", Content: "summary assistant"},
+	}
+	// Greedy matching (score > 0 required):
+	//   old[0] user "question one" → new[0] user "summary user" score=0 (content differs) → skip
+	//     new[1] assistant "summary assistant" score=0 (role differs) → skip
+	//     no match → -1
+	//   old[1] assistant "answer one" → no match → -1
+	//   old[2] tool "tool result 1" → no match → -1
+	//   old[3] tool "tool result 2" → no match → -1
+	//   matched = [-1, -1, -1, -1]
+	//
+	// Checkpoint [2,3]: both boundaries unmatched → [-1,-1]
+	checkpoints := []TurnCheckpoint{
+		{StartIndex: 2, EndIndex: 3, Summary: "Sum for tool results"},
+	}
+
+	result := ShiftCheckpointIndices(oldMessages, newMessages, checkpoints)
+
+	if len(result) != 1 {
+		t.Fatalf("expected 1 checkpoint, got %d", len(result))
+	}
+	// All old messages have no match → fully consumed
+	if result[0].StartIndex != -1 || result[0].EndIndex != -1 {
+		t.Errorf("expected [-1,-1], got [%d,%d]", result[0].StartIndex, result[0].EndIndex)
+	}
+}
+
+// TestShiftCheckpointIndices_CheckpointNotMutated verifies that the
+// input checkpoints slice is not mutated by the function.
+func TestShiftCheckpointIndices_CheckpointNotMutated(t *testing.T) {
+	oldMessages := []Message{
+		{Role: "user", Content: "Question 1"},
+		{Role: "assistant", Content: "Answer 1"},
+		{Role: "user", Content: "Question 2"},
+		{Role: "assistant", Content: "Answer 2"},
+	}
+	// Remove first turn, keep second.
+	newMessages := []Message{
+		{Role: "user", Content: "Question 2"},
+		{Role: "assistant", Content: "Answer 2"},
+	}
+	checkpoints := []TurnCheckpoint{
+		{StartIndex: 0, EndIndex: 1, Summary: "Sum for Q1/A1"},
+		{StartIndex: 2, EndIndex: 3, Summary: "Sum for Q2/A2"},
+	}
+
+	// Snapshot original checkpoints for comparison.
+	origCps := make([]TurnCheckpoint, len(checkpoints))
+	copy(origCps, checkpoints)
+
+	_ = ShiftCheckpointIndices(oldMessages, newMessages, checkpoints)
+
+	// Verify the input checkpoints were not mutated.
+	for i, cp := range checkpoints {
+		if cp.StartIndex != origCps[i].StartIndex {
+			t.Errorf("checkpoint %d StartIndex was mutated: %d → %d", i, origCps[i].StartIndex, cp.StartIndex)
+		}
+		if cp.EndIndex != origCps[i].EndIndex {
+			t.Errorf("checkpoint %d EndIndex was mutated: %d → %d", i, origCps[i].EndIndex, cp.EndIndex)
+		}
+		if cp.Summary != origCps[i].Summary {
+			t.Errorf("checkpoint %d Summary was mutated", i)
+		}
+	}
+}
+
+// TestMatchMessages_PerfectMatch verifies a perfect match returns score 100.
+func TestMatchMessages_PerfectMatch(t *testing.T) {
+	old := Message{Role: "user", Content: "hello", ToolCallID: "id1", ToolCalls: []ToolCall{
+		{ID: "tc1", Function: ToolCallFunction{Name: "shell"}},
+	}}
+	new := Message{Role: "user", Content: "hello", ToolCallID: "id1", ToolCalls: []ToolCall{
+		{ID: "tc1", Function: ToolCallFunction{Name: "shell"}},
+	}}
+	score := matchMessages(old, new)
+	if score != 100 {
+		t.Errorf("expected score 100, got %d", score)
+	}
+}
+
+// TestMatchMessages_PartialMatch verifies a partial match (same role/content,
+// different tool_call_id) returns score 50.
+func TestMatchMessages_PartialMatch(t *testing.T) {
+	old := Message{Role: "tool", Content: "result", ToolCallID: "id1"}
+	new := Message{Role: "tool", Content: "result", ToolCallID: "id2"}
+	score := matchMessages(old, new)
+	if score != 50 {
+		t.Errorf("expected score 50, got %d", score)
+	}
+}
+
+// TestMatchMessages_DifferentRole verifies that different roles return score 0.
+func TestMatchMessages_DifferentRole(t *testing.T) {
+	old := Message{Role: "user", Content: "hello"}
+	new := Message{Role: "assistant", Content: "hello"}
+	score := matchMessages(old, new)
+	if score != 0 {
+		t.Errorf("expected score 0, got %d", score)
+	}
+}
+
+// TestMatchMessages_DifferentContent verifies that different content returns score 0.
+func TestMatchMessages_DifferentContent(t *testing.T) {
+	old := Message{Role: "user", Content: "hello"}
+	new := Message{Role: "user", Content: "world"}
+	score := matchMessages(old, new)
+	if score != 0 {
+		t.Errorf("expected score 0, got %d", score)
+	}
+}
+
+// TestMatchMessages_EmptyMessages verifies that empty messages return score 100
+// (empty role and empty content match each other).
+func TestMatchMessages_EmptyMessages(t *testing.T) {
+	old := Message{}
+	new := Message{}
+	score := matchMessages(old, new)
+	if score != 100 {
+		t.Errorf("expected score 100, got %d", score)
+	}
+}
+
+// TestShiftCheckpointIndices_SingleMessageTurn verifies correct shifting
+// when checkpoint covers a single message that survives.
+func TestShiftCheckpointIndices_SingleMessageTurn(t *testing.T) {
+	oldMessages := []Message{
+		{Role: "user", Content: "Question"},
+		{Role: "assistant", Content: "Answer"},
+	}
+	newMessages := []Message{
+		{Role: "user", Content: "Question"},
+	}
+	checkpoints := []TurnCheckpoint{
+		{StartIndex: 1, EndIndex: 1, Summary: "Single msg checkpoint"},
+	}
+
+	result := ShiftCheckpointIndices(oldMessages, newMessages, checkpoints)
+
+	if len(result) != 1 {
+		t.Fatalf("expected 1 checkpoint, got %d", len(result))
+	}
+	// Assistant message (index 1) was removed, so checkpoint should be [-1,-1].
+	if result[0].StartIndex != -1 || result[0].EndIndex != -1 {
+		t.Errorf("expected [-1,-1], got [%d,%d]", result[0].StartIndex, result[0].EndIndex)
+	}
+}
+
+// TestShiftCheckpointIndices_CheckpointSpanningMultipleNewMessages verifies
+// that a checkpoint spanning multiple surviving messages gets its StartIndex
+// and EndIndex correctly mapped.
+func TestShiftCheckpointIndices_CheckpointSpanningMultipleNewMessages(t *testing.T) {
+	oldMessages := []Message{
+		{Role: "user", Content: "Q1"},
+		{Role: "assistant", Content: "A1"},
+		{Role: "user", Content: "Q2"},
+		{Role: "assistant", Content: "A2"},
+	}
+	newMessages := []Message{
+		{Role: "user", Content: "Q1"},
+		{Role: "assistant", Content: "A1"},
+		{Role: "user", Content: "Q2"},
+		{Role: "assistant", Content: "A2"},
+	}
+	// Checkpoint spans the entire old array.
+	checkpoints := []TurnCheckpoint{
+		{StartIndex: 0, EndIndex: 3, Summary: "All messages"},
+	}
+
+	result := ShiftCheckpointIndices(oldMessages, newMessages, checkpoints)
+
+	if len(result) != 1 {
+		t.Fatalf("expected 1 checkpoint, got %d", len(result))
+	}
+	// All messages survived, indices unchanged.
+	if result[0].StartIndex != 0 || result[0].EndIndex != 3 {
+		t.Errorf("expected [0,3], got [%d,%d]", result[0].StartIndex, result[0].EndIndex)
 	}
 }
