@@ -572,15 +572,21 @@ func BuildCheckpointSummary(messages []Message) TurnCheckpoint {
 // messages and stores it in state. It spawns a goroutine to compute the summary
 // so it doesn't block the conversation loop.
 //
-// The checkpoint is stored with the given start/end indices. If the summary
-// computation takes longer than timeout, a minimal checkpoint is stored instead.
+// The message slice is snapshotted immediately (before the goroutine starts) so
+// the background computation sees a consistent view even if the caller mutates
+// the original slice. If the summary computation takes longer than timeout, a
+// minimal checkpoint is stored instead.
 func RecordTurnCheckpointAsync(state *State, messages []Message, startIndex, endIndex int, timeout time.Duration) {
+	// Snapshot messages immediately so the goroutine sees a consistent view.
+	turnMessages := make([]Message, len(messages))
+	copy(turnMessages, messages)
+
 	go func() {
 		done := make(chan TurnCheckpoint, 1)
 
 		go func() {
 			builder := NewTurnSummaryBuilder()
-			cp := builder.Build(messages)
+			cp := builder.Build(turnMessages)
 			cp.StartIndex = startIndex
 			cp.EndIndex = endIndex
 			done <- cp
@@ -590,7 +596,7 @@ func RecordTurnCheckpointAsync(state *State, messages []Message, startIndex, end
 		case cp := <-done:
 			state.AddCheckpoint(cp)
 		case <-time.After(timeout):
-			// Store minimal checkpoint if computation timed out
+			// Store minimal checkpoint if computation timed out.
 			state.AddCheckpoint(TurnCheckpoint{
 				StartIndex:        startIndex,
 				EndIndex:          endIndex,

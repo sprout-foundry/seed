@@ -435,6 +435,40 @@ func TestRecordTurnCheckpointAsync_Timeout(t *testing.T) {
 	}
 }
 
+func TestRecordTurnCheckpointAsync_SnapshotIsolation(t *testing.T) {
+	state := NewState()
+
+	messages := []Message{
+		{Role: "user", Content: "Original query"},
+		{Role: "assistant", Content: "Original response."},
+	}
+
+	RecordTurnCheckpointAsync(state, messages, 0, 1, 5*time.Second)
+
+	// Mutate the original slice immediately after calling.
+	// The async goroutine should see the snapshot, not these mutations.
+	messages[0].Content = "Mutated query"
+	messages[1].Content = "Mutated response."
+	messages = append(messages, Message{Role: "user", Content: "Extra"})
+
+	// Wait for async completion.
+	time.Sleep(200 * time.Millisecond)
+
+	checkpoints := state.GetCheckpoints()
+	if len(checkpoints) != 1 {
+		t.Fatalf("expected 1 checkpoint, got %d", len(checkpoints))
+	}
+
+	cp := checkpoints[0]
+	// Summary should reference the original content, not the mutated content.
+	if strings.Contains(cp.Summary, "Mutated") {
+		t.Errorf("summary should use snapshot, not mutated data: %s", cp.Summary)
+	}
+	if !strings.Contains(cp.Summary, "Original") {
+		t.Errorf("summary should contain original content: %s", cp.Summary)
+	}
+}
+
 func TestIsFileWriteTool(t *testing.T) {
 	writeTools := []string{"write_file", "edit_file", "create_file", "delete_file", "patch_file", "append_file", "write_structured", "patch_structured"}
 	readTools := []string{"read_file", "list_files", "search_files", "glob_files"}
