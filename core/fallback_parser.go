@@ -39,6 +39,17 @@ func NewFallbackParser(opts FallbackParserOptions) *FallbackParser {
 
 // ShouldUseFallback returns true when structured tool_calls are missing
 // and the content contains patterns suggestive of tool calls.
+//
+// It uses a three-tier confidence model:
+//
+//   - Tier 1: Strong patterns (code fences, XML tags, quoted JSON keys)
+//     trigger immediately with a single match.
+//   - Tier 2a: Weak patterns (bare keywords like "name:" or "arguments:")
+//     require at least two independent matches to avoid false positives on
+//     normal conversational text.
+//   - Tier 2b: One weak pattern plus a JSON structure marker ({" or [")
+//     triggers a single weak match, catching patterns like:
+//     "name: search\n{\"query\": \"hello\"}"
 func (fp *FallbackParser) ShouldUseFallback(content string, hasStructuredToolCalls bool) bool {
 	if hasStructuredToolCalls {
 		return false
@@ -74,24 +85,94 @@ func (fp *FallbackParser) Parse(content string) *FallbackParseResult {
 // ShouldUseFallback helpers
 // ---------------------------------------------------------------------------
 
-var toolCallPatternMarkers = []string{
-	"tool_calls", "function_call", "tool_use", "```json", "```",
-	"<function=", "<tool=", "arguments",
-	// Function-name pattern markers (Strategy 6)
-	"name:", "function:", "tool:", "function_name:", "tool_name:",
-	"args:", "input:", "parameters:", "params:",
+// strongPatternMarkers are high-confidence indicators of tool-call content.
+// A single match is sufficient to trigger fallback parsing.
+var strongPatternMarkers = []string{
+	// Code fences
+	"```json",
+	"```",
+	// XML tags
+	"<function=",
+	"<tool=",
+	"<tool>",
+	"<tool_use>",
+	// JSON keys — quoted so they only match actual JSON key occurrences
+	// (e.g., {"tool_calls": ...}), not bare English prose.
+	// JSON keys are high-confidence because normal prose rarely has these
+	// exact quoted-key patterns.
+	`"tool_calls"`,
+	`"function_call"`,
+	`"tool_use"`,
+	`"arguments"`,
+	`"function":`,
 }
+
+// Note: "arguments" (unquoted) is here as a weak marker — it catches bare
+// occurrences in prose like "the arguments for this position". The quoted
+// version is in strongPatternMarkers and triggers Tier 1 for actual JSON keys.
+var weakPatternMarkers = []string{
+	"name:",
+	"function:",
+	"tool:",
+	"function_name:",
+	"tool_name:",
+	"arguments",
+	"args:",
+	"input:",
+	"parameters:",
+	"params:",
+}
+
+// jsonStructureMarkers indicate the presence of JSON data in the content.
+// Alone they are not enough to trigger fallback, but combined with a weak
+// keyword they suggest tool-call-like content.
+var jsonStructureMarkers = []string{
+	`{"`,
+	`["`,
+}
+
+// weakPatternThreshold is the minimum number of distinct weak markers that
+// must match before we consider the content tool-call-like.
+const weakPatternThreshold = 2
 
 func (fp *FallbackParser) containsToolCallPatterns(content string) bool {
 	if len(strings.TrimSpace(content)) == 0 {
 		return false
 	}
 	lowerContent := strings.ToLower(content)
-	for _, m := range toolCallPatternMarkers {
+
+	// Tier 1: strong patterns — single match is enough
+	for _, m := range strongPatternMarkers {
 		if strings.Contains(lowerContent, m) {
 			return true
 		}
 	}
+
+	// Count weak marker matches and JSON structure matches.
+	weakMatches := 0
+	hasJSONStructure := false
+	for _, m := range weakPatternMarkers {
+		if strings.Contains(lowerContent, m) {
+			weakMatches++
+		}
+	}
+	for _, m := range jsonStructureMarkers {
+		if strings.Contains(lowerContent, m) {
+			hasJSONStructure = true
+			break
+		}
+	}
+
+	// Tier 2a: multiple weak markers (e.g., "name:" + "arguments")
+	if weakMatches >= weakPatternThreshold {
+		return true
+	}
+
+	// Tier 2b: one weak marker + JSON structure (e.g., "name:" + '{"query":...}')
+	if weakMatches >= 1 && hasJSONStructure {
+		return true
+	}
+
 	return false
 }
 

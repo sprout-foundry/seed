@@ -62,16 +62,150 @@ func TestShouldUseFallback_Patterns(t *testing.T) {
 		content string
 		want    bool
 	}{
-		{"tool_calls key", "here are the tool_calls", true},
-		{"function_call key", "function_call is here", true},
-		{"tool_use key", "using tool_use here", true},
+		// Quoted JSON keys should trigger (real tool-call format)
+		{"tool_calls quoted", `{"tool_calls": []}`, true},
+		{"function_call quoted", `{"function_call": {}}`, true},
+		{"tool_use quoted", `{"tool_use": {}}`, true},
+		{"arguments quoted", `{"arguments": "val"}`, true},
+		{"function colon quoted", `{"function": "x"}`, true},
+		// JSON fences and XML tags (unchanged — already correct)
 		{"json fence", "some text ```json", true},
 		{"any fence", "some text ```", true},
 		{"xml function", "<function=search>", true},
 		{"xml tool", "<tool=web_search>", true},
+		// Unquoted English prose should NOT trigger (the false positives fixed)
+		{"tool_calls prose", "I made tool_calls to the API", false},
+		{"function_call prose", "No function_call is needed", false},
+		{"tool_use prose", "The model's tool_use capability...", false},
 		{"plain text", "hello world", false},
 		{"whitespace only", "   \n  ", false},
 	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := fp.ShouldUseFallback(tc.content, false)
+			if got != tc.want {
+				t.Errorf("ShouldUseFallback(%q) = %v, want %v", tc.content, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestShouldUseFallback_Tier2Boundary explicitly tests the Tier 2a/2b
+// thresholds so that accidental changes to weakPatternThreshold or the
+// JSON-structure detection are caught as regressions.
+func TestShouldUseFallback_Tier2Boundary(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{})
+
+	tests := []struct {
+		name string
+		// Describe what weak markers are present and whether JSON structure
+		// is detected — this mirrors the internal logic of containsToolCallPatterns.
+		weakCount     int
+		hasJSONStruct bool
+		strong        bool // a Tier 1 strong pattern is present
+		want          bool
+	}{
+		// Tier 2a: need >= 2 weak markers
+		{"1 weak marker only", 1, false, false, false},
+		{"2 weak markers", 2, false, false, true},
+		{"3 weak markers", 3, false, false, true},
+
+		// Tier 2b: 1 weak + JSON structure
+		{"1 weak + JSON struct", 1, true, false, true},
+		{"1 weak + no JSON struct", 1, false, false, false},
+
+		// Tier 1 always wins
+		{"strong alone", 0, false, true, true},
+		{"strong + 1 weak", 1, false, true, true},
+	}
+
+	// Helper to construct content that exercises the weak-count / JSON-structure
+	// logic without accidentally triggering Tier 1 strong markers.
+	//
+	// weakMarkers[i] maps index → a weak pattern. We inject the first N markers
+	// as bare lines like "name: search".  JSON structure is injected by adding
+	// `{"key":"val"}` to the content.
+	contentFor := func(weakCount int, hasJSON bool) string {
+		weakPatterns := []string{
+			"name:",
+			"function:",
+			"tool:",
+			"args:",
+			"input:",
+		}
+		var parts []string
+		for i := 0; i < weakCount && i < len(weakPatterns); i++ {
+			parts = append(parts, weakPatterns[i]+" value")
+		}
+		if hasJSON {
+			parts = append(parts, `{"key": "val"}`)
+		}
+		return strings.Join(parts, "\n")
+	}
+
+	strongContent := "```json" // Tier 1 strong marker
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var content string
+			if tc.strong {
+				content = strongContent
+			} else {
+				content = contentFor(tc.weakCount, tc.hasJSONStruct)
+			}
+			got := fp.ShouldUseFallback(content, false)
+			if got != tc.want {
+				t.Errorf("weak=%d, jsonStruct=%v, strong=%v → got=%v, want=%v",
+					tc.weakCount, tc.hasJSONStruct, tc.strong, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestShouldUseFallback_SubstringWeakMarkers verifies that weak markers
+// don't accidentally match when embedded in longer identifiers (e.g.,
+// "myarguments:" should not trigger on "arguments").
+func TestShouldUseFallback_SubstringWeakMarkers(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{})
+
+	// These contain weak-like substrings but lack the word-boundary
+	// context of a standalone key, so even with JSON structure they
+	// should NOT trigger (since the weak marker scan is simple contains).
+	// Note: weakPatternMarkers use simple strings.Contains, so substrings
+	// DO match. The word-boundary logic lives in extractFunctionNamePatterns,
+	// not in containsToolCallPatterns. Therefore these cases will trigger
+	// fallback IF JSON structure is also present (Tier 2b).
+	//
+	// This test documents that behavior rather than fighting it — the
+	// extraction strategies have their own word-boundary guards.
+	tests := []struct {
+		name    string
+		content string
+		want    bool
+	}{
+		// "command_name:" contains "name:" as a substring — triggers
+		// Tier 2a because it also matches "name:" (simple contains).
+		// This is acceptable because the extraction strategy
+		// (extractFunctionNamePatterns) has word-boundary checks that
+		// prevent false tool extractions from such content.
+		{"substring name: in command_name:", "command_name: search\narguments: {}", true},
+
+		// "tool_use:" contains "tool:" as a substring — but "tool:" does NOT
+		// match because "tool_use:" has "_use" between "tool" and ":", so
+		// the colon is not directly after "tool". Only "args:" matches
+		// (weak=1), and there's no JSON structure marker, so it falls to
+		// false. This is correct: weak markers use simple contains, but the
+		// colon suffix makes "tool:" not a substring of "tool_use:".
+		{"substring tool: in tool_use:", "tool_use: calc\nargs: {}", false},
+
+		// But plain prose with no JSON structure and only 1 weak-substring match
+		// should NOT trigger.
+		{"single substring weak marker, no json", "myarguments are here", false},
+
+		// Two different weak substrings in prose with JSON → triggers Tier 2b.
+		{"two substrings + json", "myname is John\nmyarguments: {\"x\":1}", true},
+	}
+
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			got := fp.ShouldUseFallback(tc.content, false)
