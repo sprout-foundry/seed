@@ -217,13 +217,14 @@ func baseCommand(cmd string) string {
 }
 
 // isTransientCommand returns true for commands whose output is inherently
-// volatile and can be safely deduplicated (keep only the latest). Only
-// genuinely transient commands are included; commands that read file contents
-// (cat, find, head, tail, wc) are excluded because their output carries
-// meaningful context that should not be discarded.
+// volatile and can be safely deduplicated (keep only the latest). These are
+// commands that inspect the current state of the filesystem or print values
+// without producing meaningful side effects. When the same command produces
+// identical output across runs, earlier output is replaced with a placeholder
+// to save context tokens.
 func isTransientCommand(base string) bool {
 	switch base {
-	case "ls", "pwd", "echo":
+	case "ls", "find", "pwd", "cat", "echo", "head", "tail", "wc":
 		return true
 	}
 	return false

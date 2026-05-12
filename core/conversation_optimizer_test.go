@@ -614,14 +614,14 @@ func TestConversationOptimizer_ArgsNotString(t *testing.T) {
 }
 
 func TestIsTransientCommand(t *testing.T) {
-	transientCmds := []string{"ls", "pwd", "echo"}
+	transientCmds := []string{"ls", "pwd", "echo", "find", "cat", "head", "tail", "wc"}
 	for _, cmd := range transientCmds {
 		if !isTransientCommand(cmd) {
 			t.Errorf("expected %q to be transient", cmd)
 		}
 	}
 
-	nonTransient := []string{"git", "make", "npm", "python", "go", "rm", "mv", "cat", "find", "head", "tail", "wc"}
+	nonTransient := []string{"git", "make", "npm", "python", "go", "rm", "mv"}
 	for _, cmd := range nonTransient {
 		if isTransientCommand(cmd) {
 			t.Errorf("expected %q to NOT be transient", cmd)
