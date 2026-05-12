@@ -32,10 +32,12 @@ type Tool struct {
 }
 
 // ToolFunction describes a tool's identity and parameter schema.
+// Parameters is an interface{} to accept any JSON schema structure
+// (seed's ToolParameters for native tools, or arbitrary schemas from providers).
 type ToolFunction struct {
-	Name        string         `json:"name"`
-	Description string         `json:"description"`
-	Parameters  ToolParameters `json:"parameters"`
+	Name        string      `json:"name"`
+	Description string      `json:"description"`
+	Parameters  interface{} `json:"parameters"`
 }
 
 // ToolParameters defines the schema for a tool's arguments.
@@ -73,6 +75,8 @@ type ChatRequest struct {
 // ChatResponse is a response from the chat completion endpoint.
 type ChatResponse struct {
 	ID      string       `json:"id"`
+	Object  string       `json:"object,omitempty"`   // e.g. "chat.completion"
+	Created int64        `json:"created,omitempty"`  // Unix timestamp
 	Model   string       `json:"model"`
 	Choices []ChatChoice `json:"choices"`
 	Usage   ChatUsage    `json:"usage"`
@@ -92,6 +96,10 @@ type ChatUsage struct {
 	TotalTokens      int     `json:"total_tokens"`
 	EstimatedCost    float64 `json:"estimated_cost,omitempty"`
 	Cost             float64 `json:"cost,omitempty"`
+	// CachedTokens is the number of prompt tokens served from cache (OpenRouter).
+	CachedTokens int `json:"cached_tokens,omitempty"`
+	// CacheWriteTokens is the number of prompt tokens written to cache (OpenRouter).
+	CacheWriteTokens *int `json:"cache_write_tokens,omitempty"`
 }
 
 // AgentState tracks the state of an agent's conversation.
