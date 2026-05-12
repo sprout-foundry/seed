@@ -103,8 +103,9 @@
 [x] - CONFIG: Define `RetryConfig` struct — `MaxAttempts`, `InitialDelay`, `MaxDelay`, `Multiplier`, `Jitter` fields with sensible defaults. `core/agent.go`
 [x] - CONFIG: Wire `RetryConfig` into `ProcessQuery` retry loop — use consumer-provided values instead of hardcoded defaults. `core/conversation.go`
 [x] - CONFIG: Add `Agent.SetProvider(Provider)` — swap provider at runtime for subsequent calls. `core/agent.go`
+[x] - STEER: Add `Agent.Steer(Message)` — queue a transient message prepended to the next API call, consumed once, not persisted. `core/agent.go`
 [] - STEER: Add `Agent.Steer(Message)` — queue a transient message prepended to the next API call, consumed once, not persisted. `core/agent.go`
-[] - STEER: Add `Agent.SteerSystem(string)` — convenience for injecting system-level steering. `core/agent.go`
+[x] - STEER: Add `Agent.SteerSystem(string)` — convenience for injecting system-level steering. `core/agent.go`
 [] - STEER: Wire steering into `prepareMessages()` — transient messages appended after history before API call. `core/conversation.go`
 [] - STEER: Add e2e test for steering — steer mid-session -> next API call includes injected context. `test/e2e_test.go`
 [] - HOOKS: Add `OnIteration` callback to `Options` — fire-and-forget callback with iteration number and message count. `core/agent.go`

@@ -275,6 +275,18 @@ func (a *Agent) Steer(msg Message) {
 	a.steerMsgs = append(a.steerMsgs, msg)
 }
 
+// SteerSystem is a convenience for injecting a system-level steering message.
+// It creates a Message with Role "system" and queues it via Steer, so the
+// guidance takes effect on the next API call and is consumed once (like all
+// steer messages). The message is not persisted in the conversation state.
+//
+// Example:
+//
+//	agent.SteerSystem("Focus on performance, not correctness.")
+func (a *Agent) SteerSystem(content string) {
+	a.Steer(Message{Role: "system", Content: content})
+}
+
 // drainSteerMessages atomically takes all queued steering messages and clears
 // the queue. Returns nil (not empty slice) if no messages were queued, so
 // callers can distinguish "no steer" from "empty steer".

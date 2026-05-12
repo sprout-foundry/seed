@@ -478,3 +478,100 @@ func TestAgent_SetProvider_AffectsSubsequentRuns(t *testing.T) {
 		t.Error("providerB token estimate mismatch")
 	}
 }
+
+func TestAgent_SteerSystem(t *testing.T) {
+	a, err := NewAgent(Options{
+		Provider: &mockProvider{},
+		Executor: &mockExecutor{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	a.SteerSystem("Focus on performance.")
+
+	msgs := a.drainSteerMessages()
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 steer message, got %d", len(msgs))
+	}
+	if msgs[0].Role != "system" {
+		t.Errorf("expected role 'system', got %q", msgs[0].Role)
+	}
+	if msgs[0].Content != "Focus on performance." {
+		t.Errorf("expected 'Focus on performance.', got %q", msgs[0].Content)
+	}
+}
+
+func TestAgent_SteerSystem_Multiple(t *testing.T) {
+	a, err := NewAgent(Options{
+		Provider: &mockProvider{},
+		Executor: &mockExecutor{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	a.SteerSystem("First directive.")
+	a.SteerSystem("Second directive.")
+
+	msgs := a.drainSteerMessages()
+	if len(msgs) != 2 {
+		t.Fatalf("expected 2 steer messages, got %d", len(msgs))
+	}
+	if msgs[0].Content != "First directive." {
+		t.Errorf("expected 'First directive.', got %q", msgs[0].Content)
+	}
+	if msgs[1].Content != "Second directive." {
+		t.Errorf("expected 'Second directive.', got %q", msgs[1].Content)
+	}
+}
+
+func TestAgent_SteerSystem_AfterDrainIsEmpty(t *testing.T) {
+	a, err := NewAgent(Options{
+		Provider: &mockProvider{},
+		Executor: &mockExecutor{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	a.SteerSystem("Temporary guidance.")
+	msgs := a.drainSteerMessages()
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 steer message, got %d", len(msgs))
+	}
+
+	// Drain again — should be empty
+	msgs = a.drainSteerMessages()
+	if msgs != nil {
+		t.Errorf("expected nil after second drain, got %d messages", len(msgs))
+	}
+}
+
+func TestAgent_SteerSystem_MixedWithSteer(t *testing.T) {
+	a, err := NewAgent(Options{
+		Provider: &mockProvider{},
+		Executor: &mockExecutor{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	a.Steer(Message{Role: "user", Content: "User directive."})
+	a.SteerSystem("System directive.")
+	a.Steer(Message{Role: "user", Content: "Another user directive."})
+
+	msgs := a.drainSteerMessages()
+	if len(msgs) != 3 {
+		t.Fatalf("expected 3 steer messages, got %d", len(msgs))
+	}
+	if msgs[0].Role != "user" || msgs[0].Content != "User directive." {
+		t.Errorf("expected first message user, got %+v", msgs[0])
+	}
+	if msgs[1].Role != "system" || msgs[1].Content != "System directive." {
+		t.Errorf("expected second message system, got %+v", msgs[1])
+	}
+	if msgs[2].Role != "user" || msgs[2].Content != "Another user directive." {
+		t.Errorf("expected third message user, got %+v", msgs[2])
+	}
+}
