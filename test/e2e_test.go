@@ -2870,3 +2870,164 @@ func TestE2E_Steer_WithTruncationRecovery(t *testing.T) {
 		t.Error("steer message should NOT appear in second API call (consumed once)")
 	}
 }
+
+// --- OnIteration Hook Tests ---
+
+func TestE2E_OnIteration_SingleIteration(t *testing.T) {
+	h := NewHarnessWithT(t)
+	h.Provider().AddTextResponse("Done")
+
+	var calls []struct {
+		iter     int
+		messages int
+	}
+	agent := h.NewAgentWithOptions(core.Options{
+		OnIteration: func(iter int, messages int) {
+			calls = append(calls, struct {
+				iter     int
+				messages int
+			}{iter, messages})
+		},
+	})
+
+	_, err := agent.Run(context.Background(), "test query")
+	h.AssertNoError(err)
+
+	// One iteration (0-based)
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 OnIteration call, got %d", len(calls))
+	}
+	if calls[0].iter != 0 {
+		t.Errorf("expected iteration 0, got %d", calls[0].iter)
+	}
+	// State has 1 message (user query) when OnIteration fires
+	if calls[0].messages != 1 {
+		t.Errorf("expected 1 message, got %d", calls[0].messages)
+	}
+}
+
+func TestE2E_OnIteration_MultipleIterations(t *testing.T) {
+	h := NewHarnessWithT(t)
+
+	// First: tool call (iteration 0)
+	h.Provider().AddToolCallResponse(
+		"Checking...",
+		core.ToolCall{ID: "call_1", Function: core.ToolCallFunction{Name: "read", Arguments: `{}`}},
+	)
+	// Second: final answer (iteration 1)
+	h.Provider().AddTextResponse("Done.")
+	h.Executor().AddToolResult("call_1", "content")
+
+	var calls []struct {
+		iter     int
+		messages int
+	}
+	agent := h.NewAgentWithOptions(core.Options{
+		OnIteration: func(iter int, messages int) {
+			calls = append(calls, struct {
+				iter     int
+				messages int
+			}{iter, messages})
+		},
+	})
+
+	_, err := agent.Run(context.Background(), "test query")
+	h.AssertNoError(err)
+
+	// Two iterations: 0 (tool call) and 1 (final answer)
+	if len(calls) != 2 {
+		t.Fatalf("expected 2 OnIteration calls, got %d", len(calls))
+	}
+
+	// Iteration 0: 1 message (user query)
+	if calls[0].iter != 0 {
+		t.Errorf("expected iteration 0, got %d", calls[0].iter)
+	}
+	if calls[0].messages != 1 {
+		t.Errorf("expected 1 message at iteration 0, got %d", calls[0].messages)
+	}
+
+	// Iteration 1: 3 messages (user + assistant(tool call) + tool result)
+	if calls[1].iter != 1 {
+		t.Errorf("expected iteration 1, got %d", calls[1].iter)
+	}
+	if calls[1].messages != 3 {
+		t.Errorf("expected 3 messages at iteration 1, got %d", calls[1].messages)
+	}
+}
+
+func TestE2E_OnIteration_NilCallback_NoPanic(t *testing.T) {
+	h := NewHarnessWithT(t)
+	h.Provider().AddTextResponse("OK")
+
+	agent := h.NewAgentWithOptions(core.Options{
+		OnIteration: nil, // explicitly nil
+	})
+
+	// Should not panic
+	_, err := agent.Run(context.Background(), "test")
+	h.AssertNoError(err)
+}
+
+func TestE2E_OnIteration_MaxContinuations(t *testing.T) {
+	// Provider keeps returning incomplete responses. After 3 consecutive
+	// continuations (maxContinuations=3), the loop force-finalizes.
+	// OnIteration should fire 4 times: 1 initial + 3 continuations.
+	h := NewHarnessWithT(t)
+	h.Provider().AddTextResponse("First incomplete...")
+	h.Provider().AddTextResponse("Second incomplete...")
+	h.Provider().AddTextResponse("Third incomplete...")
+	h.Provider().AddTextResponse("Fourth and last...")
+
+	var calls []struct {
+		iter     int
+		messages int
+	}
+	agent := h.NewAgentWithOptions(core.Options{
+		OnIteration: func(iter int, messages int) {
+			calls = append(calls, struct {
+				iter     int
+				messages int
+			}{iter, messages})
+		},
+	})
+
+	_, err := agent.Run(context.Background(), "test")
+	h.AssertNoError(err)
+
+	// 4 iterations: 1 initial + 3 continuations
+	if len(calls) != 4 {
+		t.Fatalf("expected 4 OnIteration calls, got %d", len(calls))
+	}
+
+	// Verify iteration numbers are 0, 1, 2, 3
+	for i, c := range calls {
+		if c.iter != i {
+			t.Errorf("expected iteration %d, got %d", i, c.iter)
+		}
+	}
+
+	// Verify message counts grow: 1 (user), 2 (+assistant), 3 (+assistant), 4 (+assistant)
+	expectedMsgs := []int{1, 2, 3, 4}
+	for i, c := range calls {
+		if c.messages != expectedMsgs[i] {
+			t.Errorf("iteration %d: expected %d messages, got %d", i, expectedMsgs[i], c.messages)
+		}
+	}
+}
+
+func TestE2E_OnIteration_CallbackPanicRecovered(t *testing.T) {
+	h := NewHarnessWithT(t)
+	h.Provider().AddTextResponse("OK")
+
+	agent := h.NewAgentWithOptions(core.Options{
+		OnIteration: func(iter int, messages int) {
+			panic("telemetry error")
+		},
+	})
+
+	// Should not crash; the panic is recovered and the agent continues
+	result, err := agent.Run(context.Background(), "test")
+	h.AssertNoError(err)
+	h.AssertEquals(result, "OK")
+}
