@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/sprout-foundry/seed/events"
@@ -111,6 +112,12 @@ type Agent struct {
 	validator      *ResponseValidator
 	optimizer      *ConversationOptimizer
 	retryConfig    RetryConfig
+
+	// steerMu / steerMsgs hold externally-queued steering messages.
+	// They are drained into the ConversationHandler when Run is called,
+	// so the steer messages appear in the next API call and are consumed once.
+	steerMu   sync.Mutex
+	steerMsgs []Message
 }
 
 // NewAgent creates a new Agent from the given options. Returns an error if
@@ -248,6 +255,38 @@ func (a *Agent) InjectInput(input string) bool {
 	default:
 		return false
 	}
+}
+
+// Steer queues a transient message that will be appended to the next API call
+// made by this agent. The message is consumed once and is not persisted in the
+// conversation state. Use Steer to inject temporary guidance (e.g., "Focus on
+// security concerns" or "Respond in JSON format") that should influence only
+// the next model response.
+//
+// Steer must be called between Run() calls. If called during an active Run(),
+// the message is queued and will not be consumed until the next Run().
+//
+// Example:
+//
+//	agent.Steer(core.Message{Role: "user", Content: "Focus on performance."})
+func (a *Agent) Steer(msg Message) {
+	a.steerMu.Lock()
+	defer a.steerMu.Unlock()
+	a.steerMsgs = append(a.steerMsgs, msg)
+}
+
+// drainSteerMessages atomically takes all queued steering messages and clears
+// the queue. Returns nil (not empty slice) if no messages were queued, so
+// callers can distinguish "no steer" from "empty steer".
+func (a *Agent) drainSteerMessages() []Message {
+	a.steerMu.Lock()
+	defer a.steerMu.Unlock()
+	if len(a.steerMsgs) == 0 {
+		return nil
+	}
+	msgs := a.steerMsgs
+	a.steerMsgs = nil
+	return msgs
 }
 
 // debugLog logs a debug message if debug mode is enabled.

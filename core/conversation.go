@@ -30,10 +30,20 @@ type ConversationHandler struct {
 const maxContinuations = 3
 
 func newConversationHandler(a *Agent) *ConversationHandler {
-	return &ConversationHandler{
+	ch := &ConversationHandler{
 		agent:             a,
 		conversationStart: time.Now(),
 	}
+
+	// Drain externally-queued steering messages into the handler's transient queue.
+	// They will be appended by prepareMessages on the first API call, then discarded.
+	if steer := a.drainSteerMessages(); steer != nil {
+		ch.transientMu.Lock()
+		ch.transientMsgs = append(ch.transientMsgs, steer...)
+		ch.transientMu.Unlock()
+	}
+
+	return ch
 }
 
 // chatOperation encapsulates a single LLM call. The function performs the call

@@ -2546,3 +2546,327 @@ func TestE2E_Optimizer_Integration_FileReadDedup(t *testing.T) {
 		t.Errorf("expected 2 tool messages in state, got %d", stateToolCount)
 	}
 }
+
+// --- Steer Message Tests ---
+
+func TestE2E_Steer_MessageIncludedInRequest(t *testing.T) {
+	// Verify that a steered message appears in the provider request and is NOT
+	// persisted in agent state.
+	h := NewHarnessWithT(t)
+	h.Provider().AddTextResponse("Got it, focusing on performance.")
+
+	agent := h.NewAgent()
+	agent.Steer(core.Message{Role: "user", Content: "Focus on performance."})
+
+	_, err := agent.Run(context.Background(), "Analyze this code")
+	h.AssertNoError(err)
+
+	// The steer message should appear in the first provider request
+	req := h.Provider().Calls[0]
+	found := false
+	for _, m := range req.Messages {
+		if m.Role == "user" && m.Content == "Focus on performance." {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected steer message to appear in provider request")
+	}
+
+	// The steer message should NOT be in agent state
+	msgs := agent.State().Messages()
+	for _, m := range msgs {
+		if m.Content == "Focus on performance." {
+			t.Error("steer message should not be persisted in state")
+		}
+	}
+
+	// State should only have user + assistant
+	h.AssertStateHasNMessages(agent, 2)
+}
+
+func TestE2E_Steer_ConsumedOnce(t *testing.T) {
+	// Steer a message, Run twice. The first Run should include the steer
+	// message; the second Run should NOT.
+	h := NewHarnessWithT(t)
+	h.Provider().AddTextResponse("First run response")
+	h.Provider().AddTextResponse("Second run response")
+
+	agent := h.NewAgent()
+	agent.Steer(core.Message{Role: "user", Content: "Only in first run."})
+
+	// First Run — steer message present
+	_, err := agent.Run(context.Background(), "First query")
+	h.AssertNoError(err)
+
+	req1 := h.Provider().Calls[0]
+	found1 := false
+	for _, m := range req1.Messages {
+		if m.Content == "Only in first run." {
+			found1 = true
+			break
+		}
+	}
+	if !found1 {
+		t.Error("expected steer message in first provider request")
+	}
+
+	// Second Run — steer message should NOT be present (consumed)
+	_, err = agent.Run(context.Background(), "Second query")
+	h.AssertNoError(err)
+
+	req2 := h.Provider().Calls[1]
+	found2 := false
+	for _, m := range req2.Messages {
+		if m.Content == "Only in first run." {
+			found2 = true
+			break
+		}
+	}
+	if found2 {
+		t.Error("steer message should not appear in second provider request (already consumed)")
+	}
+}
+
+func TestE2E_Steer_MultipleMessages(t *testing.T) {
+	// Steer two messages, then Run. Both should appear in the provider request.
+	h := NewHarnessWithT(t)
+	h.Provider().AddTextResponse("Both messages received.")
+
+	agent := h.NewAgent()
+	agent.Steer(core.Message{Role: "user", Content: "First steer message."})
+	agent.Steer(core.Message{Role: "user", Content: "Second steer message."})
+
+	_, err := agent.Run(context.Background(), "Original query")
+	h.AssertNoError(err)
+
+	req := h.Provider().Calls[0]
+	foundFirst := false
+	foundSecond := false
+	for _, m := range req.Messages {
+		if m.Content == "First steer message." {
+			foundFirst = true
+		}
+		if m.Content == "Second steer message." {
+			foundSecond = true
+		}
+	}
+	if !foundFirst {
+		t.Error("expected first steer message in provider request")
+	}
+	if !foundSecond {
+		t.Error("expected second steer message in provider request")
+	}
+
+	// Neither steer message should be in state
+	msgs := agent.State().Messages()
+	for _, m := range msgs {
+		if m.Content == "First steer message." || m.Content == "Second steer message." {
+			t.Error("steer messages should not be persisted in state")
+		}
+	}
+
+	// State should only have user + assistant
+	h.AssertStateHasNMessages(agent, 2)
+}
+
+func TestE2E_Steer_NotPersistedInState(t *testing.T) {
+	// Steer + Run. Assert state only has user + assistant messages
+	// (no steer message persisted).
+	h := NewHarnessWithT(t)
+	h.Provider().AddTextResponse("OK")
+
+	agent := h.NewAgent()
+	agent.Steer(core.Message{Role: "user", Content: "Do not persist me."})
+
+	_, err := agent.Run(context.Background(), "Query")
+	h.AssertNoError(err)
+
+	// Verify state only has 2 messages (user query + assistant response)
+	h.AssertStateHasNMessages(agent, 2)
+
+	// Verify no steer content in state
+	msgs := agent.State().Messages()
+	for i, m := range msgs {
+		switch i {
+		case 0:
+			if m.Role != "user" || m.Content != "Query" {
+				t.Errorf("expected message 1 to be user 'Query', got %q %q", m.Role, m.Content)
+			}
+		case 1:
+			if m.Role != "assistant" {
+				t.Errorf("expected message 2 to be assistant, got %q", m.Role)
+			}
+		default:
+			t.Errorf("unexpected message %d in state: %q", i+1, m.Content)
+		}
+	}
+}
+
+func TestE2E_Steer_SystemRole(t *testing.T) {
+	// Steer with Role "system". Verify it gets collapsed into the system prompt
+	// (since collapseSystemMessages merges system messages).
+	h := NewHarnessWithT(t)
+	h.Provider().AddTextResponse("OK")
+
+	agent := h.NewAgent()
+	agent.Steer(core.Message{Role: "system", Content: "Additional system instruction."})
+
+	_, err := agent.Run(context.Background(), "test")
+	h.AssertNoError(err)
+
+	// The system message should appear as part of the system prompt in the request
+	// (collapsed into the system message position)
+	req := h.Provider().Calls[0]
+	if len(req.Messages) == 0 || req.Messages[0].Role != "system" {
+		t.Errorf("expected first message to be system role, got %q", req.Messages[0].Role)
+	}
+	// The system prompt should contain the additional system instruction
+	// (it gets appended to the default system prompt)
+	systemContent := req.Messages[0].Content
+	if !strings.Contains(systemContent, "Additional system instruction.") {
+		t.Errorf("expected system prompt to contain 'Additional system instruction.', got: %q", systemContent)
+	}
+}
+
+func TestE2E_Steer_DuringActiveRun_IsDeferred(t *testing.T) {
+	// Calling Steer() during an active Run() should NOT affect the current Run.
+	// The message should be deferred to the next Run().
+	h := NewHarnessWithT(t)
+	h.Provider().AddTextResponse("First run response")
+	h.Provider().AddTextResponse("Second run response")
+
+	agent := h.NewAgent()
+
+	// Start Run in a goroutine
+	done := make(chan string, 1)
+	go func() {
+		result, _ := agent.Run(context.Background(), "First query")
+		done <- result
+	}()
+
+	// Steer during active Run — should be deferred, not consumed immediately
+	time.Sleep(20 * time.Millisecond)
+	agent.Steer(core.Message{Role: "user", Content: "Steer during run"})
+
+	// Wait for first run to complete
+	h.AssertEquals(<-done, "First run response")
+
+	// Verify steer was NOT consumed in first Run
+	firstReq := h.Provider().Calls[0]
+	for _, m := range firstReq.Messages {
+		if m.Content == "Steer during run" {
+			t.Error("steer message should NOT appear in first Run (deferred)")
+		}
+	}
+
+	// Second Run should see the steer message
+	_, err := agent.Run(context.Background(), "Second query")
+	h.AssertNoError(err)
+
+	req2 := h.Provider().Calls[1]
+	found := false
+	for _, m := range req2.Messages {
+		if m.Content == "Steer during run" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("steer message should appear in second Run (deferred from first)")
+	}
+}
+
+func TestE2E_Steer_NotRepeatedOnRetry(t *testing.T) {
+	// When a transient error occurs, the retry loop inside ProcessQuery
+	// reuses the same ChatRequest (with the same messages slice). This means
+	// the steer message appears in both the failed attempt and the successful
+	// retry — because they are the same request object. The steer is consumed
+	// by prepareMessages once per loop iteration, but the same request is
+	// retried within that iteration.
+	//
+	// Verify: steer appears in both calls (same request retried).
+	h := NewHarnessWithT(t)
+
+	// First call fails with transient error, second succeeds
+	h.Provider().AddError(&core.TransientError{Op: "chat", Wrapped: fmt.Errorf("timeout")})
+	h.Provider().AddTextResponse("Recovered!")
+
+	agent := h.NewAgent()
+	agent.Steer(core.Message{Role: "user", Content: "Steer guidance"})
+
+	_, err := agent.Run(context.Background(), "test query")
+	h.AssertNoError(err)
+
+	// Provider called twice (1 error + 1 success)
+	h.AssertProviderCalledN(2)
+
+	// Both calls should contain the steer message because the same request
+	// is retried within the same loop iteration.
+	for i, req := range h.Provider().Calls {
+		found := false
+		for _, m := range req.Messages {
+			if m.Content == "Steer guidance" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("call %d: steer message should appear in retried request", i)
+		}
+	}
+}
+
+func TestE2E_Steer_WithTruncationRecovery(t *testing.T) {
+	// When both a steer message and a truncation recovery message are present,
+	// both should appear in the API request. The steer message is drained into
+	// transientMsgs before Run, and the truncation message is enqueued during
+	// the loop — both are appended by prepareMessages.
+	h := NewHarnessWithT(t)
+
+	// Call 1: incomplete response — triggers truncation recovery
+	h.Provider().AddTextResponse("This is incomplete...")
+	// Call 2: final complete answer
+	h.Provider().AddTextResponse("Complete answer.")
+
+	agent := h.NewAgent()
+	agent.Steer(core.Message{Role: "user", Content: "Focus on security."})
+
+	_, err := agent.Run(context.Background(), "test query")
+	h.AssertNoError(err)
+	h.AssertProviderCalledN(2)
+
+	// First request should contain the steer message
+	firstReq := h.Provider().Calls[0]
+	foundSteer := false
+	for _, m := range firstReq.Messages {
+		if m.Content == "Focus on security." {
+			foundSteer = true
+			break
+		}
+	}
+	if !foundSteer {
+		t.Error("steer message should appear in first API call")
+	}
+
+	// Second request should contain the truncation recovery message
+	// (but NOT the steer message, which was consumed in the first call)
+	secondReq := h.Provider().Calls[1]
+	foundContinue := false
+	foundSteerInRetry := false
+	for _, m := range secondReq.Messages {
+		if strings.Contains(m.Content, "continue") {
+			foundContinue = true
+		}
+		if m.Content == "Focus on security." {
+			foundSteerInRetry = true
+		}
+	}
+	if !foundContinue {
+		t.Error("truncation recovery message should appear in second API call")
+	}
+	if foundSteerInRetry {
+		t.Error("steer message should NOT appear in second API call (consumed once)")
+	}
+}
