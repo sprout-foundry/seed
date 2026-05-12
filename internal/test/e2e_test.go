@@ -4055,6 +4055,193 @@ func TestE2E_FinishReasonLength_ResetsOnToolCalls(t *testing.T) {
 	h.AssertExecutorCalledN(1)
 }
 
+func TestE2E_FinishReasonContentFilter_RetryOnceThenError(t *testing.T) {
+	// Provider returns finish_reason="content_filter" twice.
+	// First occurrence triggers a retry with a transient rephrase message.
+	// Second occurrence returns ContentFilteredError to the consumer.
+	h := NewHarnessWithT(t)
+	h.Provider().AddTextResponseWithFinish("filtered response", "content_filter")
+	h.Provider().AddTextResponseWithFinish("still filtered", "content_filter")
+
+	agent := h.NewAgent()
+	result, err := agent.Run(context.Background(), "hi")
+
+	// Second content_filter returns ContentFilteredError
+	h.AssertError(err)
+	if !core.IsContentFiltered(err) {
+		t.Fatalf("expected ContentFilteredError, got: %v", err)
+	}
+	if result != "" {
+		t.Errorf("expected empty result on error, got %q", result)
+	}
+
+	// Verify Provider field on the error
+	cfErr := &core.ContentFilteredError{}
+	if !errors.As(err, &cfErr) {
+		t.Fatal("expected ContentFilteredError via errors.As")
+	}
+	if cfErr.Provider != "mock-model" {
+		t.Errorf("expected provider 'mock-model', got %q", cfErr.Provider)
+	}
+
+	// Provider called exactly twice: initial + retry
+	h.AssertProviderCalledN(2)
+
+	// State: user + 2 assistant messages (both filtered responses recorded)
+	h.AssertStateHasNMessages(agent, 3)
+
+	// Verify state message content
+	msgs := agent.State().Messages()
+	if msgs[0].Content != "hi" {
+		t.Errorf("expected message 1 to be 'hi', got %q", msgs[0].Content)
+	}
+	if msgs[1].Content != "filtered response" {
+		t.Errorf("expected message 2 to be 'filtered response', got %q", msgs[1].Content)
+	}
+	if msgs[2].Content != "still filtered" {
+		t.Errorf("expected message 3 to be 'still filtered', got %q", msgs[2].Content)
+	}
+
+	// Verify the transient rephrase message appears in the second request
+	if len(h.Provider().Calls) < 2 {
+		t.Fatal("expected at least 2 provider calls")
+	}
+	foundTransient := false
+	for _, msg := range h.Provider().Calls[1].Messages {
+		if msg.Role == "user" && strings.Contains(msg.Content, "Please rephrase") {
+			foundTransient = true
+			break
+		}
+	}
+	if !foundTransient {
+		t.Error("expected transient rephrase message in second provider request")
+	}
+
+	// Verify the transient message is NOT in state
+	for _, msg := range agent.State().Messages() {
+		if msg.Role == "user" && strings.Contains(msg.Content, "Please rephrase") {
+			t.Error("transient rephrase message should not be in state")
+		}
+	}
+
+	// Verify the first request did NOT contain the transient rephrase message
+	for _, msg := range h.Provider().Calls[0].Messages {
+		if strings.Contains(msg.Content, "Please rephrase") {
+			t.Error("transient rephrase message should not be in first provider request")
+		}
+	}
+
+	// Verify error events published: one for first (retrying), one for second (exhausted)
+	errorEvents := h.FindEvents(events.EventTypeError)
+	if len(errorEvents) != 2 {
+		t.Fatalf("expected 2 error events (first retry + second exhausted), got %d", len(errorEvents))
+	}
+	// First event: retrying
+	data1, ok := errorEvents[0].Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected error event data to be map, got %T", errorEvents[0].Data)
+	}
+	if data1["message"] != "response filtered by content policy (retrying)" {
+		t.Errorf("expected retrying message, got %v", data1["message"])
+	}
+	if data1["error"] != "content_filter" {
+		t.Errorf("expected error field 'content_filter', got %v", data1["error"])
+	}
+	// Second event: exhausted
+	data2, ok := errorEvents[1].Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected error event data to be map, got %T", errorEvents[1].Data)
+	}
+	if data2["message"] != "response filtered by content policy (retry exhausted)" {
+		t.Errorf("expected exhausted message, got %v", data2["message"])
+	}
+	if data2["error"] != "content_filter" {
+		t.Errorf("expected error field 'content_filter', got %v", data2["error"])
+	}
+
+	// Verify no query_completed event (error path does not complete normally)
+	completedEvents := h.FindEvents(events.EventTypeQueryCompleted)
+	if len(completedEvents) != 0 {
+		t.Errorf("expected no query_completed event for content_filter error, got %d", len(completedEvents))
+	}
+
+	// Verify metrics_update events (one per iteration)
+	metricsEvents := h.FindEvents(events.EventTypeMetricsUpdate)
+	if len(metricsEvents) != 2 {
+		t.Fatalf("expected 2 metrics_update events, got %d", len(metricsEvents))
+	}
+
+	// Verify accumulated tokens: 35 (first) + 35 (second) = 70
+	lastMetrics := metricsEvents[1].Data.(map[string]interface{})
+	totalTokens, ok := lastMetrics["total_tokens"].(int)
+	if !ok || totalTokens != 70 {
+		t.Errorf("expected total_tokens 70, got %v (type: %T)", totalTokens, totalTokens)
+	}
+}
+
+func TestE2E_FinishReasonContentFilter_RetrySucceeds(t *testing.T) {
+	// Provider returns content_filter once, then a valid response on retry.
+	// Should complete normally with the rephrased response.
+	h := NewHarnessWithT(t)
+	h.Provider().AddTextResponseWithFinish("filtered", "content_filter")
+	h.Provider().AddTextResponseWithFinish("This is the rephrased response that should complete successfully now.", "stop")
+
+	agent := h.NewAgent()
+	result, err := agent.Run(context.Background(), "hi")
+
+	h.AssertNoError(err)
+	h.AssertEquals(result, "This is the rephrased response that should complete successfully now.")
+
+	// Provider called twice: initial filtered + retry with valid response
+	h.AssertProviderCalledN(2)
+
+	// State: user + 2 assistant messages
+	h.AssertStateHasNMessages(agent, 3)
+
+	// Verify error event published for the first (retrying) occurrence
+	errorEvents := h.FindEvents(events.EventTypeError)
+	if len(errorEvents) != 1 {
+		t.Fatalf("expected 1 error event (first retry), got %d", len(errorEvents))
+	}
+	data, ok := errorEvents[0].Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected error event data to be map, got %T", errorEvents[0].Data)
+	}
+	if data["message"] != "response filtered by content policy (retrying)" {
+		t.Errorf("expected retrying message, got %v", data["message"])
+	}
+
+	// Verify query_completed event (successful completion after retry)
+	h.AssertEventPublished(events.EventTypeQueryCompleted)
+}
+
+func TestE2E_FinishReasonContentFilter_Stream_RetryOnceThenError(t *testing.T) {
+	// Same retry-then-error behavior in streaming mode.
+	h := NewHarnessWithT(t)
+	h.Provider().AddTextResponseWithFinish("filtered", "content_filter")
+	h.Provider().AddTextResponseWithFinish("still filtered", "content_filter")
+
+	agent := h.NewAgent()
+	result, err := agent.RunStream(context.Background(), "hi")
+
+	h.AssertError(err)
+	if !core.IsContentFiltered(err) {
+		t.Fatalf("expected ContentFilteredError, got: %v", err)
+	}
+	if result != "" {
+		t.Errorf("expected empty result on error, got %q", result)
+	}
+
+	// Provider called twice: initial + retry
+	h.AssertProviderCalledN(2)
+
+	// Verify error events published
+	errorEvents := h.FindEvents(events.EventTypeError)
+	if len(errorEvents) != 2 {
+		t.Fatalf("expected 2 error events, got %d", len(errorEvents))
+	}
+}
+
 // --- Blank/Repetitive Response Detection Tests ---
 
 func TestE2E_BlankResponse_SingleBlankThenRecovery(t *testing.T) {
