@@ -142,4 +142,4 @@
 [x] - NORMALIZE: Add e2e test — missing tool call ID → synthetic ID generated → tool result linked. `test/e2e_test.go`
 [] - NORMALIZE: Add e2e test — duplicate tool calls → only unique calls execute. `test/e2e_test.go`
 [x] - BLANK: Add e2e test — blank iteration → reminder → 2nd blank → error. `test/e2e_test.go`
-[] - BLANK: Add e2e test — repetitive content → reminder → 2nd → error. `test/e2e_test.go`
+[x] - BLANK: Add e2e test — repetitive content → reminder → 2nd → error. `test/e2e_test.go`

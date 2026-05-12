@@ -4430,6 +4430,80 @@ func TestE2E_BlankResponse_TwoConsecutiveRepetitive(t *testing.T) {
 	}
 }
 
+func TestE2E_RepetitiveContent_FullFlow(t *testing.T) {
+	// Model returns the same content twice. Full flow: repetitive → reminder → repetitive → error.
+	h := NewHarnessWithT(t)
+
+	repetitiveText := "This is a very long repetitive response that has many words to pass the similarity threshold for detection properly"
+
+	// First: tool call with the repetitive text (establishes prior assistant message)
+	h.Provider().AddToolCallResponse(
+		repetitiveText,
+		core.ToolCall{
+			ID: "call_1",
+			Function: core.ToolCallFunction{
+				Name:      "echo",
+				Arguments: `{"message":"test"}`,
+			},
+		},
+	)
+	h.Executor().AddToolResult("call_1", "tool result")
+
+	// Second: same text (repetitive vs prior assistant) — triggers 1st consecutive, reminder sent
+	h.Provider().AddTextResponseWithFinish(repetitiveText, "stop")
+	// Third: same text (repetitive) — triggers 2nd consecutive, returns error
+	h.Provider().AddTextResponseWithFinish(repetitiveText, "stop")
+
+	agent := h.NewAgent()
+	_, err := agent.Run(context.Background(), "hi")
+
+	// Verify error is BlankResponseError with Count=2
+	h.AssertError(err)
+	if !core.IsBlankResponse(err) {
+		t.Fatalf("expected BlankResponseError, got: %v", err)
+	}
+	bErr := err.(*core.BlankResponseError)
+	if bErr.Count != 2 {
+		t.Errorf("expected count 2, got %d", bErr.Count)
+	}
+	if bErr.Provider != "mock-model" {
+		t.Errorf("expected provider 'mock-model', got %q", bErr.Provider)
+	}
+
+	// Verify provider was called exactly 3 times: tool call + 1st repetitive + 2nd repetitive
+	h.AssertProviderCalledN(3)
+
+	// Verify the third provider call included the repetitive-content reminder
+	calls := h.Provider().Calls
+	if len(calls) < 3 {
+		t.Fatal("expected at least 3 provider calls")
+	}
+	thirdCall := calls[2]
+
+	reminderFound := false
+	for _, msg := range thirdCall.Messages {
+		if msg.Role == "user" && msg.Content == "Your previous response appears repetitive. Please provide new content." {
+			reminderFound = true
+			break
+		}
+	}
+	if !reminderFound {
+		t.Errorf("expected repetitive-content reminder in third provider call, got messages: %v", thirdCall.Messages)
+	}
+
+	// Verify the second provider call did NOT include the reminder
+	// (reminder is only sent after the 1st consecutive, before the 2nd call)
+	secondCall := calls[1]
+	for _, msg := range secondCall.Messages {
+		if msg.Role == "user" && strings.Contains(msg.Content, "repetitive") {
+			t.Error("reminder should not be in second provider call")
+		}
+	}
+
+	// Verify state messages: user + assistant(tool call) + tool result + assistant(1st rep) + assistant(2nd rep)
+	h.AssertStateHasNMessages(agent, 5)
+}
+
 func TestE2E_BlankResponse_BlankThenToolCalls(t *testing.T) {
 	// Model returns blank, then tool calls. Counter should reset on tool execution.
 	h := NewHarnessWithT(t)
