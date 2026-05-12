@@ -790,3 +790,190 @@ func TestFinishReasonStop_EmptyContent_NilToolCalls(t *testing.T) {
 		t.Errorf("expected 2 provider calls, got %d", provider.idx)
 	}
 }
+
+// --- "stop" with incomplete content tests ---
+
+func TestFinishReasonStop_IncompleteContent_TrailingEllipsis(t *testing.T) {
+	// "stop" with content ending in "..." should be treated as incomplete
+	// and continue the loop, asking for the final answer.
+	provider := newFRProvider(
+		frTextResponse("Here is the answer...", "stop"),
+		// Second response must be long enough (>10 words) so it's not flagged as too short.
+		frTextResponse("This is the complete answer that I was going to provide from the start.", "stop"),
+	)
+	agent, _ := NewAgent(Options{
+		Provider: provider,
+		Executor: &mockExecutor{},
+	})
+
+	result, err := agent.Run(context.Background(), "hi")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != "This is the complete answer that I was going to provide from the start." {
+		t.Errorf("expected complete answer, got %q", result)
+	}
+	if provider.idx != 2 {
+		t.Errorf("expected 2 provider calls, got %d", provider.idx)
+	}
+}
+
+func TestFinishReasonStop_IncompleteContent_AbruptEnding(t *testing.T) {
+	// "stop" with content ending in comma should be treated as incomplete.
+	provider := newFRProvider(
+		frTextResponse("The file contains,", "stop"),
+		frTextResponse("It has a very long content inside the file that we are looking at today.", "stop"),
+	)
+	agent, _ := NewAgent(Options{
+		Provider: provider,
+		Executor: &mockExecutor{},
+	})
+
+	result, err := agent.Run(context.Background(), "hi")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != "It has a very long content inside the file that we are looking at today." {
+		t.Errorf("expected complete answer, got %q", result)
+	}
+	if provider.idx != 2 {
+		t.Errorf("expected 2 provider calls, got %d", provider.idx)
+	}
+}
+
+func TestFinishReasonStop_IncompleteContent_UnclosedCodeBlock(t *testing.T) {
+	// "stop" with unclosed code block (odd number of ``` markers) should continue.
+	provider := newFRProvider(
+		frTextResponse("Here's the code:\n```go\nfunc main() {}", "stop"),
+		frTextResponse("Here is the complete code example that demonstrates the pattern we discussed.", "stop"),
+	)
+	agent, _ := NewAgent(Options{
+		Provider: provider,
+		Executor: &mockExecutor{},
+	})
+
+	result, err := agent.Run(context.Background(), "hi")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != "Here is the complete code example that demonstrates the pattern we discussed." {
+		t.Errorf("expected complete answer, got %q", result)
+	}
+	if provider.idx != 2 {
+		t.Errorf("expected 2 provider calls, got %d", provider.idx)
+	}
+}
+
+func TestFinishReasonStop_IncompleteContent_MaxContinuations(t *testing.T) {
+	// After maxContinuations incomplete "stop" responses, force-finalize.
+	provider := newFRProvider(
+		frTextResponse("First incomplete...", "stop"),
+		frTextResponse("Second incomplete...", "stop"),
+		frTextResponse("Third incomplete...", "stop"),
+		frTextResponse("Fourth incomplete...", "stop"),
+	)
+	agent, _ := NewAgent(Options{
+		Provider: provider,
+		Executor: &mockExecutor{},
+	})
+
+	result, err := agent.Run(context.Background(), "hi")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if provider.idx != 4 {
+		t.Errorf("expected 4 provider calls, got %d", provider.idx)
+	}
+	if result != "Fourth incomplete..." {
+		t.Errorf("expected %q, got %q", "Fourth incomplete...", result)
+	}
+}
+
+func TestFinishReasonStop_IncompleteContent_Stream_Continues(t *testing.T) {
+	// "stop" with incomplete content should also continue in streaming mode.
+	provider := newFRProvider(
+		frTextResponse("Here is the answer...", "stop"),
+		frTextResponse("This is the complete answer that I was going to provide from the start.", "stop"),
+	)
+	agent, _ := NewAgent(Options{
+		Provider: provider,
+		Executor: &mockExecutor{},
+	})
+
+	result, err := agent.RunStream(context.Background(), "hi")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != "This is the complete answer that I was going to provide from the start." {
+		t.Errorf("expected complete answer, got %q", result)
+	}
+	if provider.idx != 2 {
+		t.Errorf("expected 2 provider calls, got %d", provider.idx)
+	}
+}
+
+func TestFinishReasonStop_IncompleteContent_CompleteShortAnswer(t *testing.T) {
+	// "stop" with a short but complete answer (e.g., "Done.") should NOT
+	// trigger continuation — the validator recognizes it as complete.
+	provider := newFRProvider(frTextResponse("Done.", "stop"))
+	agent, _ := NewAgent(Options{
+		Provider: provider,
+		Executor: &mockExecutor{},
+	})
+
+	result, err := agent.Run(context.Background(), "hi")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != "Done." {
+		t.Errorf("expected %q, got %q", "Done.", result)
+	}
+	if provider.idx != 1 {
+		t.Errorf("expected 1 provider call, got %d", provider.idx)
+	}
+}
+
+func TestFinishReasonStop_IncompleteContent_WithToolCalls_DoesNotContinue(t *testing.T) {
+	// "stop" with incomplete content but tool calls present should NOT
+	// trigger the incomplete check — tool calls represent progress and
+	// the existing logic handles them.
+	provider := newFRProvider(
+		&ChatResponse{
+			Choices: []ChatChoice{{
+				Message: Message{
+					Role:    "assistant",
+					Content: "Let me check...",
+					ToolCalls: []ToolCall{{
+						ID:   "call_1",
+						Type: "function",
+						Function: ToolCallFunction{
+							Name:      "echo",
+							Arguments: `{"message":"hello"}`,
+						},
+					}},
+				},
+				FinishReason: "stop",
+			}},
+			Usage: ChatUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15},
+		},
+		frTextResponse("After tool.", "stop"),
+	)
+	executor := &mockExecutor{
+		results: []Message{{Role: "tool", Content: "echo result", ToolCallID: "call_1"}},
+	}
+	agent, _ := NewAgent(Options{
+		Provider: provider,
+		Executor: executor,
+	})
+
+	result, err := agent.Run(context.Background(), "hi")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != "After tool." {
+		t.Errorf("expected %q, got %q", "After tool.", result)
+	}
+	if provider.idx != 2 {
+		t.Errorf("expected 2 provider calls, got %d", provider.idx)
+	}
+}

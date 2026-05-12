@@ -146,6 +146,26 @@ func (m *MockProvider) AddTextResponse(content string) *MockProvider {
 	return m
 }
 
+// AddTextResponseWithFinish adds a simple text response with a custom finish reason.
+// Useful for testing finish-reason-specific behavior (e.g., "length", "stop", "content_filter").
+func (m *MockProvider) AddTextResponseWithFinish(content, finishReason string) *MockProvider {
+	m.AddResponse(&core.ChatResponse{
+		Choices: []core.ChatChoice{{
+			Message: core.Message{
+				Role:    "assistant",
+				Content: content,
+			},
+			FinishReason: finishReason,
+		}},
+		Usage: core.ChatUsage{
+			PromptTokens:     20,
+			CompletionTokens: 15,
+			TotalTokens:      35,
+		},
+	})
+	return m
+}
+
 // AddMalformedResponse adds a response where tool calls are embedded in the
 // content string rather than in the structured ToolCalls field. This simulates
 // a malformed LLM response that the fallback parser must recover from.

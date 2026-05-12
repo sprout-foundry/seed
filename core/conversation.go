@@ -187,6 +187,10 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 		case "length":
 			// Model hit the max token limit — response is truncated.
 			// Continue the conversation to let the model finish.
+			//
+			// Note: force-finalize (max continuations reached) does NOT set
+			// turnCompleted. This is intentional — an aborted turn should not
+			// record a checkpoint. See content_filter case for the contrast.
 			if ch.continuationCount < maxContinuations {
 				ch.continuationCount++
 				ch.agent.debugLog("[finish] length — truncated response (continuation %d/%d), looping again\n",
@@ -202,6 +206,10 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 
 		case "content_filter":
 			// Content was filtered by the provider's safety system.
+			// This path sets turnCompleted because the user received a
+			// (filtered) response and the turn did complete — the model
+			// signaled "stop", not truncation. Contrast with length and
+			// stop/incomplete force-finalize, which skip checkpoints.
 			ch.agent.debugLog("[finish] content_filter — response was filtered\n")
 			if ch.agent.eventPublisher != nil {
 				ch.agent.eventPublisher.Publish(EventTypeError, map[string]interface{}{
@@ -229,6 +237,24 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 					continue
 				}
 				ch.agent.debugLog("[finish] stop with empty content — max continuations (%d) reached, force-finalizing\n", maxContinuations)
+				return ch.finalize(query)
+			}
+			// If content is structurally incomplete (truncated), ask the model
+			// to provide its final answer. This catches cases where the model
+			// sends "stop" but the content has trailing "...", abrupt endings,
+			// or unclosed code blocks.
+			if a.validator != nil && a.validator.LooksTruncated(assistantMsg.Content) && len(assistantMsg.ToolCalls) == 0 {
+				if ch.continuationCount < maxContinuations {
+					ch.continuationCount++
+					ch.agent.debugLog("[finish] stop with incomplete content — asking for final answer (continuation %d/%d), looping again\n",
+						ch.continuationCount, maxContinuations)
+					ch.enqueueTransientMessage(Message{
+						Role:    "user",
+						Content: "Your previous response appears incomplete. Please provide your final answer.",
+					})
+					continue
+				}
+				ch.agent.debugLog("[finish] stop with incomplete content — max continuations (%d) reached, force-finalizing\n", maxContinuations)
 				return ch.finalize(query)
 			}
 			// Fall through to the existing tool-call / completion logic below.

@@ -16,11 +16,11 @@ type NormalizedToolCalls []ToolCall
 // ToolCallNormalizer cleans up structured tool calls returned by the model
 // before they are executed. It handles common model output irregularities:
 //
-//	1. Strips <|channel|> suffix from tool names
-//	2. Generates synthetic IDs for tool calls missing one
-//	3. Deduplicates by ID+arguments (first occurrence wins)
-//	4. Repairs malformed JSON arguments
-//	5. Normalizes Type field to "function"
+//  1. Strips <|channel|> suffix from tool names
+//  2. Generates synthetic IDs for tool calls missing one
+//  3. Deduplicates by ID+arguments (first occurrence wins)
+//  4. Repairs malformed JSON arguments
+//  5. Normalizes Type field to "function"
 type ToolCallNormalizer struct {
 	// seq is a monotonically increasing counter used to guarantee unique
 	// synthetic IDs even when multiple calls are normalized in the same
@@ -125,8 +125,8 @@ func (n *ToolCallNormalizer) repairJSON(args string) string {
 
 // tryRepair attempts common JSON repair strategies:
 //
-//	1. Remove trailing commas before } or ]
-//	2. Wrap bare key-value content in braces
+//  1. Remove trailing commas before } or ]
+//  2. Wrap bare key-value content in braces
 func (n *ToolCallNormalizer) tryRepair(args string) string {
 	// Strategy 1: Remove trailing commas before } or ].
 	fixed := strings.ReplaceAll(args, ",}", "}")
