@@ -139,11 +139,13 @@
 [x] - BLANK: Wire blank/repetitive detection — separate `consecutiveBlank` counter, 1st → reminder, 2nd consecutive → force-finalize with error. `core/conversation.go`
 [] - BLANK: Wire blank/repetitive detection — separate `consecutiveBlank` counter, 1st → reminder, 2nd consecutive → force-finalize with error. `core/conversation.go`
 [x] - ANSI: Add `sanitizeANSI(content)` — strip ANSI escape codes from content. `core/conversation.go`
+[x] - NORMALIZE: Add e2e test — `<|channel|>0` suffix stripped → tool name matches → executes. `test/e2e_test.go`
 [] - NORMALIZE: Add e2e test — `<|channel|>0` suffix stripped → tool name matches → executes. `test/e2e_test.go`
+[x] - FINISH: Add e2e test — `finish_reason: "stop"` with empty content → continuation → complete response. `test/e2e_test.go`
 [] - FINISH: Add e2e test — `finish_reason: "stop"` with empty content → continuation → complete response. `test/e2e_test.go`
 [x] - FINISH: Add e2e test — `finish_reason: "length"` → continuation. `test/e2e_test.go`
 [] - FINISH: Add e2e test — `finish_reason: "content_filter"` → retry once → second occurrence → error returned. `test/e2e_test.go`
-[] - NORMALIZE: Add e2e test — malformed structured tool call → transient message → model re-emits. `test/e2e_test.go`
+[x] - NORMALIZE: Add e2e test — malformed structured tool call → transient message → model re-emits. `test/e2e_test.go`
 [] - NORMALIZE: Add e2e test — missing tool call ID → synthetic ID generated → tool result linked. `test/e2e_test.go`
 [] - NORMALIZE: Add e2e test — duplicate tool calls → only unique calls execute. `test/e2e_test.go`
 [] - BLANK: Add e2e test — blank iteration → reminder → 2nd blank → error. `test/e2e_test.go`

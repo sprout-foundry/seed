@@ -4726,3 +4726,148 @@ func TestE2E_ChannelSuffixStripped(t *testing.T) {
 		t.Errorf("expected executor to receive normalized name 'read_file', got %q", execCalls[0].Function.Name)
 	}
 }
+
+func TestE2E_MalformedStructuredToolCall_Retry(t *testing.T) {
+	// Scenario: provider returns structured tool calls with malformed JSON
+	// arguments that the normalizer cannot repair. All calls are dropped,
+	// so a transient message is injected asking the model to re-emit.
+	// The second provider call returns properly formatted tool calls,
+	// which execute successfully and the conversation completes.
+	//
+	// Flow:
+	// 1. Provider returns tool call with unrepairable JSON args (e.g., "not json at all")
+	// 2. Normalizer drops the call — allMalformed is true
+	// 3. Transient message injected: "Your previous tool call was malformed..."
+	// 4. Provider returns properly formatted tool call
+	// 5. Tool executes, result recorded
+	// 6. Provider returns final answer
+	h := NewHarnessWithT(t)
+
+	// Register the tool so the executor recognizes it
+	h.Executor().AddTool(core.Tool{
+		Name:        "read_file",
+		Description: "Read a file",
+	})
+
+	// First response: tool call with unrepairable JSON arguments.
+	// The normalizer's repairJSON will try to fix it, but "not json at all"
+	// cannot be repaired, so the call is dropped. allMalformed becomes true.
+	h.Provider().AddToolCallResponse(
+		"Let me read the file.",
+		core.ToolCall{
+			ID: "call_bad",
+			Function: core.ToolCallFunction{
+				Name:      "read_file",
+				Arguments: "not json at all",
+			},
+		},
+	)
+
+	// Second response: properly formatted tool call after re-emit request
+	h.Provider().AddToolCallResponse(
+		"Reading the file.",
+		core.ToolCall{
+			ID: "call_good",
+			Function: core.ToolCallFunction{
+				Name:      "read_file",
+				Arguments: `{"path":"config.yaml"}`,
+			},
+		},
+	)
+
+	// Third response: final answer after tool execution
+	h.Provider().AddTextResponse("The configuration file contains database settings on port 5432.")
+
+	h.Executor().AddToolResult("call_good", "database:\n  host: localhost\n  port: 5432")
+
+	agent := h.NewAgent()
+	result, err := agent.Run(context.Background(), "Read config.yaml")
+	h.AssertNoError(err)
+	h.AssertEquals(result, "The configuration file contains database settings on port 5432.")
+
+	// Provider called 3 times: malformed tool call → re-emitted tool call → final answer
+	h.AssertProviderCalledN(3)
+
+	// Executor called only once (for the good tool call)
+	h.AssertExecutorCalledN(1)
+
+	// State: user + assistant(malformed tool call, recorded before normalization) +
+	//        assistant(re-emitted tool call) + tool result + assistant(final)
+	h.AssertStateHasNMessages(agent, 5)
+
+	// Verify the transient re-emit message was included in the second provider request
+	if len(h.Provider().Calls) < 2 {
+		t.Fatal("expected at least 2 provider calls")
+	}
+	foundTransient := false
+	for _, msg := range h.Provider().Calls[1].Messages {
+		if msg.Role == "user" && strings.Contains(msg.Content, "malformed") {
+			foundTransient = true
+			break
+		}
+	}
+	if !foundTransient {
+		t.Error("expected transient malformed-reemit message in second provider request")
+	}
+
+	// Verify the transient message is NOT in state (it's transient)
+	for _, msg := range agent.State().Messages() {
+		if msg.Role == "user" && strings.Contains(msg.Content, "malformed") {
+			t.Error("transient re-emit message should not be in state")
+		}
+	}
+
+	// Verify the first request did NOT contain the transient message
+	for _, msg := range h.Provider().Calls[0].Messages {
+		if strings.Contains(msg.Content, "malformed") {
+			t.Error("transient re-emit message should not be in first provider request")
+		}
+	}
+
+	// Verify the executor received the properly formatted tool call
+	execCalls := h.Executor().LastCalls()
+	if len(execCalls) != 1 {
+		t.Fatalf("expected 1 executor call, got %d", len(execCalls))
+	}
+	if execCalls[0].Function.Name != "read_file" {
+		t.Errorf("expected executor to receive 'read_file', got %q", execCalls[0].Function.Name)
+	}
+	if execCalls[0].ID != "call_good" {
+		t.Errorf("expected executor to receive call ID 'call_good', got %q", execCalls[0].ID)
+	}
+
+	// Verify accumulated token counts: 80 (malformed) + 80 (re-emitted) + 35 (final) = 195
+	h.AssertStateHasTokens(agent, 195)
+
+	// Verify query lifecycle events
+	h.AssertEventPublished(events.EventTypeQueryStarted)
+	h.AssertEventPublished(events.EventTypeQueryCompleted)
+
+	// Verify metrics_update events (one per provider call = 3)
+	metricsEvents := h.FindEvents(events.EventTypeMetricsUpdate)
+	if len(metricsEvents) != 3 {
+		t.Fatalf("expected 3 metrics_update events, got %d", len(metricsEvents))
+	}
+
+	// Verify state message contents
+	messages := agent.State().Messages()
+
+	// Message 3 (index 2) should have the re-emitted good tool call
+	if len(messages[2].ToolCalls) != 1 {
+		t.Fatalf("expected message 3 to have 1 tool call, got %d", len(messages[2].ToolCalls))
+	}
+	if messages[2].ToolCalls[0].ID != "call_good" {
+		t.Errorf("expected tool call ID 'call_good' in state message 3, got %q", messages[2].ToolCalls[0].ID)
+	}
+	if messages[2].ToolCalls[0].Function.Name != "read_file" {
+		t.Errorf("expected tool name 'read_file' in state message 3, got %q", messages[2].ToolCalls[0].Function.Name)
+	}
+
+	// Message 5 (index 4) should be the final answer
+	if messages[4].Role != "assistant" {
+		t.Errorf("expected message 5 to be assistant, got %q", messages[4].Role)
+	}
+	if messages[4].Content != "The configuration file contains database settings on port 5432." {
+		t.Errorf("expected final answer in state message 5, got %q", messages[4].Content)
+	}
+}
