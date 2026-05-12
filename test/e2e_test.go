@@ -1656,3 +1656,131 @@ func TestE2E_Retry_ContextCancellationDuringBackoff(t *testing.T) {
 	// Provider called once (first attempt failed, backoff cancelled before retry)
 	h.AssertProviderCalledN(1)
 }
+
+// --- Malformed Response (Fallback Parser) Tests ---
+
+func TestE2E_MalformedResponse_JSONFence(t *testing.T) {
+	// Simulates a model returning tool calls embedded in content as JSON
+	// rather than in the structured tool_calls field. The fallback parser
+	// should extract them, the tool executes, and the conversation completes.
+	h := NewHarnessWithT(t)
+
+	// Register a tool so the executor knows about it.
+	h.Executor().AddTool(core.Tool{Name: "read_file"})
+
+	// First response: malformed — tool call embedded in JSON fence inside content.
+	malformedContent := "I'll read the file for you.\n\n```json\n{\"tool_calls\":[{\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{\\\"path\\\":\\\"test.txt\\\"}\"}}]}\n```\n\nLet me know if you need anything else."
+	h.Provider().AddMalformedResponse(malformedContent)
+
+	// Second response: final answer after tool result.
+	h.Provider().AddTextResponse("The file contains 'hello world'.")
+
+	// Executor returns the tool result.
+	h.Executor().AddToolResult("call_1", "hello world")
+
+	agent := h.NewAgent()
+	result, err := agent.Run(context.Background(), "Read test.txt")
+
+	h.AssertNoError(err)
+	h.AssertEquals(result, "The file contains 'hello world'.")
+
+	// Provider called twice: malformed response (fallback extracted tool call) + final answer.
+	h.AssertProviderCalledN(2)
+
+	// Executor called once: the fallback parser extracted the tool call.
+	h.AssertExecutorCalledN(1)
+
+	// State: user + assistant(malformed) + tool result + assistant(final)
+	h.AssertStateHasNMessages(agent, 4)
+
+	// Verify the assistant message has the cleaned content (tool call stripped).
+	msgs := agent.State().Messages()
+	if msgs[1].Role != "assistant" {
+		t.Errorf("expected message 2 to be assistant, got %q", msgs[1].Role)
+	}
+	// The cleaned content should not contain the JSON fence.
+	if strings.Contains(msgs[1].Content, "```json") {
+		t.Error("expected cleaned content to not contain JSON fence")
+	}
+}
+
+func TestE2E_MalformedResponse_XMLBlock(t *testing.T) {
+	// Simulates a model returning tool calls in XML format embedded in content.
+	h := NewHarnessWithT(t)
+
+	h.Executor().AddTool(core.Tool{Name: "search"})
+
+	// Malformed response with <tool> XML block containing tool_calls JSON.
+	malformedContent := "Let me search for that.\n<tool>{\"tool_calls\":[{\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"search\",\"arguments\":\"{\\\"query\\\":\\\"go testing\\\"}\"}}]}</tool>\nThat should help."
+	h.Provider().AddMalformedResponse(malformedContent)
+
+	h.Provider().AddTextResponse("Found 3 results for 'go testing'.")
+
+	h.Executor().AddToolResult("call_1", "3 results found")
+
+	agent := h.NewAgent()
+	result, err := agent.Run(context.Background(), "Search go testing")
+
+	h.AssertNoError(err)
+	h.AssertEquals(result, "Found 3 results for 'go testing'.")
+
+	h.AssertProviderCalledN(2)
+	h.AssertExecutorCalledN(1)
+	h.AssertStateHasNMessages(agent, 4)
+}
+
+func TestE2E_MalformedResponse_NoPatternTriggers(t *testing.T) {
+	// Content has no tool-call patterns — fallback parser should not trigger.
+	// The response should be treated as a normal text response.
+	h := NewHarnessWithT(t)
+
+	h.Provider().AddMalformedResponse("Just a normal text response with no tool calls.")
+
+	agent := h.NewAgent()
+	result, err := agent.Run(context.Background(), "test")
+
+	h.AssertNoError(err)
+	h.AssertEquals(result, "Just a normal text response with no tool calls.")
+
+	h.AssertProviderCalledN(1)
+	h.AssertExecutorCalledN(0)
+	h.AssertStateHasNMessages(agent, 2) // user + assistant
+}
+
+func TestE2E_MalformedResponse_MultipleIterations(t *testing.T) {
+	// Tests a conversation where multiple malformed responses are processed
+	// across iterations, each with tool calls extracted by the fallback parser.
+	h := NewHarnessWithT(t)
+
+	h.Executor().AddTool(core.Tool{Name: "read_file"})
+	h.Executor().AddTool(core.Tool{Name: "shell"})
+
+	// First malformed: read_file tool call
+	h.Provider().AddMalformedResponse(
+		"```json\n{\"tool_calls\":[{\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{\\\"path\\\":\\\"data.txt\\\"}\"}}]}\n```",
+	)
+	// Second malformed: shell tool call
+	h.Provider().AddMalformedResponse(
+		"```json\n{\"tool_calls\":[{\"id\":\"call_2\",\"type\":\"function\",\"function\":{\"name\":\"shell\",\"arguments\":\"{\\\"cmd\\\":\\\"wc -l data.txt\\\"}\"}}]}\n```",
+	)
+	// Final text response
+	h.Provider().AddTextResponse("The file has 42 lines.")
+
+	h.Executor().AddToolResult("call_1", "some data content")
+	h.Executor().AddToolResult("call_2", "42 data.txt")
+
+	agent := h.NewAgent()
+	result, err := agent.Run(context.Background(), "Count lines in data.txt")
+
+	h.AssertNoError(err)
+	h.AssertEquals(result, "The file has 42 lines.")
+
+	// Provider called 3 times: 2 malformed + 1 final
+	h.AssertProviderCalledN(3)
+
+	// Executor called 2 times: once per malformed iteration
+	h.AssertExecutorCalledN(2)
+
+	// State: user + assistant(malformed1) + tool result1 + assistant(malformed2) + tool result2 + assistant(final)
+	h.AssertStateHasNMessages(agent, 6)
+}

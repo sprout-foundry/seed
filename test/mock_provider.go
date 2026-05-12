@@ -146,6 +146,29 @@ func (m *MockProvider) AddTextResponse(content string) *MockProvider {
 	return m
 }
 
+// AddMalformedResponse adds a response where tool calls are embedded in the
+// content string rather than in the structured ToolCalls field. This simulates
+// a malformed LLM response that the fallback parser must recover from.
+// The content should contain tool-call-like patterns (e.g., JSON with
+// "tool_calls", XML <function=...>, etc.) so the fallback parser detects them.
+func (m *MockProvider) AddMalformedResponse(content string) *MockProvider {
+	m.AddResponse(&core.ChatResponse{
+		Choices: []core.ChatChoice{{
+			Message: core.Message{
+				Role:    "assistant",
+				Content: content,
+				// ToolCalls intentionally nil — the fallback parser must extract them.
+			},
+		}},
+		Usage: core.ChatUsage{
+			PromptTokens:     50,
+			CompletionTokens: 30,
+			TotalTokens:      80,
+		},
+	})
+	return m
+}
+
 // Chat implements core.Provider.
 func (m *MockProvider) Chat(ctx context.Context, req *core.ChatRequest) (*core.ChatResponse, error) {
 	m.mu.Lock()
