@@ -610,3 +610,65 @@ func TestProcessQuery_AgentMessageNotPublishedForEmptyContent(t *testing.T) {
 	default:
 	}
 }
+
+// --- isBlankIteration tests ---
+
+func TestConversationHandler_isBlankIteration(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		want    bool
+	}{
+		{
+			name:    "empty string",
+			content: "",
+			want:    true,
+		},
+		{
+			name:    "spaces only",
+			content: "   ",
+			want:    true,
+		},
+		{
+			name:    "newlines and tabs",
+			content: "\n\t  \n",
+			want:    true,
+		},
+		{
+			name:    "non-empty content",
+			content: "hello",
+			want:    false,
+		},
+		{
+			name:    "content with leading and trailing whitespace",
+			content: "  hello  ",
+			want:    false,
+		},
+		{
+			name:    "unicode whitespace only",
+			content: "\u00A0\u3000\u2003",
+			want:    true,
+		},
+	}
+
+	agent, err := NewAgent(Options{
+		Provider: &mockProvider{
+			info:       ProviderInfo{ContextSize: 10000},
+			tokenCount: 100,
+		},
+		Executor: &mockExecutor{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ch := newConversationHandler(agent)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ch.isBlankIteration(tt.content)
+			if got != tt.want {
+				t.Errorf("isBlankIteration(%q) = %v, want %v", tt.content, got, tt.want)
+			}
+		})
+	}
+}

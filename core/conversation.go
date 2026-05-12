@@ -258,7 +258,7 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 			// "stop" — model completed normally.
 			// If content is empty/blank and no tool calls, treat as incomplete
 			// and ask the model to continue.
-			if isBlankContent(assistantMsg.Content) && len(assistantMsg.ToolCalls) == 0 {
+			if ch.isBlankIteration(assistantMsg.Content) && len(assistantMsg.ToolCalls) == 0 {
 				if ch.continuationCount < maxContinuations {
 					ch.continuationCount++
 					ch.agent.debugLog("[finish] stop with empty content — treating as incomplete (continuation %d/%d), looping again\n",
@@ -678,6 +678,13 @@ func (ch *ConversationHandler) enqueueTransientMessage(msg Message) {
 // isBlankContent checks if the content is empty or contains only whitespace.
 func isBlankContent(content string) bool {
 	return len(strings.TrimSpace(content)) == 0
+}
+
+// isBlankIteration checks if the model's response content is empty or
+// whitespace-only, indicating a blank iteration that should trigger
+// continuation rather than finalization.
+func (ch *ConversationHandler) isBlankIteration(content string) bool {
+	return isBlankContent(content)
 }
 
 // followsRecentToolResults scans the message history backwards from the most

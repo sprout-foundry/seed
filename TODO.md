@@ -131,8 +131,9 @@
 [x] - FINISH: Handle `"stop"` with incomplete content — send transient message asking for final answer. `core/conversation.go`
 [x] - FINISH: Handle `"stop"` with tentative content after tool results — implement `followsRecentToolResults()` scan, reject with specific message, accept after 2 rejections (match sprout). `core/conversation.go`
 [x] - FINISH: Handle `"length"` — always continue (model hit token limit). `core/conversation.go`
+[x] - FINISH: Handle `"content_filter"` — retry once, then return error to consumer on second occurrence. `core/conversation.go`
 [] - FINISH: Handle `"content_filter"` — retry once, then return error to consumer on second occurrence. `core/conversation.go`
-[] - BLANK: Implement `isBlankIteration(content)` — check if content is empty/whitespace. `core/conversation.go`
+[x] - BLANK: Implement `isBlankIteration(content)` — check if content is empty/whitespace. `core/conversation.go`
 [] - BLANK: Implement `isRepetitiveContent(content)` — compare against previous assistant message. `core/conversation.go`
 [] - BLANK: Wire blank/repetitive detection — separate `consecutiveBlank` counter, 1st → reminder, 2nd consecutive → force-finalize with error. `core/conversation.go`
 [] - ANSI: Add `sanitizeANSI(content)` — strip ANSI escape codes from content. `core/conversation.go`
