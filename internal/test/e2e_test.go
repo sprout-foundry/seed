@@ -3364,3 +3364,105 @@ func TestE2E_CheckpointRecording_MultipleTurns(t *testing.T) {
 		t.Errorf("expected cp1 Summary to contain 'Second question', got: %s", sorted[1].Summary)
 	}
 }
+
+func TestE2E_CheckpointCompaction_MultipleTurns(t *testing.T) {
+	// Multiple completed turns produce checkpoints. On a subsequent turn,
+	// prepareMessages() should replace consumed checkpoint ranges with summary
+	// messages, reducing the message count sent to the provider.
+	h := NewHarnessWithT(t)
+	h.Provider().AddTextResponse("First answer to your question.")
+	h.Provider().AddTextResponse("Second answer to your question.")
+	h.Provider().AddTextResponse("Third answer to your question.")
+
+	agent := h.NewAgent()
+
+	// Turn 1
+	_, err := agent.Run(context.Background(), "First question about the project")
+	h.AssertNoError(err)
+
+	// Turn 2
+	_, err = agent.Run(context.Background(), "Second question about the code")
+	h.AssertNoError(err)
+
+	// Turn 3
+	_, err = agent.Run(context.Background(), "Third question about testing")
+	h.AssertNoError(err)
+
+	// Wait for async checkpoint recording (3 turns = 3 checkpoints)
+	checkpoints := waitForCheckpoints(t, agent, 3)
+	if len(checkpoints) < 3 {
+		t.Fatalf("expected at least 3 checkpoints, got %d", len(checkpoints))
+	}
+
+	// State should have 6 messages from the 3 turns (user + assistant each)
+	rawMsgCount := agent.State().Len()
+	if rawMsgCount != 6 {
+		t.Fatalf("expected 6 raw state messages after 3 turns, got %d", rawMsgCount)
+	}
+
+	// Turn 4: this should trigger checkpoint compaction in prepareMessages().
+	// The provider should receive fewer messages than the raw state count.
+	h.Provider().AddTextResponse("Fourth answer to your question.")
+
+	_, err = agent.Run(context.Background(), "Fourth question")
+	h.AssertNoError(err)
+
+	// Provider called 4 times total (one per turn)
+	h.AssertProviderCalledN(4)
+
+	// State should have 8 messages now (6 original + user + assistant from turn 4)
+	finalRawMsgCount := agent.State().Len()
+	if finalRawMsgCount != 8 {
+		t.Fatalf("expected 8 raw state messages after 4 turns, got %d", finalRawMsgCount)
+	}
+
+	// Verify the last provider request had fewer messages than without compaction.
+	// At API call time, state has 7 messages (6 from turns 1-3 + 1 query for turn 4).
+	// The turn 4 assistant response hasn't been added yet.
+	// Without compaction: 7 raw + 1 system = 8 messages in request.
+	// With compaction: 3 checkpoints (indices 0-1, 2-3, 4-5) are all consumable,
+	//   each replaced by 1 summary message. Only the turn 4 query (idx 6) survives.
+	//   1 system + 3 summaries + 1 query = 5 messages.
+	lastReq := h.Provider().LastRequest()
+	if lastReq == nil {
+		t.Fatal("expected provider to have been called")
+	}
+
+	// Calculate no-compaction baseline at API call time (state had finalRawMsgCount - 1 messages).
+	rawAtAPICall := finalRawMsgCount - 1  // = 7
+	noCompactionCount := rawAtAPICall + 1 // = 8 (raw + system)
+	if len(lastReq.Messages) >= noCompactionCount {
+		t.Errorf("expected checkpoint compaction to reduce messages below %d, got %d",
+			noCompactionCount, len(lastReq.Messages))
+	}
+
+	// Verify the exact expected message count after compaction:
+	// 1 system + 3 summary messages + 1 query = 5
+	if len(lastReq.Messages) != 5 {
+		t.Errorf("expected 5 messages after compaction, got %d", len(lastReq.Messages))
+	}
+
+	// Verify all 3 checkpoint summaries appear in the request.
+	foundSummaries := 0
+	for _, msg := range lastReq.Messages {
+		if strings.Contains(msg.Content, "User asked: ") {
+			foundSummaries++
+		}
+	}
+	if foundSummaries != 3 {
+		t.Errorf("expected 3 checkpoint summaries in request, got %d", foundSummaries)
+	}
+
+	// Verify the compacted messages still contain the most recent turn's messages
+	// (turn 4 query should be present as-is, not compacted yet)
+	foundRecentQuery := false
+	for _, msg := range lastReq.Messages {
+		if msg.Role == "user" && msg.Content == "Fourth question" {
+			foundRecentQuery = true
+			break
+		}
+	}
+	if !foundRecentQuery {
+		t.Error("expected recent user query 'Fourth question' in provider request")
+	}
+}
