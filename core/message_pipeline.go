@@ -38,6 +38,11 @@ func (ch *ConversationHandler) prepareMessages() []Message {
 	// Sanitize: remove orphaned tool results
 	allMessages = ch.removeOrphanedToolResults(allMessages)
 
+	// Optimize: deduplicate redundant file reads and shell commands
+	if ch.agent.optimizer != nil {
+		allMessages = ch.agent.optimizer.OptimizeConversation(allMessages)
+	}
+
 	return allMessages
 }
 

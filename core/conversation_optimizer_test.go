@@ -1,0 +1,641 @@
+package core
+
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+)
+
+// --- ConversationOptimizer Unit Tests ---
+
+func TestConversationOptimizer_Disabled(t *testing.T) {
+	opt := NewConversationOptimizer(ConversationOptimizerOptions{
+		Enabled:     false,
+		KnownToolFn: func(name string) ToolCategory { return ToolCategoryFileRead },
+	})
+
+	messages := []Message{
+		{Role: "user", Content: "read this"},
+		{Role: "assistant", Content: "reading", ToolCalls: []ToolCall{
+			{ID: "c1", Function: ToolCallFunction{Name: "read_file", Arguments: `{"path":"a.txt"}`}},
+		}},
+		{Role: "tool", Content: "same content", ToolCallID: "c1"},
+	}
+
+	result := opt.OptimizeConversation(messages)
+	// Should be unchanged
+	if result[2].Content != "same content" {
+		t.Errorf("disabled optimizer should not modify content, got %q", result[2].Content)
+	}
+}
+
+func TestConversationOptimizer_NilKnownToolFn(t *testing.T) {
+	opt := NewConversationOptimizer(ConversationOptimizerOptions{
+		Enabled: true,
+		// KnownToolFn is nil
+	})
+
+	messages := []Message{
+		{Role: "user", Content: "read this"},
+		{Role: "assistant", Content: "reading", ToolCalls: []ToolCall{
+			{ID: "c1", Function: ToolCallFunction{Name: "read_file", Arguments: `{"path":"a.txt"}`}},
+		}},
+		{Role: "tool", Content: "same content", ToolCallID: "c1"},
+	}
+
+	result := opt.OptimizeConversation(messages)
+	// Should be unchanged (nil callback = skip all)
+	if result[2].Content != "same content" {
+		t.Errorf("nil KnownToolFn should not modify content, got %q", result[2].Content)
+	}
+}
+
+func TestConversationOptimizer_FileReadDedup_SameContent(t *testing.T) {
+	opt := NewConversationOptimizer(ConversationOptimizerOptions{
+		Enabled: true,
+		KnownToolFn: func(name string) ToolCategory {
+			if name == "read_file" {
+				return ToolCategoryFileRead
+			}
+			return ToolCategoryUnknown
+		},
+	})
+
+	// Two reads of the same file with identical content.
+	messages := []Message{
+		{Role: "user", Content: "read a.txt twice"},
+		{Role: "assistant", Content: "reading first time", ToolCalls: []ToolCall{
+			{ID: "c1", Function: ToolCallFunction{Name: "read_file", Arguments: `{"path":"a.txt"}`}},
+		}},
+		{Role: "tool", Content: "file contents here", ToolCallID: "c1"},
+		{Role: "assistant", Content: "reading again", ToolCalls: []ToolCall{
+			{ID: "c2", Function: ToolCallFunction{Name: "read_file", Arguments: `{"path":"a.txt"}`}},
+		}},
+		{Role: "tool", Content: "file contents here", ToolCallID: "c2"},
+		{Role: "assistant", Content: "done"},
+	}
+
+	result := opt.OptimizeConversation(messages)
+
+	// First read should be replaced with placeholder
+	if !strings.Contains(result[2].Content, "[Earlier file read:") {
+		t.Errorf("first read should be replaced with placeholder, got %q", result[2].Content)
+	}
+	if !strings.Contains(result[2].Content, "a.txt") {
+		t.Errorf("placeholder should contain filepath, got %q", result[2].Content)
+	}
+
+	// Second (latest) read should be kept
+	if result[4].Content != "file contents here" {
+		t.Errorf("latest read should be kept, got %q", result[4].Content)
+	}
+}
+
+func TestConversationOptimizer_FileReadDedup_DifferentContent(t *testing.T) {
+	opt := NewConversationOptimizer(ConversationOptimizerOptions{
+		Enabled: true,
+		KnownToolFn: func(name string) ToolCategory {
+			if name == "read_file" {
+				return ToolCategoryFileRead
+			}
+			return ToolCategoryUnknown
+		},
+	})
+
+	// Two reads of the same file with different content (e.g., file was modified).
+	messages := []Message{
+		{Role: "user", Content: "read a.txt"},
+		{Role: "assistant", Content: "reading v1", ToolCalls: []ToolCall{
+			{ID: "c1", Function: ToolCallFunction{Name: "read_file", Arguments: `{"path":"a.txt"}`}},
+		}},
+		{Role: "tool", Content: "original content", ToolCallID: "c1"},
+		{Role: "assistant", Content: "reading v2", ToolCalls: []ToolCall{
+			{ID: "c2", Function: ToolCallFunction{Name: "read_file", Arguments: `{"path":"a.txt"}`}},
+		}},
+		{Role: "tool", Content: "modified content", ToolCallID: "c2"},
+	}
+
+	result := opt.OptimizeConversation(messages)
+
+	// Different content → no dedup; both reads should be preserved
+	if result[2].Content != "original content" {
+		t.Errorf("first read should be kept (different content), got %q", result[2].Content)
+	}
+	if result[4].Content != "modified content" {
+		t.Errorf("second read should be kept, got %q", result[4].Content)
+	}
+}
+
+func TestConversationOptimizer_FileReadDedup_DifferentFiles(t *testing.T) {
+	opt := NewConversationOptimizer(ConversationOptimizerOptions{
+		Enabled: true,
+		KnownToolFn: func(name string) ToolCategory {
+			if name == "read_file" {
+				return ToolCategoryFileRead
+			}
+			return ToolCategoryUnknown
+		},
+	})
+
+	// Reads of different files with same content.
+	messages := []Message{
+		{Role: "user", Content: "read files"},
+		{Role: "assistant", Content: "reading a", ToolCalls: []ToolCall{
+			{ID: "c1", Function: ToolCallFunction{Name: "read_file", Arguments: `{"path":"a.txt"}`}},
+		}},
+		{Role: "tool", Content: "same content", ToolCallID: "c1"},
+		{Role: "assistant", Content: "reading b", ToolCalls: []ToolCall{
+			{ID: "c2", Function: ToolCallFunction{Name: "read_file", Arguments: `{"path":"b.txt"}`}},
+		}},
+		{Role: "tool", Content: "same content", ToolCallID: "c2"},
+	}
+
+	result := opt.OptimizeConversation(messages)
+
+	// Different files → no dedup (even if content is same)
+	if result[2].Content != "same content" {
+		t.Errorf("read of a.txt should be kept, got %q", result[2].Content)
+	}
+	if result[4].Content != "same content" {
+		t.Errorf("read of b.txt should be kept, got %q", result[4].Content)
+	}
+}
+
+func TestConversationOptimizer_FileReadDedup_ThreeReads(t *testing.T) {
+	opt := NewConversationOptimizer(ConversationOptimizerOptions{
+		Enabled: true,
+		KnownToolFn: func(name string) ToolCategory {
+			if name == "read_file" {
+				return ToolCategoryFileRead
+			}
+			return ToolCategoryUnknown
+		},
+	})
+
+	// Three reads: first and third have same content, second is different.
+	messages := []Message{
+		{Role: "user", Content: "read"},
+		{Role: "assistant", Content: "read1", ToolCalls: []ToolCall{
+			{ID: "c1", Function: ToolCallFunction{Name: "read_file", Arguments: `{"path":"f.txt"}`}},
+		}},
+		{Role: "tool", Content: "content A", ToolCallID: "c1"},
+		{Role: "assistant", Content: "read2", ToolCalls: []ToolCall{
+			{ID: "c2", Function: ToolCallFunction{Name: "read_file", Arguments: `{"path":"f.txt"}`}},
+		}},
+		{Role: "tool", Content: "content B", ToolCallID: "c2"},
+		{Role: "assistant", Content: "read3", ToolCalls: []ToolCall{
+			{ID: "c3", Function: ToolCallFunction{Name: "read_file", Arguments: `{"path":"f.txt"}`}},
+		}},
+		{Role: "tool", Content: "content A", ToolCallID: "c3"},
+	}
+
+	result := opt.OptimizeConversation(messages)
+
+	// First read (content A) → replaced (later read has same content)
+	if !strings.Contains(result[2].Content, "[Earlier file read:") {
+		t.Errorf("first read should be replaced, got %q", result[2].Content)
+	}
+	// Second read (content B) → kept (unique content)
+	if result[4].Content != "content B" {
+		t.Errorf("second read should be kept, got %q", result[4].Content)
+	}
+	// Third read (content A) → kept (latest)
+	if result[6].Content != "content A" {
+		t.Errorf("third read should be kept, got %q", result[6].Content)
+	}
+}
+
+func TestConversationOptimizer_ShellCommandDedup(t *testing.T) {
+	opt := NewConversationOptimizer(ConversationOptimizerOptions{
+		Enabled: true,
+		KnownToolFn: func(name string) ToolCategory {
+			if name == "shell" {
+				return ToolCategoryShellCommand
+			}
+			return ToolCategoryUnknown
+		},
+	})
+
+	// Two identical transient commands with identical output.
+	messages := []Message{
+		{Role: "user", Content: "list dir"},
+		{Role: "assistant", Content: "running ls", ToolCalls: []ToolCall{
+			{ID: "c1", Function: ToolCallFunction{Name: "shell", Arguments: `{"cmd":"ls -la"}`}},
+		}},
+		{Role: "tool", Content: "file1\nfile2\n", ToolCallID: "c1"},
+		{Role: "assistant", Content: "running ls again", ToolCalls: []ToolCall{
+			{ID: "c2", Function: ToolCallFunction{Name: "shell", Arguments: `{"cmd":"ls -la"}`}},
+		}},
+		{Role: "tool", Content: "file1\nfile2\n", ToolCallID: "c2"},
+	}
+
+	result := opt.OptimizeConversation(messages)
+
+	// First ls output → replaced (same command, same content)
+	if !strings.Contains(result[2].Content, "[Earlier command output:") {
+		t.Errorf("first command should be replaced, got %q", result[2].Content)
+	}
+	if !strings.Contains(result[2].Content, "ls -la") {
+		t.Errorf("placeholder should contain command, got %q", result[2].Content)
+	}
+
+	// Second ls output → kept (latest)
+	if result[4].Content != "file1\nfile2\n" {
+		t.Errorf("latest command output should be kept, got %q", result[4].Content)
+	}
+}
+
+func TestConversationOptimizer_ShellCommandDedup_DifferentOutput(t *testing.T) {
+	opt := NewConversationOptimizer(ConversationOptimizerOptions{
+		Enabled: true,
+		KnownToolFn: func(name string) ToolCategory {
+			if name == "shell" {
+				return ToolCategoryShellCommand
+			}
+			return ToolCategoryUnknown
+		},
+	})
+
+	// Same transient command but different output — should NOT dedup.
+	messages := []Message{
+		{Role: "user", Content: "list dir"},
+		{Role: "assistant", Content: "running ls", ToolCalls: []ToolCall{
+			{ID: "c1", Function: ToolCallFunction{Name: "shell", Arguments: `{"cmd":"ls"}`}},
+		}},
+		{Role: "tool", Content: "file1\n", ToolCallID: "c1"},
+		{Role: "assistant", Content: "running ls again", ToolCalls: []ToolCall{
+			{ID: "c2", Function: ToolCallFunction{Name: "shell", Arguments: `{"cmd":"ls"}`}},
+		}},
+		{Role: "tool", Content: "file1\nfile2\n", ToolCallID: "c2"},
+	}
+
+	result := opt.OptimizeConversation(messages)
+
+	// Different output → no dedup; both should be preserved
+	if result[2].Content != "file1\n" {
+		t.Errorf("first ls should be kept (different output), got %q", result[2].Content)
+	}
+	if result[4].Content != "file1\nfile2\n" {
+		t.Errorf("second ls should be kept, got %q", result[4].Content)
+	}
+}
+
+func TestConversationOptimizer_ShellCommand_NonTransient(t *testing.T) {
+	opt := NewConversationOptimizer(ConversationOptimizerOptions{
+		Enabled: true,
+		KnownToolFn: func(name string) ToolCategory {
+			if name == "shell" {
+				return ToolCategoryShellCommand
+			}
+			return ToolCategoryUnknown
+		},
+	})
+
+	// Non-transient commands (e.g., git commit) should NOT be deduplicated.
+	messages := []Message{
+		{Role: "user", Content: "commit"},
+		{Role: "assistant", Content: "committing", ToolCalls: []ToolCall{
+			{ID: "c1", Function: ToolCallFunction{Name: "shell", Arguments: `{"cmd":"git commit -m 'fix'"}`}},
+		}},
+		{Role: "tool", Content: "committed", ToolCallID: "c1"},
+		{Role: "assistant", Content: "committing again", ToolCalls: []ToolCall{
+			{ID: "c2", Function: ToolCallFunction{Name: "shell", Arguments: `{"cmd":"git commit -m 'fix'"}`}},
+		}},
+		{Role: "tool", Content: "committed again", ToolCallID: "c2"},
+	}
+
+	result := opt.OptimizeConversation(messages)
+
+	// Both outputs should be preserved
+	if result[2].Content != "committed" {
+		t.Errorf("first git commit should be kept, got %q", result[2].Content)
+	}
+	if result[4].Content != "committed again" {
+		t.Errorf("second git commit should be kept, got %q", result[4].Content)
+	}
+}
+
+func TestConversationOptimizer_ShellCommand_DifferentCommands(t *testing.T) {
+	opt := NewConversationOptimizer(ConversationOptimizerOptions{
+		Enabled: true,
+		KnownToolFn: func(name string) ToolCategory {
+			if name == "shell" {
+				return ToolCategoryShellCommand
+			}
+			return ToolCategoryUnknown
+		},
+	})
+
+	// Different transient commands should not be deduplicated.
+	messages := []Message{
+		{Role: "user", Content: "run commands"},
+		{Role: "assistant", Content: "ls", ToolCalls: []ToolCall{
+			{ID: "c1", Function: ToolCallFunction{Name: "shell", Arguments: `{"cmd":"ls"}`}},
+		}},
+		{Role: "tool", Content: "file1", ToolCallID: "c1"},
+		{Role: "assistant", Content: "pwd", ToolCalls: []ToolCall{
+			{ID: "c2", Function: ToolCallFunction{Name: "shell", Arguments: `{"cmd":"pwd"}`}},
+		}},
+		{Role: "tool", Content: "/home", ToolCallID: "c2"},
+	}
+
+	result := opt.OptimizeConversation(messages)
+
+	// Both should be preserved (different commands)
+	if result[2].Content != "file1" {
+		t.Errorf("ls output should be kept, got %q", result[2].Content)
+	}
+	if result[4].Content != "/home" {
+		t.Errorf("pwd output should be kept, got %q", result[4].Content)
+	}
+}
+
+func TestConversationOptimizer_UnknownToolSkipped(t *testing.T) {
+	opt := NewConversationOptimizer(ConversationOptimizerOptions{
+		Enabled: true,
+		KnownToolFn: func(name string) ToolCategory {
+			// Unknown tool → skip
+			return ToolCategoryUnknown
+		},
+	})
+
+	messages := []Message{
+		{Role: "user", Content: "do something"},
+		{Role: "assistant", Content: "doing", ToolCalls: []ToolCall{
+			{ID: "c1", Function: ToolCallFunction{Name: "unknown_tool", Arguments: `{}`}},
+		}},
+		{Role: "tool", Content: "result", ToolCallID: "c1"},
+	}
+
+	result := opt.OptimizeConversation(messages)
+	if result[2].Content != "result" {
+		t.Errorf("unknown tool should not be modified, got %q", result[2].Content)
+	}
+}
+
+func TestConversationOptimizer_MixedTools(t *testing.T) {
+	opt := NewConversationOptimizer(ConversationOptimizerOptions{
+		Enabled: true,
+		KnownToolFn: func(name string) ToolCategory {
+			switch name {
+			case "read_file":
+				return ToolCategoryFileRead
+			case "shell":
+				return ToolCategoryShellCommand
+			default:
+				return ToolCategoryUnknown
+			}
+		},
+	})
+
+	// Mixed: file read (dedup), shell (dedup), unknown (skip).
+	messages := []Message{
+		{Role: "user", Content: "do stuff"},
+		{Role: "assistant", Content: "read", ToolCalls: []ToolCall{
+			{ID: "c1", Function: ToolCallFunction{Name: "read_file", Arguments: `{"path":"a.txt"}`}},
+		}},
+		{Role: "tool", Content: "content", ToolCallID: "c1"},
+		{Role: "assistant", Content: "ls", ToolCalls: []ToolCall{
+			{ID: "c2", Function: ToolCallFunction{Name: "shell", Arguments: `{"cmd":"ls"}`}},
+		}},
+		{Role: "tool", Content: "file1", ToolCallID: "c2"},
+		{Role: "assistant", Content: "unknown", ToolCalls: []ToolCall{
+			{ID: "c3", Function: ToolCallFunction{Name: "write_file", Arguments: `{}`}},
+		}},
+		{Role: "tool", Content: "wrote", ToolCallID: "c3"},
+		{Role: "assistant", Content: "read again", ToolCalls: []ToolCall{
+			{ID: "c4", Function: ToolCallFunction{Name: "read_file", Arguments: `{"path":"a.txt"}`}},
+		}},
+		{Role: "tool", Content: "content", ToolCallID: "c4"},
+		{Role: "assistant", Content: "ls again", ToolCalls: []ToolCall{
+			{ID: "c5", Function: ToolCallFunction{Name: "shell", Arguments: `{"cmd":"ls"}`}},
+		}},
+		{Role: "tool", Content: "file1", ToolCallID: "c5"}, // same output as before
+	}
+
+	result := opt.OptimizeConversation(messages)
+
+	// First file read → replaced (same content as later read)
+	if !strings.Contains(result[2].Content, "[Earlier file read:") {
+		t.Errorf("first file read should be replaced, got %q", result[2].Content)
+	}
+
+	// First ls → replaced (same command, same output)
+	if !strings.Contains(result[4].Content, "[Earlier command output:") {
+		t.Errorf("first ls should be replaced, got %q", result[4].Content)
+	}
+
+	// Unknown tool → unchanged
+	if result[6].Content != "wrote" {
+		t.Errorf("unknown tool result should be unchanged, got %q", result[6].Content)
+	}
+
+	// Latest file read → kept
+	if result[8].Content != "content" {
+		t.Errorf("latest file read should be kept, got %q", result[8].Content)
+	}
+
+	// Latest ls → kept
+	if result[10].Content != "file1" {
+		t.Errorf("latest ls output should be kept, got %q", result[10].Content)
+	}
+}
+
+func TestConversationOptimizer_PreservesNonToolMessages(t *testing.T) {
+	opt := NewConversationOptimizer(ConversationOptimizerOptions{
+		Enabled: true,
+		KnownToolFn: func(name string) ToolCategory {
+			if name == "read_file" {
+				return ToolCategoryFileRead
+			}
+			return ToolCategoryUnknown
+		},
+	})
+
+	messages := []Message{
+		{Role: "system", Content: "You are helpful."},
+		{Role: "user", Content: "hello"},
+		{Role: "assistant", Content: "hi there"},
+	}
+
+	result := opt.OptimizeConversation(messages)
+
+	if result[0].Content != "You are helpful." {
+		t.Errorf("system message changed, got %q", result[0].Content)
+	}
+	if result[1].Content != "hello" {
+		t.Errorf("user message changed, got %q", result[1].Content)
+	}
+	if result[2].Content != "hi there" {
+		t.Errorf("assistant message changed, got %q", result[2].Content)
+	}
+}
+
+func TestConversationOptimizer_EmptyMessages(t *testing.T) {
+	opt := NewConversationOptimizer(ConversationOptimizerOptions{
+		Enabled:     true,
+		KnownToolFn: func(name string) ToolCategory { return ToolCategoryFileRead },
+	})
+
+	result := opt.OptimizeConversation(nil)
+	if result != nil {
+		t.Error("nil input should return nil")
+	}
+
+	result = opt.OptimizeConversation([]Message{})
+	if len(result) != 0 {
+		t.Error("empty input should return empty")
+	}
+}
+
+func TestConversationOptimizer_MissingPathArg(t *testing.T) {
+	opt := NewConversationOptimizer(ConversationOptimizerOptions{
+		Enabled: true,
+		KnownToolFn: func(name string) ToolCategory {
+			return ToolCategoryFileRead
+		},
+	})
+
+	// Tool call with no "path" argument → should be skipped gracefully.
+	messages := []Message{
+		{Role: "assistant", Content: "reading", ToolCalls: []ToolCall{
+			{ID: "c1", Function: ToolCallFunction{Name: "read_file", Arguments: `{}`}},
+		}},
+		{Role: "tool", Content: "content", ToolCallID: "c1"},
+	}
+
+	result := opt.OptimizeConversation(messages)
+	if result[1].Content != "content" {
+		t.Errorf("should skip when path arg missing, got %q", result[1].Content)
+	}
+}
+
+func TestConversationOptimizer_MissingCmdArg(t *testing.T) {
+	opt := NewConversationOptimizer(ConversationOptimizerOptions{
+		Enabled: true,
+		KnownToolFn: func(name string) ToolCategory {
+			return ToolCategoryShellCommand
+		},
+	})
+
+	// Tool call with no "cmd" argument → should be skipped gracefully.
+	messages := []Message{
+		{Role: "assistant", Content: "running", ToolCalls: []ToolCall{
+			{ID: "c1", Function: ToolCallFunction{Name: "shell", Arguments: `{}`}},
+		}},
+		{Role: "tool", Content: "output", ToolCallID: "c1"},
+	}
+
+	result := opt.OptimizeConversation(messages)
+	if result[1].Content != "output" {
+		t.Errorf("should skip when cmd arg missing, got %q", result[1].Content)
+	}
+}
+
+func TestConversationOptimizer_InvalidJSONArgs(t *testing.T) {
+	opt := NewConversationOptimizer(ConversationOptimizerOptions{
+		Enabled: true,
+		KnownToolFn: func(name string) ToolCategory {
+			return ToolCategoryFileRead
+		},
+	})
+
+	// Malformed JSON arguments → should be handled gracefully.
+	messages := []Message{
+		{Role: "assistant", Content: "reading", ToolCalls: []ToolCall{
+			{ID: "c1", Function: ToolCallFunction{Name: "read_file", Arguments: `not json`}},
+		}},
+		{Role: "tool", Content: "content", ToolCallID: "c1"},
+	}
+
+	result := opt.OptimizeConversation(messages)
+	if result[1].Content != "content" {
+		t.Errorf("should skip invalid JSON, got %q", result[1].Content)
+	}
+}
+
+func TestConversationOptimizer_ArgsNotString(t *testing.T) {
+	opt := NewConversationOptimizer(ConversationOptimizerOptions{
+		Enabled: true,
+		KnownToolFn: func(name string) ToolCategory {
+			return ToolCategoryFileRead
+		},
+	})
+
+	// "path" is a number, not a string → should be skipped gracefully.
+	args := map[string]interface{}{"path": 123}
+	argsJSON, _ := json.Marshal(args)
+
+	messages := []Message{
+		{Role: "assistant", Content: "reading", ToolCalls: []ToolCall{
+			{ID: "c1", Function: ToolCallFunction{Name: "read_file", Arguments: string(argsJSON)}}},
+		},
+		{Role: "tool", Content: "content", ToolCallID: "c1"},
+	}
+
+	result := opt.OptimizeConversation(messages)
+	if result[1].Content != "content" {
+		t.Errorf("should skip non-string path arg, got %q", result[1].Content)
+	}
+}
+
+func TestIsTransientCommand(t *testing.T) {
+	transientCmds := []string{"ls", "pwd", "echo"}
+	for _, cmd := range transientCmds {
+		if !isTransientCommand(cmd) {
+			t.Errorf("expected %q to be transient", cmd)
+		}
+	}
+
+	nonTransient := []string{"git", "make", "npm", "python", "go", "rm", "mv", "cat", "find", "head", "tail", "wc"}
+	for _, cmd := range nonTransient {
+		if isTransientCommand(cmd) {
+			t.Errorf("expected %q to NOT be transient", cmd)
+		}
+	}
+}
+
+func TestBaseCommand(t *testing.T) {
+	tests := []struct {
+		input  string
+		expect string
+	}{
+		{"ls -la", "ls"},
+		{"pwd", "pwd"},
+		{"find . -name '*.go'", "find"},
+		{"", ""},
+		{"  cat file.txt  ", "cat"},
+	}
+	for _, tt := range tests {
+		got := baseCommand(tt.input)
+		if got != tt.expect {
+			t.Errorf("baseCommand(%q) = %q, want %q", tt.input, got, tt.expect)
+		}
+	}
+}
+
+func TestExtractStringArg(t *testing.T) {
+	// Valid string arg
+	got := extractStringArg(`{"path":"foo.txt"}`, "path")
+	if got != "foo.txt" {
+		t.Errorf("expected 'foo.txt', got %q", got)
+	}
+
+	// Missing key
+	got = extractStringArg(`{"path":"foo.txt"}`, "cmd")
+	if got != "" {
+		t.Errorf("expected empty, got %q", got)
+	}
+
+	// Invalid JSON
+	got = extractStringArg(`not json`, "path")
+	if got != "" {
+		t.Errorf("expected empty for invalid JSON, got %q", got)
+	}
+
+	// Non-string value
+	got = extractStringArg(`{"path":123}`, "path")
+	if got != "" {
+		t.Errorf("expected empty for non-string, got %q", got)
+	}
+}

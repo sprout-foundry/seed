@@ -20,6 +20,7 @@ type Options struct {
 	MaxIterations int          // 0 = unlimited
 	Debug         bool
 	EventBus      *events.EventBus // nil = no events
+	Optimizer     *ConversationOptimizer
 }
 
 // Agent is the main entry point for the conversation engine.
@@ -40,6 +41,7 @@ type Agent struct {
 
 	fallbackParser *FallbackParser
 	validator      *ResponseValidator
+	optimizer      *ConversationOptimizer
 }
 
 // NewAgent creates a new Agent from the given options. Returns an error if
@@ -76,6 +78,7 @@ func NewAgent(opts Options) (*Agent, error) {
 		inputInjectionChan: make(chan string, 1),
 		fallbackParser:     NewFallbackParser(FallbackParserOptions{KnownToolNames: func(name string) bool { return knownTools[name] }}),
 		validator:          NewResponseValidator(ResponseValidatorOptions{DebugLog: func(format string, args ...interface{}) { if opts.Debug { fmt.Printf(format, args...) }} }),
+		optimizer:          opts.Optimizer,
 	}, nil
 }
 
