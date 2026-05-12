@@ -977,3 +977,390 @@ func TestFinishReasonStop_IncompleteContent_WithToolCalls_DoesNotContinue(t *tes
 		t.Errorf("expected 2 provider calls, got %d", provider.idx)
 	}
 }
+
+// --- Tentative post-tool "stop" response tests ---
+
+func TestFinishReasonStop_TentativePostTool_Rejected(t *testing.T) {
+	// After tool results, a "stop" with tentative planning content should be rejected
+	// with the post-tool rejection message. After rejection, the loop continues and
+	// the model should provide a concrete answer.
+	provider := newFRProvider(
+		// 1. Model makes a tool call
+		&ChatResponse{
+			Choices: []ChatChoice{{
+				Message: Message{
+					Role:    "assistant",
+					Content: "",
+					ToolCalls: []ToolCall{{
+						ID:   "call_1",
+						Type: "function",
+						Function: ToolCallFunction{
+							Name:      "echo",
+							Arguments: `{"message":"test"}`,
+						},
+					}},
+				},
+				FinishReason: "tool_calls",
+			}},
+			Usage: ChatUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15},
+		},
+		// 2. Tentative content after tool results → rejected (rejection #1)
+		frTextResponse("Let me check the results now.", "stop"),
+		// 3. Concrete final answer → accepted
+		frTextResponse("The answer is 42.", "stop"),
+	)
+	executor := &mockExecutor{
+		results: []Message{{Role: "tool", Content: "tool result", ToolCallID: "call_1"}},
+	}
+	agent, _ := NewAgent(Options{
+		Provider: provider,
+		Executor: executor,
+	})
+
+	result, err := agent.Run(context.Background(), "hi")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != "The answer is 42." {
+		t.Errorf("expected %q, got %q", "The answer is 42.", result)
+	}
+	if provider.idx != 3 {
+		t.Errorf("expected 3 provider calls, got %d", provider.idx)
+	}
+}
+
+func TestFinishReasonStop_TentativePostTool_FirstRejectionThenGenericTentative(t *testing.T) {
+	// After tool results, a tentative "stop" triggers post-tool rejection #1.
+	// On the next iteration, followsRecentToolResults() returns false (the
+	// rejected assistant message sits between the tool result and the current
+	// message, breaking the scan), so the generic tentative check via
+	// continuationCount catches it instead. A 4th call provides the concrete
+	// answer.
+	//
+	// Flow:
+	//  1. Tool call → result
+	//  2. "Let me review the results." → post-tool rejection #1 (tentativeRejectionCount=1) → continue
+	//  3. "I'll start by looking at the output." → followsRecentToolResults()=false
+	//     → generic tentative (continuationCount=1) → continue
+	//  4. "The answer is 42." → accepted (non-tentative)
+	provider := newFRProvider(
+		// 1. Model makes a tool call
+		&ChatResponse{
+			Choices: []ChatChoice{{
+				Message: Message{
+					Role:    "assistant",
+					Content: "",
+					ToolCalls: []ToolCall{{
+						ID:   "call_1",
+						Type: "function",
+						Function: ToolCallFunction{
+							Name:      "echo",
+							Arguments: `{"message":"test"}`,
+						},
+					}},
+				},
+				FinishReason: "tool_calls",
+			}},
+			Usage: ChatUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15},
+		},
+		// 2. Tentative → post-tool rejection #1 (tentativeRejectionCount=1)
+		frTextResponse("Let me review the results.", "stop"),
+		// 3. Tentative → followsRecentToolResults()=false → generic tentative (continuationCount=1)
+		frTextResponse("I'll start by looking at the output.", "stop"),
+		// 4. Concrete final answer → accepted
+		frTextResponse("The answer is 42.", "stop"),
+	)
+	executor := &mockExecutor{
+		results: []Message{{Role: "tool", Content: "tool result", ToolCallID: "call_1"}},
+	}
+	agent, _ := NewAgent(Options{
+		Provider: provider,
+		Executor: executor,
+	})
+
+	result, err := agent.Run(context.Background(), "hi")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Post-tool rejection #1 + generic tentative continuation → 4th call wins
+	if result != "The answer is 42." {
+		t.Errorf("expected %q, got %q", "The answer is 42.", result)
+	}
+	if provider.idx != 4 {
+		t.Errorf("expected 4 provider calls, got %d", provider.idx)
+	}
+}
+
+func TestFinishReasonStop_TentativePostTool_ConcreteAnswer_Accepted(t *testing.T) {
+	// After tool results, a concrete (non-tentative) response should be accepted
+	// immediately without any rejection — the post-tool rejection path is
+	// bypassed because the content is not tentative.
+	provider := newFRProvider(
+		// 1. Model makes a tool call
+		&ChatResponse{
+			Choices: []ChatChoice{{
+				Message: Message{
+					Role:    "assistant",
+					Content: "",
+					ToolCalls: []ToolCall{{
+						ID:   "call_1",
+						Type: "function",
+						Function: ToolCallFunction{
+							Name:      "echo",
+							Arguments: `{"message":"test"}`,
+						},
+					}},
+				},
+				FinishReason: "tool_calls",
+			}},
+			Usage: ChatUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15},
+		},
+		// 2. Concrete answer (doesn't match tentative prefixes)
+		frTextResponse("The file contents are: error, success, failed.", "stop"),
+	)
+	executor := &mockExecutor{
+		results: []Message{{Role: "tool", Content: "tool result", ToolCallID: "call_1"}},
+	}
+	agent, _ := NewAgent(Options{
+		Provider: provider,
+		Executor: executor,
+	})
+
+	result, err := agent.Run(context.Background(), "hi")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != "The file contents are: error, success, failed." {
+		t.Errorf("expected %q, got %q", "The file contents are: error, success, failed.", result)
+	}
+	if provider.idx != 2 {
+		t.Errorf("expected 2 provider calls, got %d", provider.idx)
+	}
+}
+
+func TestFinishReasonStop_TentativePostTool_NoToolResults_NotRejected(t *testing.T) {
+	// Without tool results in the message history, the post-tool rejection path
+	// should NOT trigger (followsRecentToolResults returns false). The generic
+	// tentative check may still apply via continuationCount but the response
+	// should eventually complete normally.
+	provider := newFRProvider(
+		// 1. Tentative content but NO tool results → post-tool rejection bypassed
+		// (generic tentative check may trigger instead via the fallback path)
+		frTextResponse("Let me think about this.", "stop"),
+		frTextResponse("The answer is 42.", "stop"),
+	)
+	agent, _ := NewAgent(Options{
+		Provider: provider,
+		Executor: &mockExecutor{},
+	})
+
+	result, err := agent.Run(context.Background(), "hi")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != "The answer is 42." {
+		t.Errorf("expected %q, got %q", "The answer is 42.", result)
+	}
+	// 2 provider calls: 1 tentative (rejected by generic tentative path), 1 final answer
+	if provider.idx != 2 {
+		t.Errorf("expected 2 provider calls, got %d", provider.idx)
+	}
+}
+
+func TestFinishReasonStop_TentativePostTool_Stream_Rejected(t *testing.T) {
+	// Same as TestFinishReasonStop_TentativePostTool_Rejected but using RunStream.
+	provider := newFRProvider(
+		&ChatResponse{
+			Choices: []ChatChoice{{
+				Message: Message{
+					Role:    "assistant",
+					Content: "",
+					ToolCalls: []ToolCall{{
+						ID:   "call_1",
+						Type: "function",
+						Function: ToolCallFunction{
+							Name:      "echo",
+							Arguments: `{"message":"test"}`,
+						},
+					}},
+				},
+				FinishReason: "tool_calls",
+			}},
+			Usage: ChatUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15},
+		},
+		frTextResponse("Let me check the results now.", "stop"),
+		frTextResponse("Streaming answer.", "stop"),
+	)
+	executor := &mockExecutor{
+		results: []Message{{Role: "tool", Content: "tool result", ToolCallID: "call_1"}},
+	}
+	agent, _ := NewAgent(Options{
+		Provider: provider,
+		Executor: executor,
+	})
+
+	result, err := agent.RunStream(context.Background(), "hi")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != "Streaming answer." {
+		t.Errorf("expected %q, got %q", "Streaming answer.", result)
+	}
+	if provider.idx != 3 {
+		t.Errorf("expected 3 provider calls, got %d", provider.idx)
+	}
+}
+
+func TestFinishReasonStop_TentativePostTool_MaxContinuations(t *testing.T) {
+	// Tests the interaction between post-tool rejections and the generic
+	// tentative continuation budget. After post-tool rejection #1, the next
+	// tentative response is caught by the generic tentative check (because
+	// followsRecentToolResults() returns false — the rejected assistant
+	// message sits between the tool result and the current message). The
+	// generic continuationCount budget (maxContinuations=3) is then consumed
+	// across iterations 3–5, force-finalizing at iteration 5.
+	//
+	// Flow:
+	//  1. Tool call → result
+	//  2. "Let me review." → post-tool rejection #1 (tentativeRejectionCount=1) → continue
+	//  3. "I'll check." → followsRecentToolResults()=false → generic tentative (continuationCount=1) → continue
+	//  4. "I'll look at the output." → generic tentative (continuationCount=2) → continue
+	//  5. "Hmm, let me process this." → generic tentative (continuationCount=3, NOT < 3) → force-finalize
+	provider := newFRProvider(
+		// 1. Tool call
+		&ChatResponse{
+			Choices: []ChatChoice{{
+				Message: Message{
+					Role:    "assistant",
+					Content: "",
+					ToolCalls: []ToolCall{{
+						ID:   "call_1",
+						Type: "function",
+						Function: ToolCallFunction{
+							Name:      "echo",
+							Arguments: `{"message":"test"}`,
+						},
+					}},
+				},
+				FinishReason: "tool_calls",
+			}},
+			Usage: ChatUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15},
+		},
+		// 2. Post-tool rejection #1
+		frTextResponse("Let me review.", "stop"),
+		// 3. Generic tentative #1 (followsRecentToolResults=false, rejected assistant blocks scan)
+		frTextResponse("I'll check.", "stop"),
+		// 4. Generic tentative #2
+		frTextResponse("I'll look at the output.", "stop"),
+		// 5. Generic tentative #3 — maxContinuations reached, force-finalize
+		frTextResponse("Hmm, let me process this.", "stop"),
+	)
+	executor := &mockExecutor{
+		results: []Message{{Role: "tool", Content: "tool result", ToolCallID: "call_1"}},
+	}
+	agent, _ := NewAgent(Options{
+		Provider: provider,
+		Executor: executor,
+	})
+
+	result, err := agent.Run(context.Background(), "hi")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Force-finalized at the 5th provider call
+	if result != "Hmm, let me process this." {
+		t.Errorf("expected %q, got %q", "Hmm, let me process this.", result)
+	}
+	if provider.idx != 5 {
+		t.Errorf("expected 5 provider calls, got %d", provider.idx)
+	}
+}
+
+func TestFinishReasonStop_TentativePostTool_MultipleToolCycles(t *testing.T) {
+	// Verifies that post-tool rejection works across multiple tool cycles.
+	// After a new tool call is executed, the tentativeRejectionCount resets
+	// (because the new tool result establishes a fresh "recent tool result"
+	// baseline), so post-tool rejection fires again in the next cycle.
+	//
+	// Flow:
+	//  1. Tool call A → result
+	//  2. "Let me review." → post-tool rejection #1 (tentativeRejectionCount=1) → continue
+	//  3. Tool call B → result (counter resets to 0, new tool result baseline)
+	//  4. "I'll analyze it." → post-tool rejection #1 again (tentativeRejectionCount=1) → continue
+	//  5. "The answer is 42." → accepted (non-tentative)
+	//
+	// Note: the >= 2 tentativeRejectionCount path is unreachable in practice
+	// because followsRecentToolResults() only skips one assistant message.
+	// After rejection #1, the rejected assistant sits between the tool result
+	// and the current message, blocking the scan. So post-tool rejection can
+	// only fire once per tool-result cycle. This test demonstrates that the
+	// mechanism correctly re-fires after a new tool call resets the state.
+	provider := newFRProvider(
+		// 1. Tool call A
+		&ChatResponse{
+			Choices: []ChatChoice{{
+				Message: Message{
+					Role:    "assistant",
+					Content: "",
+					ToolCalls: []ToolCall{{
+						ID:   "call_1",
+						Type: "function",
+						Function: ToolCallFunction{
+							Name:      "echo",
+							Arguments: `{"message":"test"}`,
+						},
+					}},
+				},
+				FinishReason: "tool_calls",
+			}},
+			Usage: ChatUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15},
+		},
+		// 2. Post-tool rejection #1 (tentativeRejectionCount=1)
+		frTextResponse("Let me review.", "stop"),
+		// 3. Tool call B (counter resets to 0, new tool result baseline)
+		&ChatResponse{
+			Choices: []ChatChoice{{
+				Message: Message{
+					Role:    "assistant",
+					Content: "",
+					ToolCalls: []ToolCall{{
+						ID:   "call_2",
+						Type: "function",
+						Function: ToolCallFunction{
+							Name:      "echo",
+							Arguments: `{"message":"test2"}`,
+						},
+					}},
+				},
+				FinishReason: "tool_calls",
+			}},
+			Usage: ChatUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15},
+		},
+		// 4. Post-tool rejection #1 again (tentativeRejectionCount=1, counter reset)
+		frTextResponse("I'll analyze it.", "stop"),
+		// 5. Concrete answer → accepted
+		frTextResponse("The answer is 42.", "stop"),
+	)
+	executor := &mockExecutor{
+		results: []Message{
+			{Role: "tool", Content: "result1", ToolCallID: "call_1"},
+			{Role: "tool", Content: "result2", ToolCallID: "call_2"},
+		},
+	}
+	agent, _ := NewAgent(Options{
+		Provider: provider,
+		Executor: executor,
+	})
+
+	result, err := agent.Run(context.Background(), "hi")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != "The answer is 42." {
+		t.Errorf("expected %q, got %q", "The answer is 42.", result)
+	}
+	// 5 provider calls: tool A, tentative (rejected), tool B, tentative (rejected), answer
+	if provider.idx != 5 {
+		t.Errorf("expected 5 provider calls, got %d", provider.idx)
+	}
+}

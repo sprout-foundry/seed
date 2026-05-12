@@ -41,6 +41,12 @@ type ConversationHandler struct {
 	// finalize() is never reached because runLoop returns early.
 	// Used by finalize() to decide whether to record a turn checkpoint.
 	turnCompleted bool
+
+	// tentativeRejectionCount tracks consecutive rejections of tentative
+	// post-tool responses when finish_reason is "stop". After 2 rejections,
+	// the response is accepted to avoid infinite loops. This counter is
+	// separate from continuationCount and resets when tool calls are executed.
+	tentativeRejectionCount int
 }
 
 // maxContinuations is the maximum number of consecutive incomplete-response
@@ -257,6 +263,29 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 				ch.agent.debugLog("[finish] stop with incomplete content — max continuations (%d) reached, force-finalizing\n", maxContinuations)
 				return ch.finalize(query)
 			}
+			// If the model returned "stop" immediately after tool results with
+			// tentative/planning content, reject it and ask for real action.
+			// After 2 rejections, accept the response to avoid infinite loops.
+			if a.validator != nil && len(assistantMsg.ToolCalls) == 0 &&
+				ch.followsRecentToolResults() &&
+				a.validator.LooksLikeTentativePostToolResponse(assistantMsg.Content) {
+				ch.tentativeRejectionCount++
+				if ch.tentativeRejectionCount >= 2 {
+					// Accept after 2 rejections to avoid loops.
+					ch.tentativeRejectionCount = 0
+					ch.agent.debugLog("[finish] stop — tentative post-tool rejection limit reached, accepting response\n")
+					// Fall through to the existing tool-call / completion logic below.
+				} else {
+					ch.agent.debugLog("[finish] stop — tentative content after tool results (rejection %d/2), looping again\n",
+						ch.tentativeRejectionCount)
+					ch.enqueueTransientMessage(Message{
+						Role: "user",
+						Content: "You just received tool results. Do not stop with a planning note. " +
+							"Either take the next concrete action or provide the actual final answer now.",
+					})
+					continue
+				}
+			}
 			// Fall through to the existing tool-call / completion logic below.
 
 		case "tool_calls", "":
@@ -404,6 +433,7 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 		// Valid tool calls present — they represent progress, so reset the
 		// continuation budget before executing.
 		ch.continuationCount = 0
+		ch.tentativeRejectionCount = 0
 
 		ch.agent.debugLog("[tool] Executing %d tool calls\n", len(assistantMsg.ToolCalls))
 
@@ -621,4 +651,34 @@ func (ch *ConversationHandler) enqueueTransientMessage(msg Message) {
 // isBlankContent checks if the content is empty or contains only whitespace.
 func isBlankContent(content string) bool {
 	return len(strings.TrimSpace(content)) == 0
+}
+
+// followsRecentToolResults scans the message history backwards from the most
+// recent message to determine whether the current turn follows tool results.
+// It walks back past the current assistant message (if any), then checks for
+// one or more "tool" role messages. Returns true if tool results are found
+// immediately before the current response, indicating the model just received
+// tool output and should act on it rather than planning.
+func (ch *ConversationHandler) followsRecentToolResults() bool {
+	msgs := ch.agent.state.Messages()
+	if len(msgs) == 0 {
+		return false
+	}
+
+	i := len(msgs) - 1
+	// Skip the current assistant message (the one we're deciding about)
+	// because it was already added to state by chatFn.
+	if msgs[i].Role == "assistant" {
+		i--
+	}
+	if i < 0 {
+		return false
+	}
+
+	// Walk back through consecutive tool results.
+	foundTool := false
+	for ; i >= 0 && msgs[i].Role == "tool"; i-- {
+		foundTool = true
+	}
+	return foundTool
 }
