@@ -300,11 +300,14 @@ func TestE2E_ToolLifecycleEvents_NoEventBus(t *testing.T) {
 
 	h.Executor().AddToolResult("call_1", "ok")
 
-	agent := core.NewAgent(core.Options{
+	agent, err := core.NewAgent(core.Options{
 		Provider: h.Provider(),
 		Executor: h.Executor(),
 		EventBus: nil, // No event bus
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	result, err := agent.Run(context.Background(), "test")
 	h.AssertNoError(err)

@@ -9,6 +9,12 @@ import (
 
 // Sentinel errors returned by the agent lifecycle.
 var (
+	// ErrNoProvider is returned when NewAgent is called without a Provider.
+	ErrNoProvider = errors.New("no provider configured")
+
+	// ErrNoExecutor is returned when NewAgent is called without a ToolExecutor.
+	ErrNoExecutor = errors.New("no tool executor configured")
+
 	// ErrInterrupted is returned when the conversation is interrupted by the user.
 	ErrInterrupted = errors.New("conversation interrupted")
 

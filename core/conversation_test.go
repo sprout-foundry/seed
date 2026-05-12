@@ -16,11 +16,14 @@ func TestPrepareMessages_SystemPromptPrepended(t *testing.T) {
 		info:       ProviderInfo{ContextSize: 10000},
 		tokenCount: 100,
 	}
-	a := NewAgent(Options{
+	a, err := NewAgent(Options{
 		Provider:     provider,
 		Executor:     &mockExecutor{},
 		SystemPrompt: "You are helpful.",
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// Add messages to state
 	a.State().AddMessage(Message{Role: "user", Content: "hi"})
@@ -40,7 +43,7 @@ func TestPrepareMessages_SystemPromptPrepended(t *testing.T) {
 }
 
 func TestPrepareMessages_SystemMessagesStrippedFromHistory(t *testing.T) {
-	a := NewAgent(Options{
+	a, err := NewAgent(Options{
 		Provider: &mockProvider{
 			info:       ProviderInfo{ContextSize: 10000},
 			tokenCount: 100,
@@ -48,6 +51,9 @@ func TestPrepareMessages_SystemMessagesStrippedFromHistory(t *testing.T) {
 		Executor:     &mockExecutor{},
 		SystemPrompt: "Current system.",
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// Add old system message to history (simulating imported state)
 	a.State().SetMessages([]Message{
@@ -69,13 +75,16 @@ func TestPrepareMessages_SystemMessagesStrippedFromHistory(t *testing.T) {
 }
 
 func TestPrepareMessages_ImagesStrippedForNonVision(t *testing.T) {
-	a := NewAgent(Options{
+	a, err := NewAgent(Options{
 		Provider: &mockProvider{
 			info:       ProviderInfo{ContextSize: 10000, HasVision: false},
 			tokenCount: 100,
 		},
 		Executor: &mockExecutor{},
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	a.State().AddMessage(Message{
 		Role:    "user",
@@ -99,13 +108,16 @@ func TestPrepareMessages_ImagesStrippedForNonVision(t *testing.T) {
 }
 
 func TestPrepareMessages_ImagesKeptForVision(t *testing.T) {
-	a := NewAgent(Options{
+	a, err := NewAgent(Options{
 		Provider: &mockProvider{
 			info:       ProviderInfo{ContextSize: 10000, HasVision: true},
 			tokenCount: 100,
 		},
 		Executor: &mockExecutor{},
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	a.State().AddMessage(Message{
 		Role:    "user",
@@ -151,10 +163,13 @@ func TestPrepareMessages_CollapseSystemMessages(t *testing.T) {
 }
 
 func TestRemoveOrphanedToolResults(t *testing.T) {
-	a := NewAgent(Options{
+	a, err := NewAgent(Options{
 		Provider: &mockProvider{},
 		Executor: &mockExecutor{},
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	ch := newConversationHandler(a)
 	messages := []Message{
@@ -190,10 +205,13 @@ func TestProcessQuery_EmptyChoices(t *testing.T) {
 		info:       ProviderInfo{ContextSize: 10000},
 		tokenCount: 100,
 	}
-	a := NewAgent(Options{
+	a, err := NewAgent(Options{
 		Provider: provider,
 		Executor: &mockExecutor{},
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	result, err := a.Run(context.Background(), "test")
 	if err != nil {
@@ -213,10 +231,13 @@ func TestProcessQuery_ContextCompaction(t *testing.T) {
 		info:       ProviderInfo{ContextSize: 50}, // Very small context
 		tokenCount: 100,                           // Over context limit
 	}
-	a := NewAgent(Options{
+	a, err := NewAgent(Options{
 		Provider: provider,
 		Executor: &mockExecutor{},
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// Add many messages to trigger compaction
 	for i := 0; i < 30; i++ {
@@ -224,7 +245,7 @@ func TestProcessQuery_ContextCompaction(t *testing.T) {
 		a.State().AddMessage(Message{Role: "assistant", Content: "assistant response " + string(rune('a'+i%26))})
 	}
 
-	_, err := a.Run(context.Background(), "final query")
+	_, err = a.Run(context.Background(), "final query")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -238,13 +259,16 @@ func TestProcessQuery_ProviderErrorPublishesErrorEvent(t *testing.T) {
 	bus := events.NewEventBus()
 	ch := bus.Subscribe("test")
 
-	a := NewAgent(Options{
+	a, err := NewAgent(Options{
 		Provider: provider,
 		Executor: &mockExecutor{},
 		EventBus: bus,
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	_, err := a.Run(context.Background(), "test")
+	_, err = a.Run(context.Background(), "test")
 	if err == nil {
 		t.Fatal("expected error from provider failure")
 	}
@@ -298,13 +322,16 @@ func TestProcessQuery_ProviderErrorNoEventBus(t *testing.T) {
 		info:    ProviderInfo{ContextSize: 10000},
 	}
 
-	a := NewAgent(Options{
+	a, err := NewAgent(Options{
 		Provider: provider,
 		Executor: &mockExecutor{},
 		// No EventBus — should not panic
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	_, err := a.Run(context.Background(), "test")
+	_, err = a.Run(context.Background(), "test")
 	if err == nil {
 		t.Fatal("expected error from provider failure")
 	}
@@ -322,13 +349,16 @@ func TestProcessQuery_MetricsUpdateEvent(t *testing.T) {
 	bus := events.NewEventBus()
 	ch := bus.Subscribe("test")
 
-	a := NewAgent(Options{
+	a, err := NewAgent(Options{
 		Provider: provider,
 		Executor: &mockExecutor{},
 		EventBus: bus,
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	_, err := a.Run(context.Background(), "test")
+	_, err = a.Run(context.Background(), "test")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -406,13 +436,16 @@ func TestProcessQuery_MetricsUpdateNotPublishedWhenNoTokens(t *testing.T) {
 	bus := events.NewEventBus()
 	ch := bus.Subscribe("test")
 
-	a := NewAgent(Options{
+	a, err := NewAgent(Options{
 		Provider: provider,
 		Executor: &mockExecutor{},
 		EventBus: bus,
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	_, err := a.Run(context.Background(), "test")
+	_, err = a.Run(context.Background(), "test")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -465,13 +498,16 @@ func TestProcessQuery_AgentMessageEvent(t *testing.T) {
 	bus := events.NewEventBus()
 	ch := bus.Subscribe("test")
 
-	a := NewAgent(Options{
+	a, err := NewAgent(Options{
 		Provider: provider,
 		Executor: &mockExecutor{},
 		EventBus: bus,
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	_, err := a.Run(context.Background(), "test")
+	_, err = a.Run(context.Background(), "test")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -541,13 +577,16 @@ func TestProcessQuery_AgentMessageNotPublishedForEmptyContent(t *testing.T) {
 	bus := events.NewEventBus()
 	ch := bus.Subscribe("test")
 
-	a := NewAgent(Options{
+	a, err := NewAgent(Options{
 		Provider: provider,
 		Executor: &mockExecutor{},
 		EventBus: bus,
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	_, err := a.Run(context.Background(), "test")
+	_, err = a.Run(context.Background(), "test")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

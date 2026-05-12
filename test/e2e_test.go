@@ -198,13 +198,16 @@ func TestE2E_ProviderError_NoEventBus(t *testing.T) {
 	h := NewHarnessWithT(t)
 	h.Provider().AddError(fmt.Errorf("provider failure"))
 
-	agent := core.NewAgent(core.Options{
+	agent, err := core.NewAgent(core.Options{
 		Provider: h.Provider(),
 		Executor: h.Executor(),
 		UI:       h.UI(),
 		// No EventBus
 	})
-	_, err := agent.Run(context.Background(), "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = agent.Run(context.Background(), "test")
 	h.AssertError(err)
 	h.AssertErrorContains(err, "chat failed")
 }
@@ -270,12 +273,15 @@ func TestE2E_NoEventBus(t *testing.T) {
 	h := NewHarnessWithT(t)
 	h.Provider().AddTextResponse("Done")
 
-	agent := core.NewAgent(core.Options{
+	agent, err := core.NewAgent(core.Options{
 		Provider: h.Provider(),
 		Executor: h.Executor(),
 		// No EventBus
 	})
-	_, err := agent.Run(context.Background(), "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = agent.Run(context.Background(), "test")
 	h.AssertNoError(err)
 }
 
@@ -300,11 +306,14 @@ func TestE2E_HeadlessMode(t *testing.T) {
 	h := NewHarnessWithT(t)
 	h.Provider().AddTextResponse("OK")
 
-	agent := core.NewAgent(core.Options{
+	agent, err := core.NewAgent(core.Options{
 		Provider: h.Provider(),
 		Executor: h.Executor(),
 		UI:       nil, // headless
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	result, err := agent.Run(context.Background(), "test")
 	h.AssertNoError(err)
 	h.AssertEquals(result, "OK")

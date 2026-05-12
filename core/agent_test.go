@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -66,33 +67,38 @@ func (m *mockUI) PrintLine(s string) {
 
 // --- Agent tests ---
 
-func TestNewAgent_PanicsOnNilProvider(t *testing.T) {
-	defer func() {
-		if r := recover(); r == nil {
-			t.Fatal("expected panic for nil Provider")
-		}
-	}()
-	NewAgent(Options{
+func TestNewAgent_ErrOnNilProvider(t *testing.T) {
+	_, err := NewAgent(Options{
 		Executor: &mockExecutor{},
 	})
+	if err == nil {
+		t.Fatal("expected error for nil Provider")
+	}
+	if !errors.Is(err, ErrNoProvider) {
+		t.Fatalf("expected ErrNoProvider, got: %v", err)
+	}
 }
 
-func TestNewAgent_PanicsOnNilExecutor(t *testing.T) {
-	defer func() {
-		if r := recover(); r == nil {
-			t.Fatal("expected panic for nil ToolExecutor")
-		}
-	}()
-	NewAgent(Options{
+func TestNewAgent_ErrOnNilExecutor(t *testing.T) {
+	_, err := NewAgent(Options{
 		Provider: &mockProvider{},
 	})
+	if err == nil {
+		t.Fatal("expected error for nil ToolExecutor")
+	}
+	if !errors.Is(err, ErrNoExecutor) {
+		t.Fatalf("expected ErrNoExecutor, got: %v", err)
+	}
 }
 
 func TestNewAgent_DefaultSystemPrompt(t *testing.T) {
-	a := NewAgent(Options{
+	a, err := NewAgent(Options{
 		Provider: &mockProvider{},
 		Executor: &mockExecutor{},
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if a.systemPrompt != DefaultSystemPrompt {
 		t.Errorf("expected default system prompt, got %q", a.systemPrompt)
 	}
@@ -100,32 +106,41 @@ func TestNewAgent_DefaultSystemPrompt(t *testing.T) {
 
 func TestNewAgent_CustomSystemPrompt(t *testing.T) {
 	custom := "You are a coding assistant."
-	a := NewAgent(Options{
+	a, err := NewAgent(Options{
 		Provider:     &mockProvider{},
 		Executor:     &mockExecutor{},
 		SystemPrompt: custom,
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if a.systemPrompt != custom {
 		t.Errorf("expected %q, got %q", custom, a.systemPrompt)
 	}
 }
 
 func TestNewAgent_WhitespaceSystemPrompt(t *testing.T) {
-	a := NewAgent(Options{
+	a, err := NewAgent(Options{
 		Provider:     &mockProvider{},
 		Executor:     &mockExecutor{},
 		SystemPrompt: "   \t\n  ",
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if a.systemPrompt != DefaultSystemPrompt {
 		t.Errorf("expected default system prompt for whitespace, got %q", a.systemPrompt)
 	}
 }
 
 func TestAgent_SetSystemPrompt(t *testing.T) {
-	a := NewAgent(Options{
+	a, err := NewAgent(Options{
 		Provider: &mockProvider{},
 		Executor: &mockExecutor{},
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	a.SetSystemPrompt("New prompt")
 	if a.systemPrompt != "New prompt" {
 		t.Errorf("expected 'New prompt', got %q", a.systemPrompt)
@@ -133,10 +148,13 @@ func TestAgent_SetSystemPrompt(t *testing.T) {
 }
 
 func TestAgent_PauseAndResume(t *testing.T) {
-	a := NewAgent(Options{
+	a, err := NewAgent(Options{
 		Provider: &mockProvider{},
 		Executor: &mockExecutor{},
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if a.IsPaused() {
 		t.Error("expected not paused initially")
 	}
@@ -151,12 +169,15 @@ func TestAgent_PauseAndResume(t *testing.T) {
 }
 
 func TestAgent_Run_WhenPaused(t *testing.T) {
-	a := NewAgent(Options{
+	a, err := NewAgent(Options{
 		Provider: &mockProvider{},
 		Executor: &mockExecutor{},
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	a.Pause()
-	_, err := a.Run(context.Background(), "hello")
+	_, err = a.Run(context.Background(), "hello")
 	if err == nil {
 		t.Fatal("expected error when paused")
 	}
@@ -175,10 +196,13 @@ func TestAgent_Run_CompleteResponse(t *testing.T) {
 		tokenCount: 100,
 	}
 	executor := &mockExecutor{}
-	a := NewAgent(Options{
+	a, err := NewAgent(Options{
 		Provider: provider,
 		Executor: executor,
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	result, err := a.Run(context.Background(), "Hi")
 	if err != nil {
@@ -216,13 +240,16 @@ func TestAgent_Run_WithToolCalls(t *testing.T) {
 	executor := &mockExecutor{
 		results: []Message{{Role: "tool", Content: "Search results", ToolCallID: "call_1"}},
 	}
-	a := NewAgent(Options{
+	a, err := NewAgent(Options{
 		Provider:      provider,
 		Executor:      executor,
 		MaxIterations: 2,
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	_, err := a.Run(context.Background(), "Search for something")
+	_, err = a.Run(context.Background(), "Search for something")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -255,13 +282,16 @@ func TestAgent_Run_MaxIterations(t *testing.T) {
 	executor := &mockExecutor{
 		results: []Message{{Role: "tool", Content: "loop", ToolCallID: "call_1"}},
 	}
-	a := NewAgent(Options{
+	a, err := NewAgent(Options{
 		Provider:      provider,
 		Executor:      executor,
 		MaxIterations: 3,
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	_, err := a.Run(context.Background(), "Loop")
+	_, err = a.Run(context.Background(), "Loop")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -273,12 +303,15 @@ func TestAgent_Run_ProviderError(t *testing.T) {
 		chatErr: fmt.Errorf("provider down"),
 		info:    ProviderInfo{ContextSize: 10000},
 	}
-	a := NewAgent(Options{
+	a, err := NewAgent(Options{
 		Provider: provider,
 		Executor: &mockExecutor{},
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	_, err := a.Run(context.Background(), "test")
+	_, err = a.Run(context.Background(), "test")
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -288,10 +321,13 @@ func TestAgent_Run_ProviderError(t *testing.T) {
 }
 
 func TestAgent_ExportImportState(t *testing.T) {
-	a := NewAgent(Options{
+	a, err := NewAgent(Options{
 		Provider: &mockProvider{},
 		Executor: &mockExecutor{},
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	a.State().AddMessage(Message{Role: "user", Content: "hello"})
 	a.State().SetSessionID("test-session")
 	a.State().AddTokens(100, 50, 150)
@@ -301,10 +337,13 @@ func TestAgent_ExportImportState(t *testing.T) {
 		t.Fatalf("export failed: %v", err)
 	}
 
-	a2 := NewAgent(Options{
+	a2, err := NewAgent(Options{
 		Provider: &mockProvider{},
 		Executor: &mockExecutor{},
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := a2.ImportState(data); err != nil {
 		t.Fatalf("import failed: %v", err)
 	}
@@ -326,10 +365,13 @@ func TestAgent_ProviderAccess(t *testing.T) {
 	provider := &mockProvider{
 		info: ProviderInfo{Model: "test-model", ContextSize: 128000},
 	}
-	a := NewAgent(Options{
+	a, err := NewAgent(Options{
 		Provider: provider,
 		Executor: &mockExecutor{},
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	info := a.Provider().Info()
 	if info.Model != "test-model" {
 		t.Errorf("expected 'test-model', got %q", info.Model)

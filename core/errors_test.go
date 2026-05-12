@@ -15,6 +15,8 @@ func TestSentinelErrors_NonNil(t *testing.T) {
 		name string
 		err  error
 	}{
+		{"ErrNoProvider", ErrNoProvider},
+		{"ErrNoExecutor", ErrNoExecutor},
 		{"ErrInterrupted", ErrInterrupted},
 		{"ErrMaxIterations", ErrMaxIterations},
 		{"ErrPaused", ErrPaused},

@@ -39,13 +39,14 @@ type Agent struct {
 	inputInjectionChan chan string
 }
 
-// NewAgent creates a new Agent from the given options.
-func NewAgent(opts Options) *Agent {
+// NewAgent creates a new Agent from the given options. Returns an error if
+// required options (Provider or ToolExecutor) are not provided.
+func NewAgent(opts Options) (*Agent, error) {
 	if opts.Provider == nil {
-		panic("seed: Provider is required")
+		return nil, ErrNoProvider
 	}
 	if opts.Executor == nil {
-		panic("seed: ToolExecutor is required")
+		return nil, ErrNoExecutor
 	}
 
 	systemPrompt := opts.SystemPrompt
@@ -64,7 +65,7 @@ func NewAgent(opts Options) *Agent {
 		state:              NewState(),
 		outputMgr:          NewOutputManager(opts.EventBus),
 		inputInjectionChan: make(chan string, 1),
-	}
+	}, nil
 }
 
 // Run executes a single query through the conversation loop.

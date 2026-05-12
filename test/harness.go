@@ -90,12 +90,16 @@ func (h *Harness) EventBus() *events.EventBus {
 
 // NewAgent creates a new agent wired to the harness mocks.
 func (h *Harness) NewAgent() *core.Agent {
-	return core.NewAgent(core.Options{
+	agent, err := core.NewAgent(core.Options{
 		Provider: h.provider,
 		Executor: h.executor,
 		UI:       h.ui,
 		EventBus: h.bus,
 	})
+	if err != nil {
+		panic(fmt.Sprintf("NewAgent failed: %v", err))
+	}
+	return agent
 }
 
 // NewAgentWithOptions creates an agent with custom options.
@@ -109,7 +113,11 @@ func (h *Harness) NewAgentWithOptions(opts core.Options) *core.Agent {
 	if opts.EventBus == nil {
 		opts.EventBus = h.bus
 	}
-	return core.NewAgent(opts)
+	agent, err := core.NewAgent(opts)
+	if err != nil {
+		panic(fmt.Sprintf("NewAgentWithOptions failed: %v", err))
+	}
+	return agent
 }
 
 // Run is a convenience method: creates an agent, runs a query, returns result.

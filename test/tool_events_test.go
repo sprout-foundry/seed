@@ -172,13 +172,16 @@ func TestE2E_ToolEndEvent_MissingResult_DefensivePublish(t *testing.T) {
 		},
 	}
 
-	agent := core.NewAgent(core.Options{
+	agent, err := core.NewAgent(core.Options{
 		Provider: h.Provider(),
 		Executor: partialExecutor,
 		UI:       h.UI(),
 		EventBus: h.EventBus(),
 	})
-	_, err := agent.Run(context.Background(), "Do things")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = agent.Run(context.Background(), "Do things")
 	h.AssertNoError(err)
 
 	// Should still get 2 tool_end events
