@@ -575,3 +575,148 @@ func TestAgent_SteerSystem_MixedWithSteer(t *testing.T) {
 		t.Errorf("expected third message user, got %+v", msgs[2])
 	}
 }
+
+func TestAgent_OnIteration_CallbackFired(t *testing.T) {
+	var calls []struct {
+		iter     int
+		messages int
+	}
+	provider := &mockProvider{
+		chatResp: &ChatResponse{
+			Choices: []ChatChoice{{Message: Message{Role: "assistant", Content: "Done"}}},
+			Usage:   ChatUsage{TotalTokens: 10},
+		},
+		info:       ProviderInfo{ContextSize: 10000},
+		tokenCount: 50,
+	}
+	a, err := NewAgent(Options{
+		Provider: provider,
+		Executor: &mockExecutor{},
+		OnIteration: func(iter int, messages int) {
+			calls = append(calls, struct {
+				iter     int
+				messages int
+			}{iter, messages})
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = a.Run(context.Background(), "Hello")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 OnIteration call, got %d", len(calls))
+	}
+	if calls[0].iter != 0 {
+		t.Errorf("expected iteration 0, got %d", calls[0].iter)
+	}
+	// After adding the user message, state has 1 message
+	if calls[0].messages != 1 {
+		t.Errorf("expected 1 message, got %d", calls[0].messages)
+	}
+}
+
+func TestAgent_OnIteration_MultipleIterations(t *testing.T) {
+	var calls []int
+	provider := &mockProvider{
+		chatResp: &ChatResponse{
+			Choices: []ChatChoice{{
+				Message: Message{
+					Role: "assistant",
+					ToolCalls: []ToolCall{{
+						ID:       "call_1",
+						Function: ToolCallFunction{Name: "loop", Arguments: "{}"},
+					}},
+				},
+			}},
+			Usage: ChatUsage{TotalTokens: 10},
+		},
+		info:       ProviderInfo{ContextSize: 10000},
+		tokenCount: 50,
+	}
+	executor := &mockExecutor{
+		results: []Message{{Role: "tool", Content: "ok", ToolCallID: "call_1"}},
+	}
+	a, err := NewAgent(Options{
+		Provider:      provider,
+		Executor:      executor,
+		MaxIterations: 3,
+		OnIteration: func(iter int, messages int) {
+			calls = append(calls, iter)
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = a.Run(context.Background(), "Loop")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(calls) != 3 {
+		t.Fatalf("expected 3 OnIteration calls, got %d", len(calls))
+	}
+	if calls[0] != 0 || calls[1] != 1 || calls[2] != 2 {
+		t.Errorf("expected iterations [0,1,2], got %v", calls)
+	}
+}
+
+func TestAgent_OnIteration_NilNoop(t *testing.T) {
+	provider := &mockProvider{
+		chatResp: &ChatResponse{
+			Choices: []ChatChoice{{Message: Message{Role: "assistant", Content: "OK"}}},
+			Usage:   ChatUsage{TotalTokens: 10},
+		},
+		info:       ProviderInfo{ContextSize: 10000},
+		tokenCount: 50,
+	}
+	a, err := NewAgent(Options{
+		Provider:    provider,
+		Executor:    &mockExecutor{},
+		OnIteration: nil, // explicitly nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Should not panic
+	_, err = a.Run(context.Background(), "test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestAgent_OnIteration_CallbackPanicRecovered(t *testing.T) {
+	provider := &mockProvider{
+		chatResp: &ChatResponse{
+			Choices: []ChatChoice{{Message: Message{Role: "assistant", Content: "OK"}}},
+			Usage:   ChatUsage{TotalTokens: 10},
+		},
+		info:       ProviderInfo{ContextSize: 10000},
+		tokenCount: 50,
+	}
+	a, err := NewAgent(Options{
+		Provider: provider,
+		Executor: &mockExecutor{},
+		OnIteration: func(iter int, messages int) {
+			panic("telemetry error")
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Should not crash; the panic is recovered and the agent continues
+	result, err := a.Run(context.Background(), "test")
+	if err != nil {
+		t.Fatalf("unexpected error despite callback panic: %v", err)
+	}
+	if result != "OK" {
+		t.Errorf("expected 'OK', got %q", result)
+	}
+}

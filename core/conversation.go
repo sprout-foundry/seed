@@ -93,6 +93,18 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 		default:
 		}
 
+		// Fire OnIteration callback (synchronous; panics are caught to avoid crashing the agent)
+		if a.onIteration != nil {
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						a.debugLog("[!!] OnIteration callback panicked: %v\n", r)
+					}
+				}()
+				a.onIteration(iter, ch.agent.state.Len())
+			}()
+		}
+
 		ch.agent.debugLog("[~] Iteration %d - Messages: %d\n", iter, ch.agent.state.Len())
 
 		// Prepare messages

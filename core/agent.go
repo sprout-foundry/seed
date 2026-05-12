@@ -88,6 +88,14 @@ type Options struct {
 	MaxIterations int          // 0 = unlimited
 	Debug         bool
 	EventBus      *events.EventBus // nil = no events
+	// OnIteration is an optional callback invoked synchronously at the start of
+	// each conversation-loop iteration. It receives the iteration number (0-based)
+	// and the current message count in state (includes prior messages but not
+	// the LLM response for the current iteration). The agent does not await a
+	// result or handle errors from this callback; if the callback panics, the
+	// panic is caught and logged (the agent continues).
+	OnIteration func(iteration int, messages int)
+	// Optimizer is used to optimize conversation history across iterations.
 	Optimizer     *ConversationOptimizer
 	RetryConfig   RetryConfig      // retry behavior for transient errors; zero values use defaults
 }
@@ -111,6 +119,7 @@ type Agent struct {
 	fallbackParser *FallbackParser
 	validator      *ResponseValidator
 	optimizer      *ConversationOptimizer
+	onIteration    func(iteration int, messages int)
 	retryConfig    RetryConfig
 
 	// steerMu / steerMsgs hold externally-queued steering messages.
@@ -155,6 +164,7 @@ func NewAgent(opts Options) (*Agent, error) {
 		fallbackParser:     NewFallbackParser(FallbackParserOptions{KnownToolNames: func(name string) bool { return knownTools[name] }}),
 		validator:          NewResponseValidator(ResponseValidatorOptions{DebugLog: func(format string, args ...interface{}) { if opts.Debug { fmt.Printf(format, args...) }} }),
 		optimizer:          opts.Optimizer,
+		onIteration:        opts.OnIteration,
 		retryConfig:        opts.RetryConfig,
 	}, nil
 }
