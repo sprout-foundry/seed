@@ -1200,7 +1200,11 @@ func (fp *FallbackParser) normalize(blocks []rawBlock) []ToolCall {
 			if trimmed == "" || !isValidJSON(trimmed) {
 				continue
 			}
-			key := tc.Function.Name + "\x00" + tc.Function.Arguments
+			// Canonicalize arguments to compact JSON so that semantically
+			// identical arguments with different whitespace are treated as
+			// the same for deduplication and downstream consumption.
+			canonicalArgs := canonicalizeJSON(trimmed)
+			key := tc.Function.Name + "\x00" + canonicalArgs
 			if seen[key] {
 				continue
 			}
@@ -1208,9 +1212,12 @@ func (fp *FallbackParser) normalize(blocks []rawBlock) []ToolCall {
 			if tc.ID == "" {
 				tc.ID = syntheticID(tc.Function.Name)
 			}
-			if tc.Type == "" {
-				tc.Type = "function"
-			}
+			// Always normalize Type to "function" — even if the model
+			// returned a different type (e.g., "tool", "code"), we force
+			// the canonical value so downstream consumers don't have to
+			// handle multiple type strings.
+			tc.Type = "function"
+			tc.Function.Arguments = canonicalArgs
 			toolCalls = append(toolCalls, tc)
 		}
 	}
@@ -1223,6 +1230,27 @@ func syntheticID(name string) string {
 
 func isValidJSON(s string) bool {
 	return json.Valid([]byte(strings.TrimSpace(s)))
+}
+
+// canonicalizeJSON re-marshals valid JSON into compact canonical form.
+// This normalizes whitespace, key ordering is preserved by Go's map
+// iteration (which is fine for deduplication as long as the input is
+// already a string). Returns the original string if re-marshaling fails.
+//
+// Uses json.Decoder.UseNumber() to preserve numeric precision for large
+// integers that would otherwise be truncated to float64.
+func canonicalizeJSON(s string) string {
+	var parsed any
+	dec := json.NewDecoder(strings.NewReader(s))
+	dec.UseNumber()
+	if err := dec.Decode(&parsed); err != nil {
+		return s
+	}
+	out, err := json.Marshal(parsed)
+	if err != nil {
+		return s
+	}
+	return string(out)
 }
 
 func (fp *FallbackParser) cleanContent(content string, blocks []rawBlock) string {

@@ -92,7 +92,7 @@ func TestParse_JSONFence_ToolCallsArray(t *testing.T) {
 	if result.ToolCalls[0].Function.Name != "search" {
 		t.Errorf("expected name 'search', got %q", result.ToolCalls[0].Function.Name)
 	}
-	if result.ToolCalls[0].Function.Arguments != `{"q": "hello"}` {
+	if result.ToolCalls[0].Function.Arguments != `{"q":"hello"}` {
 		t.Errorf("unexpected args: %s", result.ToolCalls[0].Function.Arguments)
 	}
 }
@@ -176,7 +176,7 @@ func TestParse_XMLFunctionBlock(t *testing.T) {
 	if result.ToolCalls[0].Function.Name != "web_search" {
 		t.Errorf("expected name 'web_search', got %q", result.ToolCalls[0].Function.Name)
 	}
-	if result.ToolCalls[0].Function.Arguments != `{"query": "test"}` {
+	if result.ToolCalls[0].Function.Arguments != `{"query":"test"}` {
 		t.Errorf("unexpected args: %s", result.ToolCalls[0].Function.Arguments)
 	}
 }
@@ -586,7 +586,7 @@ func TestParse_ToolUseInputString(t *testing.T) {
 	if result.ToolCalls[0].Function.Name != "strInput" {
 		t.Errorf("expected name 'strInput', got %q", result.ToolCalls[0].Function.Name)
 	}
-	if result.ToolCalls[0].Function.Arguments != `{"key": "val"}` {
+	if result.ToolCalls[0].Function.Arguments != `{"key":"val"}` {
 		t.Errorf("unexpected args: %s", result.ToolCalls[0].Function.Arguments)
 	}
 }
@@ -632,7 +632,7 @@ func TestParse_JSONFence_SingleToolCallObject(t *testing.T) {
 	if result.ToolCalls[0].Function.Name != "search" {
 		t.Errorf("expected name 'search', got %q", result.ToolCalls[0].Function.Name)
 	}
-	if result.ToolCalls[0].Function.Arguments != `{"q": "hello"}` {
+	if result.ToolCalls[0].Function.Arguments != `{"q":"hello"}` {
 		t.Errorf("unexpected args: %s", result.ToolCalls[0].Function.Arguments)
 	}
 }
@@ -837,7 +837,7 @@ func TestParse_BareJSON_EscapedQuotesInJSON(t *testing.T) {
 		t.Errorf("expected name 'query', got %q", result.ToolCalls[0].Function.Name)
 	}
 	// The arguments should preserve the escaped quotes
-	expectedArgs := `{"q": "She said \"hello\""}`
+	expectedArgs := `{"q":"She said \"hello\""}`
 	if result.ToolCalls[0].Function.Arguments != expectedArgs {
 		t.Errorf("unexpected args: got %q, want %q", result.ToolCalls[0].Function.Arguments, expectedArgs)
 	}
@@ -946,8 +946,8 @@ func TestParse_BareJSON_FunctionCallFormat(t *testing.T) {
 	if result.ToolCalls[0].Function.Name != "legacyFunc" {
 		t.Errorf("expected name 'legacyFunc', got %q", result.ToolCalls[0].Function.Name)
 	}
-	if result.ToolCalls[0].Function.Arguments != `{"x": 42}` {
-		t.Errorf("unexpected args: got %q, want %q", result.ToolCalls[0].Function.Arguments, `{"x": 42}`)
+	if result.ToolCalls[0].Function.Arguments != `{"x":42}` {
+		t.Errorf("unexpected args: got %q, want %q", result.ToolCalls[0].Function.Arguments, `{"x":42}`)
 	}
 }
 
@@ -967,8 +967,8 @@ func TestParse_BareJSON_SingleToolCallObject(t *testing.T) {
 	if result.ToolCalls[0].Function.Name != "singleObj" {
 		t.Errorf("expected name 'singleObj', got %q", result.ToolCalls[0].Function.Name)
 	}
-	if result.ToolCalls[0].Function.Arguments != `{"a": 1}` {
-		t.Errorf("unexpected args: got %q, want %q", result.ToolCalls[0].Function.Arguments, `{"a": 1}`)
+	if result.ToolCalls[0].Function.Arguments != `{"a":1}` {
+		t.Errorf("unexpected args: got %q, want %q", result.ToolCalls[0].Function.Arguments, `{"a":1}`)
 	}
 }
 
@@ -1146,7 +1146,7 @@ func TestParse_FunctionNamePattern_Basic(t *testing.T) {
 	if result.ToolCalls[0].Function.Name != "search" {
 		t.Errorf("expected name 'search', got %q", result.ToolCalls[0].Function.Name)
 	}
-	if result.ToolCalls[0].Function.Arguments != `{"query": "hello"}` {
+	if result.ToolCalls[0].Function.Arguments != `{"query":"hello"}` {
 		t.Errorf("unexpected args: %s", result.ToolCalls[0].Function.Arguments)
 	}
 }
@@ -1451,7 +1451,7 @@ arguments: "{\"query": "hello"}"`
 	if result.ToolCalls[0].Function.Name != "search" {
 		t.Errorf("expected name 'search', got %q", result.ToolCalls[0].Function.Name)
 	}
-	if result.ToolCalls[0].Function.Arguments != `{"query": "hello"}` {
+	if result.ToolCalls[0].Function.Arguments != `{"query":"hello"}` {
 		t.Errorf("unexpected args: %s", result.ToolCalls[0].Function.Arguments)
 	}
 }
@@ -1520,7 +1520,7 @@ func TestParse_FunctionNamePattern_ArgsOnSeparateLine(t *testing.T) {
 	if result.ToolCalls[0].Function.Name != "search" {
 		t.Errorf("expected name 'search', got %q", result.ToolCalls[0].Function.Name)
 	}
-	if result.ToolCalls[0].Function.Arguments != `{"query": "test"}` {
+	if result.ToolCalls[0].Function.Arguments != `{"query":"test"}` {
 		t.Errorf("unexpected args: %s", result.ToolCalls[0].Function.Arguments)
 	}
 	// Cleaned content should NOT contain the JSON body
@@ -1627,7 +1627,7 @@ func TestParse_NamedToolBlock_EndToEnd(t *testing.T) {
 	if result.ToolCalls[0].Function.Name != "search" {
 		t.Errorf("expected name 'search', got %q", result.ToolCalls[0].Function.Name)
 	}
-	if result.ToolCalls[0].Function.Arguments != `{"query": "hello"}` {
+	if result.ToolCalls[0].Function.Arguments != `{"query":"hello"}` {
 		t.Errorf("unexpected args: %s", result.ToolCalls[0].Function.Arguments)
 	}
 	// Verify cleaned content removed the tool block
@@ -1650,7 +1650,7 @@ func TestParse_NamedToolBlock_Basic(t *testing.T) {
 	if result[0].Function.Name != "search" {
 		t.Errorf("expected name 'search', got %q", result[0].Function.Name)
 	}
-	if result[0].Function.Arguments != `{"query": "hello"}` {
+	if result[0].Function.Arguments != `{"query":"hello"}` {
 		t.Errorf("unexpected args: %s", result[0].Function.Arguments)
 	}
 }
@@ -1842,7 +1842,7 @@ func TestParse_NamedToolBlock_NestedBraces(t *testing.T) {
 	if result[0].Function.Name != "nested" {
 		t.Errorf("expected name 'nested', got %q", result[0].Function.Name)
 	}
-	if result[0].Function.Arguments != `{"outer": {"inner": "value"}}` {
+	if result[0].Function.Arguments != `{"outer":{"inner":"value"}}` {
 		t.Errorf("unexpected args: %s", result[0].Function.Arguments)
 	}
 }
@@ -1861,5 +1861,537 @@ func TestParse_NamedToolBlock_SpacedBrace(t *testing.T) {
 	}
 	if result[0].Function.Name != "notool" {
 		t.Errorf("expected name 'notool', got %q", result[0].Function.Name)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tests for normalize() enhancement: type forcing, canonicalization, dedup
+// ---------------------------------------------------------------------------
+
+func TestNormalize_ForcesTypeToFunction(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{})
+	blocks := []rawBlock{{
+		start: 0,
+		end:   5,
+		parsed: []ToolCall{
+			{
+				ID:       "id1",
+				Type:     "tool",
+				Function: ToolCallFunction{Name: "search", Arguments: "{}"},
+			},
+			{
+				ID:       "id2",
+				Type:     "code",
+				Function: ToolCallFunction{Name: "compute", Arguments: "{}"},
+			},
+			{
+				ID:       "id3",
+				Type:     "python",
+				Function: ToolCallFunction{Name: "exec", Arguments: "{}"},
+			},
+		},
+	}}
+	result := fp.normalize(blocks)
+	if len(result) != 3 {
+		t.Fatalf("expected 3 tool calls, got %d", len(result))
+	}
+	for _, tc := range result {
+		if tc.Type != "function" {
+			t.Errorf("expected type 'function' for tool %q, got %q", tc.Function.Name, tc.Type)
+		}
+	}
+}
+
+func TestNormalize_CanonicalizesArguments(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{})
+	blocks := []rawBlock{{
+		start: 0,
+		end:   5,
+		parsed: []ToolCall{{
+			ID:   "id1",
+			Type: "function",
+			Function: ToolCallFunction{
+				Name:      "search",
+				Arguments: `{ "q" : "hello" , "limit" : 10 }`,
+			},
+		}},
+	}}
+	result := fp.normalize(blocks)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(result))
+	}
+	args := result[0].Function.Arguments
+	// Verify canonical: compact JSON (no unnecessary whitespace)
+	if !json.Valid([]byte(args)) {
+		t.Fatalf("expected valid JSON, got: %s", args)
+	}
+	// Canonical form should not have spaces around : or ,
+	if strings.Contains(args, " : ") || strings.Contains(args, ": ") {
+		t.Errorf("expected compact JSON (no spaces after colons), got: %s", args)
+	}
+	// Verify it has the expected keys and values
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(args), &parsed); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+	if parsed["q"] != "hello" {
+		t.Errorf("expected q='hello', got %v", parsed["q"])
+	}
+	if parsed["limit"] != float64(10) {
+		t.Errorf("expected limit=10, got %v", parsed["limit"])
+	}
+}
+
+func TestNormalize_CanonicalizesNestedWhitespace(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{})
+	blocks := []rawBlock{{
+		start: 0,
+		end:   5,
+		parsed: []ToolCall{{
+			ID:   "id1",
+			Type: "function",
+			Function: ToolCallFunction{
+				Name: "compute",
+				Arguments: `{
+  "outer": {
+    "inner": "value",
+    "count": 42
+  }
+}`,
+			},
+		}},
+	}}
+	result := fp.normalize(blocks)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(result))
+	}
+	// Canonical form should be compact, no newlines
+	if strings.Contains(result[0].Function.Arguments, "\n") {
+		t.Errorf("expected no newlines in canonical args, got: %s", result[0].Function.Arguments)
+	}
+	// It should be valid JSON
+	if !json.Valid([]byte(result[0].Function.Arguments)) {
+		t.Errorf("expected valid JSON, got: %s", result[0].Function.Arguments)
+	}
+}
+
+func TestNormalize_DedupeWithCanonicalizedArgs(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{})
+	// Same name and semantically identical args but different whitespace
+	blocks := []rawBlock{{
+		start: 0,
+		end:   5,
+		parsed: []ToolCall{
+			{
+				ID:   "id1",
+				Type: "function",
+				Function: ToolCallFunction{
+					Name:      "search",
+					Arguments: `{"q":"hello"}`,
+				},
+			},
+			{
+				ID:   "id2",
+				Type: "function",
+				Function: ToolCallFunction{
+					Name:      "search",
+					Arguments: `{ "q" : "hello" }`,
+				},
+			},
+		},
+	}}
+	result := fp.normalize(blocks)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 deduplicated tool call, got %d", len(result))
+	}
+	if result[0].Function.Arguments != `{"q":"hello"}` {
+		t.Errorf("expected canonical args, got %q", result[0].Function.Arguments)
+	}
+}
+
+func TestNormalize_DedupePreservesFirstOccurrenceID(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{})
+	blocks := []rawBlock{{
+		start: 0,
+		end:   5,
+		parsed: []ToolCall{
+			{
+				ID:   "first_id",
+				Type: "function",
+				Function: ToolCallFunction{
+					Name:      "search",
+					Arguments: `{"q":"test"}`,
+				},
+			},
+			{
+				ID:   "second_id",
+				Type: "function",
+				Function: ToolCallFunction{
+					Name:      "search",
+					Arguments: `{ "q" : "test" }`,
+				},
+			},
+		},
+	}}
+	result := fp.normalize(blocks)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 deduplicated tool call, got %d", len(result))
+	}
+	// Should keep the ID from the first occurrence
+	if result[0].ID != "first_id" {
+		t.Errorf("expected ID 'first_id', got %q", result[0].ID)
+	}
+}
+
+func TestNormalize_PreservesExistingID(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{})
+	blocks := []rawBlock{{
+		start: 0,
+		end:   5,
+		parsed: []ToolCall{{
+			ID:   "call_custom_123",
+			Type: "function",
+			Function: ToolCallFunction{
+				Name:      "search",
+				Arguments: `{"q":"hello"}`,
+			},
+		}},
+	}}
+	result := fp.normalize(blocks)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(result))
+	}
+	if result[0].ID != "call_custom_123" {
+		t.Errorf("expected ID 'call_custom_123', got %q", result[0].ID)
+	}
+}
+
+func TestNormalize_GeneratesSyntheticID(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{})
+	blocks := []rawBlock{{
+		start: 0,
+		end:   5,
+		parsed: []ToolCall{{
+			ID:   "",
+			Type: "function",
+			Function: ToolCallFunction{
+				Name:      "search",
+				Arguments: `{"q":"hello"}`,
+			},
+		}},
+	}}
+	result := fp.normalize(blocks)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(result))
+	}
+	if result[0].ID == "" {
+		t.Error("expected synthetic ID to be generated")
+	}
+	if !strings.HasPrefix(result[0].ID, "fallback_search_") {
+		t.Errorf("expected ID to start with 'fallback_search_', got %q", result[0].ID)
+	}
+	// The ID should be in the format fallback_{name}_{nano}
+	parts := strings.SplitN(result[0].ID, "_", 3)
+	if len(parts) != 3 {
+		t.Errorf("expected 3 parts in ID, got %d: %q", len(parts), result[0].ID)
+	}
+	if parts[0] != "fallback" {
+		t.Errorf("expected first part 'fallback', got %q", parts[0])
+	}
+	if parts[1] != "search" {
+		t.Errorf("expected second part 'search', got %q", parts[1])
+	}
+}
+
+func TestNormalize_DedupeDifferentArgsNotDeduped(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{})
+	blocks := []rawBlock{{
+		start: 0,
+		end:   5,
+		parsed: []ToolCall{
+			{
+				ID:   "id1",
+				Type: "function",
+				Function: ToolCallFunction{
+					Name:      "search",
+					Arguments: `{"q":"hello"}`,
+				},
+			},
+			{
+				ID:   "id2",
+				Type: "function",
+				Function: ToolCallFunction{
+					Name:      "search",
+					Arguments: `{"q":"world"}`,
+				},
+			},
+		},
+	}}
+	result := fp.normalize(blocks)
+	if len(result) != 2 {
+		t.Fatalf("expected 2 tool calls (different args), got %d", len(result))
+	}
+}
+
+func TestNormalize_DedupeDifferentNamesNotDeduped(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{})
+	blocks := []rawBlock{{
+		start: 0,
+		end:   5,
+		parsed: []ToolCall{
+			{
+				ID:   "id1",
+				Type: "function",
+				Function: ToolCallFunction{
+					Name:      "search",
+					Arguments: `{"q":"hello"}`,
+				},
+			},
+			{
+				ID:   "id2",
+				Type: "function",
+				Function: ToolCallFunction{
+					Name:      "compute",
+					Arguments: `{"q":"hello"}`,
+				},
+			},
+		},
+	}}
+	result := fp.normalize(blocks)
+	if len(result) != 2 {
+		t.Fatalf("expected 2 tool calls (different names), got %d", len(result))
+	}
+}
+
+func TestNormalize_SkipsEmptyArgsAfterTrim(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{})
+	blocks := []rawBlock{{
+		start: 0,
+		end:   5,
+		parsed: []ToolCall{{
+			ID:       "id1",
+			Type:     "function",
+			Function: ToolCallFunction{Name: "test", Arguments: "   "},
+		}},
+	}}
+	result := fp.normalize(blocks)
+	if len(result) != 0 {
+		t.Errorf("expected no tool calls with whitespace-only args, got %d", len(result))
+	}
+}
+
+func TestNormalize_SkipsInvalidJSONArgs(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{})
+	blocks := []rawBlock{{
+		start: 0,
+		end:   5,
+		parsed: []ToolCall{{
+			ID:   "id1",
+			Type: "function",
+			Function: ToolCallFunction{
+				Name:      "test",
+				Arguments: "not valid json {",
+			},
+		}},
+	}}
+	result := fp.normalize(blocks)
+	if len(result) != 0 {
+		t.Errorf("expected no tool calls with invalid JSON args, got %d", len(result))
+	}
+}
+
+func TestNormalize_SkipsEmptyName(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{})
+	blocks := []rawBlock{{
+		start: 0,
+		end:   5,
+		parsed: []ToolCall{{
+			ID:   "id1",
+			Type: "function",
+			Function: ToolCallFunction{
+				Name:      "",
+				Arguments: `{"q":"hello"}`,
+			},
+		}},
+	}}
+	result := fp.normalize(blocks)
+	if len(result) != 0 {
+		t.Errorf("expected no tool calls with empty name, got %d", len(result))
+	}
+}
+
+func TestNormalize_KnownToolFilterSkipsUnknown(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{
+		KnownToolNames: func(s string) bool { return s == "allowed" },
+	})
+	blocks := []rawBlock{{
+		start: 0,
+		end:   5,
+		parsed: []ToolCall{
+			{
+				ID:   "id1",
+				Type: "function",
+				Function: ToolCallFunction{
+					Name:      "allowed",
+					Arguments: `{"x": 1}`,
+				},
+			},
+			{
+				ID:   "id2",
+				Type: "function",
+				Function: ToolCallFunction{
+					Name:      "denied",
+					Arguments: `{"y": 2}`,
+				},
+			},
+		},
+	}}
+	result := fp.normalize(blocks)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 tool call (only 'allowed'), got %d", len(result))
+	}
+	if result[0].Function.Name != "allowed" {
+		t.Errorf("expected name 'allowed', got %q", result[0].Function.Name)
+	}
+}
+
+func TestCanonicalizeJSON_InvalidReturnsOriginal(t *testing.T) {
+	invalidInputs := []string{
+		"not json at all",
+		"{invalid}",
+		`{"key": "unterminated`,
+		"",
+		"   ",
+		"[1, 2, , 3]",
+		`{"key": undefined}`,
+	}
+	for _, input := range invalidInputs {
+		got := canonicalizeJSON(input)
+		if got != input {
+			t.Errorf("canonicalizeJSON(%q) = %q, want %q", input, got, input)
+		}
+	}
+}
+
+func TestCanonicalizeJSON_ValidJSON(t *testing.T) {
+	tests := []struct {
+		name   string
+		input  string
+		want   string
+		wantOK bool
+	}{
+		{
+			name:   "compact",
+			input:  `{"a":1}`,
+			want:   `{"a":1}`,
+			wantOK: true,
+		},
+		{
+			name:   "spaced",
+			input:  `{ "a" : 1 }`,
+			want:   `{"a":1}`,
+			wantOK: true,
+		},
+		{
+			name:   "newline",
+			input:  "{\n  \"a\": 1\n}",
+			want:   `{"a":1}`,
+			wantOK: true,
+		},
+		{
+			name:   "array of numbers",
+			input:  `[1, 2, 3]`,
+			want:   `[1,2,3]`,
+			wantOK: true,
+		},
+		{
+			name:   "nested single key",
+			input:  `{ "a": { "b": "c" } }`,
+			want:   `{"a":{"b":"c"}}`,
+			wantOK: true,
+		},
+		{
+			name:   "array with single-key nested map",
+			input:  `[1, "two", true, null, {"key": "val"}]`,
+			want:   `[1,"two",true,null,{"key":"val"}]`,
+			wantOK: true,
+		},
+		{
+			name:   "string with escapes",
+			input:  `{"msg": "he said \"hello\""}`,
+			want:   `{"msg":"he said \"hello\""}`,
+			wantOK: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := canonicalizeJSON(tc.input)
+			if got != tc.want {
+				t.Errorf("canonicalizeJSON(%q) = %q, want %q", tc.input, got, tc.want)
+			}
+			// Verify the output is valid JSON
+			if !json.Valid([]byte(got)) {
+				t.Errorf("canonicalizeJSON(%q) produced invalid JSON: %s", tc.input, got)
+			}
+		})
+	}
+}
+
+func TestSyntheticID_Format(t *testing.T) {
+	id := syntheticID("search")
+	if !strings.HasPrefix(id, "fallback_search_") {
+		t.Errorf("expected ID to start with 'fallback_search_', got %q", id)
+	}
+	// Check format: fallback_{name}_{nano}
+	parts := strings.SplitN(id, "_", 3)
+	if len(parts) != 3 {
+		t.Errorf("expected 3 parts in ID, got %d: %q", len(parts), id)
+	}
+	if parts[0] != "fallback" {
+		t.Errorf("expected first part 'fallback', got %q", parts[0])
+	}
+	if parts[1] != "search" {
+		t.Errorf("expected second part 'search', got %q", parts[1])
+	}
+	// The third part should be a numeric timestamp
+	ts := parts[2]
+	if ts == "" {
+		t.Error("expected non-empty timestamp part")
+	}
+	// Basic check: it should be digits only
+	for _, c := range ts {
+		if c < '0' || c > '9' {
+			t.Errorf("timestamp part %q contains non-digit character %q", ts, string(c))
+			break
+		}
+	}
+}
+
+func TestSyntheticID_UniqueAcrossCalls(t *testing.T) {
+	// Generate IDs rapidly and verify they are all unique.
+	// On fast systems, this may produce the same UnixNano value,
+	// but at least 50% should be unique in practice.
+	const count = 20
+	ids := make(map[string]bool)
+	for i := 0; i < count; i++ {
+		id := syntheticID("test")
+		if ids[id] {
+			t.Logf("duplicate ID generated: %s", id)
+			continue
+		}
+		ids[id] = true
+	}
+	if len(ids) == 0 {
+		t.Error("all generated IDs were duplicates")
+	}
+}
+
+func TestCanonicalizeJSON_PreservesLargeIntegers(t *testing.T) {
+	input := `{"id": 9007199254740993}`
+	got := canonicalizeJSON(input)
+	// With UseNumber(), the large integer should survive.
+	// Without it, 9007199254740993 would become 9007199254740992 (float64 truncation).
+	if !strings.Contains(got, "9007199254740993") {
+		t.Errorf("canonicalizeJSON(%q) = %q, expected large integer preserved", input, got)
 	}
 }
