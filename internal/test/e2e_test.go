@@ -4727,6 +4727,261 @@ func TestE2E_ChannelSuffixStripped(t *testing.T) {
 	}
 }
 
+func TestE2E_MissingToolCallID_SyntheticID(t *testing.T) {
+	// Scenario: provider returns structured tool calls with empty IDs.
+	// The normalizer generates synthetic IDs, the executor receives them, and the tool
+	// result is linked via the generated ID.
+	//
+	// Flow:
+	// 1. Provider returns tool call with empty ID
+	// 2. Normalizer generates synthetic ID (call_{name}_{nano}_{seq})
+	// 3. Executor receives the tool call with the synthetic ID
+	// 4. Executor returns tool result using the synthetic ID
+	// 5. Tool result is linked to the assistant message via matching ID
+	// 6. Provider returns final answer
+	h := NewHarnessWithT(t)
+
+	// Register the tool so the executor recognizes it
+	h.Executor().AddTool(core.Tool{
+		Name:        "read_file",
+		Description: "Read a file",
+	})
+
+	// First response: tool call with EMPTY ID — normalizer must generate one
+	h.Provider().AddToolCallResponse(
+		"Reading the file.",
+		core.ToolCall{
+			ID: "", // intentionally empty
+			Function: core.ToolCallFunction{
+				Name:      "read_file",
+				Arguments: `{"path":"config.yaml"}`,
+			},
+		},
+	)
+
+	// Second response: final answer after tool execution
+	h.Provider().AddTextResponse("The configuration file contains database settings on port 5432.")
+
+	// Don't pre-configure a tool result by ID — the executor will use the
+	// synthetic ID from the call. We'll verify the linkage below.
+
+	agent := h.NewAgent()
+	result, err := agent.Run(context.Background(), "Read config.yaml")
+	h.AssertNoError(err)
+	h.AssertEquals(result, "The configuration file contains database settings on port 5432.")
+
+	// Provider called twice: tool call iteration + final answer
+	h.AssertProviderCalledN(2)
+
+	// Executor called once (for the tool call with synthetic ID)
+	h.AssertExecutorCalledN(1)
+
+	// State: user + assistant(tool call) + tool result + assistant(final)
+	h.AssertStateHasNMessages(agent, 4)
+
+	// Verify the executor received a tool call with a non-empty synthetic ID
+	execCalls := h.Executor().LastCalls()
+	if len(execCalls) != 1 {
+		t.Fatalf("expected 1 executor call, got %d", len(execCalls))
+	}
+	syntheticID := execCalls[0].ID
+	if syntheticID == "" {
+		t.Error("expected normalizer to generate non-empty ID for tool call")
+	}
+	if !strings.HasPrefix(syntheticID, "call_read_file_") {
+		t.Errorf("expected synthetic ID prefix 'call_read_file_', got %q", syntheticID)
+	}
+	if execCalls[0].Function.Name != "read_file" {
+		t.Errorf("expected executor to receive 'read_file', got %q", execCalls[0].Function.Name)
+	}
+
+	// Verify state messages
+	messages := agent.State().Messages()
+
+	// Message 2 (index 1) should be the assistant with the tool call
+	if messages[1].Role != "assistant" {
+		t.Errorf("expected message 2 to be assistant, got %q", messages[1].Role)
+	}
+	if len(messages[1].ToolCalls) != 1 {
+		t.Fatalf("expected message 2 to have 1 tool call, got %d", len(messages[1].ToolCalls))
+	}
+	// The tool call in state should have the synthetic ID (normalizer updated it)
+	stateToolCallID := messages[1].ToolCalls[0].ID
+	if stateToolCallID == "" {
+		t.Error("expected tool call in state to have non-empty ID after normalization")
+	}
+	if stateToolCallID != syntheticID {
+		t.Errorf("expected tool call ID in state (%q) to match executor ID (%q)", stateToolCallID, syntheticID)
+	}
+
+	// Message 3 (index 2) should be the tool result linked to the synthetic ID
+	if messages[2].Role != "tool" {
+		t.Errorf("expected message 3 to be tool, got %q", messages[2].Role)
+	}
+	if messages[2].ToolCallID != syntheticID {
+		t.Errorf("expected tool result ToolCallID (%q) to match synthetic ID (%q)", messages[2].ToolCallID, syntheticID)
+	}
+	// Verify the tool result content (mock executor default placeholder)
+	if messages[2].Content != "mock result" {
+		t.Errorf("expected tool result content 'mock result', got %q", messages[2].Content)
+	}
+
+	// Message 4 (index 3) should be the final answer
+	if messages[3].Role != "assistant" {
+		t.Errorf("expected message 4 to be assistant, got %q", messages[3].Role)
+	}
+	if messages[3].Content != "The configuration file contains database settings on port 5432." {
+		t.Errorf("expected final answer in state message 4, got %q", messages[3].Content)
+	}
+
+	// Verify query lifecycle events
+	h.AssertEventPublished(events.EventTypeQueryStarted)
+	h.AssertEventPublished(events.EventTypeQueryCompleted)
+
+	// Verify tool_start and tool_end events use the synthetic ID
+	h.AssertEventPublished(events.EventTypeToolStart)
+	h.AssertEventPublished(events.EventTypeToolEnd)
+
+	toolStartEvents := h.FindEvents(events.EventTypeToolStart)
+	if len(toolStartEvents) != 1 {
+		t.Fatalf("expected 1 tool_start event, got %d", len(toolStartEvents))
+	}
+	tsData := toolStartEvents[0].Data.(map[string]interface{})
+	tsID, ok := tsData["tool_call_id"].(string)
+	if !ok || tsID != syntheticID {
+		t.Errorf("expected tool_start event tool_call_id to match synthetic ID (%q), got %q", syntheticID, tsID)
+	}
+
+	toolEndEvents := h.FindEvents(events.EventTypeToolEnd)
+	if len(toolEndEvents) != 1 {
+		t.Fatalf("expected 1 tool_end event, got %d", len(toolEndEvents))
+	}
+	teData := toolEndEvents[0].Data.(map[string]interface{})
+	teID, ok := teData["tool_call_id"].(string)
+	if !ok || teID != syntheticID {
+		t.Errorf("expected tool_end event tool_call_id to match synthetic ID (%q), got %q", syntheticID, teID)
+	}
+
+	// Verify accumulated token counts: 80 (tool call) + 35 (final) = 115
+	h.AssertStateHasTokens(agent, 115)
+}
+
+func TestE2E_MissingToolCallID_MultipleCalls(t *testing.T) {
+	// Scenario: provider returns multiple tool calls, some with missing IDs.
+	// Normalizer generates unique synthetic IDs for each. All are executed
+	// and the results are linked correctly.
+	h := NewHarnessWithT(t)
+
+	h.Executor().AddTool(core.Tool{
+		Name:        "read_file",
+		Description: "Read a file",
+	})
+	h.Executor().AddTool(core.Tool{
+		Name:        "write_file",
+		Description: "Write a file",
+	})
+
+	// First response: two tool calls — first has ID, second doesn't
+	h.Provider().AddToolCallResponse(
+		"Reading and writing files.",
+		core.ToolCall{
+			ID: "call_existing",
+			Function: core.ToolCallFunction{
+				Name:      "read_file",
+				Arguments: `{"path":"input.txt"}`,
+			},
+		},
+		core.ToolCall{
+			ID: "", // missing ID — normalizer generates one
+			Function: core.ToolCallFunction{
+				Name:      "write_file",
+				Arguments: `{"path":"output.txt","content":"result"}`,
+			},
+		},
+	)
+
+	// Second response: final answer
+	h.Provider().AddTextResponse("Files processed successfully with the expected output.")
+
+	agent := h.NewAgent()
+	result, err := agent.Run(context.Background(), "Process files")
+	h.AssertNoError(err)
+	h.AssertEquals(result, "Files processed successfully with the expected output.")
+
+	h.AssertProviderCalledN(2)
+	h.AssertExecutorCalledN(1)
+
+	// State: user + assistant(tool calls) + 2 tool results + assistant(final)
+	h.AssertStateHasNMessages(agent, 5)
+
+	// Verify executor received both calls with proper IDs
+	execCalls := h.Executor().LastCalls()
+	if len(execCalls) != 2 {
+		t.Fatalf("expected 2 executor calls, got %d", len(execCalls))
+	}
+
+	// First call preserves existing ID
+	if execCalls[0].ID != "call_existing" {
+		t.Errorf("expected first call ID 'call_existing', got %q", execCalls[0].ID)
+	}
+
+	// Second call has synthetic ID
+	syntheticID := execCalls[1].ID
+	if syntheticID == "" {
+		t.Error("expected normalizer to generate ID for second call")
+	}
+	if !strings.HasPrefix(syntheticID, "call_write_file_") {
+		t.Errorf("expected synthetic ID prefix 'call_write_file_', got %q", syntheticID)
+	}
+
+	// IDs must be unique
+	if execCalls[0].ID == execCalls[1].ID {
+		t.Error("expected unique IDs for different tool calls")
+	}
+
+	// Verify state: assistant message has both tool calls with correct IDs
+	messages := agent.State().Messages()
+	if len(messages[1].ToolCalls) != 2 {
+		t.Fatalf("expected 2 tool calls in assistant message, got %d", len(messages[1].ToolCalls))
+	}
+	if messages[1].ToolCalls[0].ID != "call_existing" {
+		t.Errorf("expected first tool call ID 'call_existing', got %q", messages[1].ToolCalls[0].ID)
+	}
+	if messages[1].ToolCalls[1].ID != syntheticID {
+		t.Errorf("expected second tool call ID %q, got %q", syntheticID, messages[1].ToolCalls[1].ID)
+	}
+
+	// Verify tool results are linked to the correct IDs
+	if messages[2].ToolCallID != "call_existing" {
+		t.Errorf("expected first tool result linked to 'call_existing', got %q", messages[2].ToolCallID)
+	}
+	if messages[3].ToolCallID != syntheticID {
+		t.Errorf("expected second tool result linked to synthetic ID %q, got %q", syntheticID, messages[3].ToolCallID)
+	}
+	// Verify tool result content (mock executor default placeholder)
+	if messages[2].Content != "mock result" {
+		t.Errorf("expected first tool result content 'mock result', got %q", messages[2].Content)
+	}
+	if messages[3].Content != "mock result" {
+		t.Errorf("expected second tool result content 'mock result', got %q", messages[3].Content)
+	}
+
+	// Verify tool_start events — should have 2, one per call
+	toolStartEvents := h.FindEvents(events.EventTypeToolStart)
+	if len(toolStartEvents) != 2 {
+		t.Fatalf("expected 2 tool_start events, got %d", len(toolStartEvents))
+	}
+
+	// Verify tool_end events — should have 2, one per result
+	toolEndEvents := h.FindEvents(events.EventTypeToolEnd)
+	if len(toolEndEvents) != 2 {
+		t.Fatalf("expected 2 tool_end events, got %d", len(toolEndEvents))
+	}
+
+	// Verify accumulated token counts: 80 (provider response with 2 tool calls) + 35 (final) = 115
+	h.AssertStateHasTokens(agent, 115)
+}
+
 func TestE2E_MalformedStructuredToolCall_Retry(t *testing.T) {
 	// Scenario: provider returns structured tool calls with malformed JSON
 	// arguments that the normalizer cannot repair. All calls are dropped,
