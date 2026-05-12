@@ -178,8 +178,6 @@ func (fp *FallbackParser) extractJSONFences(content string) []rawBlock {
 			contentOffset = nl + 1
 		}
 
-		restStart := afterFence + contentOffset
-
 		// Find the closing ```
 		closeIdxInRest := strings.Index(rest, "```")
 		if closeIdxInRest == -1 {
@@ -189,13 +187,16 @@ func (fp *FallbackParser) extractJSONFences(content string) []rawBlock {
 		// blockContent excludes the language tag
 		blockContent := rest[contentOffset:closeIdxInRest]
 
-		// blockEnd is where the fence content ends
-		blockEnd := restStart + closeIdxInRest
-
 		toolCalls := fp.parseToolCallsJSON(blockContent)
 		if len(toolCalls) > 0 {
+			// Block spans from opening fence to end of closing fence (or end of content).
+			// closeIdxInRest is relative to rest (content[afterFence:]).
+			blockEnd := afterFence + closeIdxInRest
+			if closeIdxInRest < len(rest) {
+				blockEnd += 3 // include closing fence markers
+			}
 			blocks = append(blocks, rawBlock{
-				start:  restStart,
+				start:  fenceStart,
 				end:    blockEnd,
 				parsed: toolCalls,
 			})
@@ -283,6 +284,14 @@ func (fp *FallbackParser) parseToolCallsJSON(content string) []ToolCall {
 		}
 	}
 
+	// Single ToolCall object (e.g., {"id": "...", "type": "function", "function": {...}})
+	var single ToolCall
+	if err := json.Unmarshal([]byte(content), &single); err == nil {
+		if single.Function.Name != "" {
+			return []ToolCall{single}
+		}
+	}
+
 	return nil
 }
 
@@ -361,15 +370,11 @@ func (fp *FallbackParser) matchBrace(s string, pos int) (int, error) {
 		c := s[i]
 		if escape {
 			escape = false
-			if c != '\\' {
-				// previous backslash was consumed as escape char
-			}
-			// always advance i for escaped char
 		} else if c == '\\' && inString {
 			escape = true
 		} else if c == '"' {
 			inString = !inString
-		} else {
+		} else if !inString {
 			if c == open {
 				depth++
 			} else if c == close {
@@ -488,12 +493,12 @@ func (fp *FallbackParser) extractToolBlocks(content string) []rawBlock {
 		if len(toolCalls) > 0 {
 			blocks = append(blocks, rawBlock{
 				start:  openTag,
-				end:    bodyEnd + 6, // include </tool> closing tag
+				end:    bodyEnd + 7, // include </tool> closing tag (7 chars)
 				parsed: toolCalls,
 			})
 		}
 		if closeTagIdx != -1 {
-			idx = bodyStart + closeTagIdx + 6
+			idx = bodyStart + closeTagIdx + 7
 		} else {
 			break
 		}
@@ -529,12 +534,12 @@ func (fp *FallbackParser) extractToolUseBlocks(content string) []rawBlock {
 		if len(toolCalls) > 0 {
 			blocks = append(blocks, rawBlock{
 				start:  openTag,
-				end:    bodyEnd + 10, // include </tool_use> closing tag
+				end:    bodyEnd + 11, // include </tool_use> closing tag (11 chars)
 				parsed: toolCalls,
 			})
 		}
 		if closeTagIdx != -1 {
-			idx = bodyStart + closeTagIdx + 10
+			idx = bodyStart + closeTagIdx + 11
 		} else {
 			break
 		}
@@ -628,6 +633,9 @@ func (fp *FallbackParser) normalize(blocks []rawBlock) []ToolCall {
 			seen[key] = true
 			if tc.ID == "" {
 				tc.ID = syntheticID(tc.Function.Name)
+			}
+			if tc.Type == "" {
+				tc.Type = "function"
 			}
 			toolCalls = append(toolCalls, tc)
 		}

@@ -48,15 +48,15 @@
 ## Structural — remaining items
 
 [x] - STRUCTURAL: Standardize error wrapping — adopt `fmt.Errorf("operation: %w", err)` convention across all error paths. `core/`
-[] - STRUCTURAL: Standardize error wrapping — adopt `fmt.Errorf("operation: %w", err)` convention across all error paths. `core/`
 [x] - STRUCTURAL: Add `Len()` to `State` — needed by tests and debug logging. `core/state.go`
 [] - STRUCTURAL: Remove unused sentinel errors or wire them — `ErrNoProvider` and `ErrNoExecutor` panic at construction; decide whether to keep as sentinels or remove. `core/errors.go`
 
 ## Fallback Parsing (SP-006)
 
+[x] - FALLBACK: Create `FallbackParser` struct with `knownToolNames` callback — accept `FallbackParserOptions{KnownToolNames func(string) bool, Debug bool}` so consumers register their tools. `core/fallback_parser.go`
 [] - FALLBACK: Create `FallbackParser` struct with `knownToolNames` callback — accept `FallbackParserOptions{KnownToolNames func(string) bool, Debug bool}` so consumers register their tools. `core/fallback_parser.go`
-[] - FALLBACK: Implement JSON code fence extraction — parse tool_calls arrays and single tool call objects from fenced JSON blocks. `core/fallback_parser.go`
-[] - FALLBACK: Implement bare JSON segment extraction — scan for balanced braces/brackets outside code fences containing tool call data. `core/fallback_parser.go`
+[x] - FALLBACK: Implement JSON code fence extraction — parse tool_calls arrays and single tool call objects from fenced JSON blocks. `core/fallback_parser.go`
+[x] - FALLBACK: Implement bare JSON segment extraction — scan for balanced braces/brackets outside code fences containing tool call data. `core/fallback_parser.go`
 [] - FALLBACK: Implement XML function block extraction — parse `<function=name>` with `<parameter=name>value</parameter>` children. `core/fallback_parser.go`
 [] - FALLBACK: Implement function-name pattern extraction — detect `name: tool_name` followed by balanced JSON arguments. `core/fallback_parser.go`
 [] - FALLBACK: Implement named tool block extraction — detect `tool_name { ... }` where tool_name passes `knownToolNames` check. `core/fallback_parser.go`
@@ -88,17 +88,20 @@
 [] - OPTIMIZE: Add Optimizer option to Agent `Options` — opt-in, zero cost when nil. `core/agent.go`
 [] - OPTIMIZE: Add e2e test for file read dedup — multiple reads of same file -> only latest retained. `test/e2e_test.go`
 
-## Persistence & Sessions (SP-009)
+## Configuration, Steering & Extensibility (SP-009)
 
-[] - PERSIST: Create `FileSystem` interface — `WriteFile`, `ReadFile`, `ReadDir`, `Remove`, `MkdirAll`, `Stat` for testability. `core/persistence.go`
-[] - PERSIST: Create `osFileSystem` — default implementation wrapping `os` package functions. `core/persistence.go`
-[] - PERSIST: Create `PersistenceManager` — stateDir, scopeHash (SHA-256 of working dir), FileSystem dependency. Consumer calls Save/Load directly. `core/persistence.go`
-[] - PERSIST: Implement scoped session storage — `{stateDir}/scoped/{hash}/session_{id}.json` to prevent cross-project collisions. `core/persistence.go`
-[] - PERSIST: Implement `Save()` — serialize AgentState to JSON with SHA-256 checksum, write to scoped path. `core/persistence.go`
-[] - PERSIST: Implement `Load()` — read JSON, verify checksum, deserialize AgentState. `core/persistence.go`
-[] - PERSIST: Implement `Delete()` and `ListSessions()` — basic session management utilities. `core/persistence.go`
-[] - PERSIST: Add e2e save/load round-trip test — state survives disk serialization and deserialization. `test/e2e_test.go`
-[] - PERSIST: Add e2e checksum integrity test — corrupted file detected on load. `test/e2e_test.go`
+[] - CONFIG: Define `RetryConfig` struct — `MaxAttempts`, `InitialDelay`, `MaxDelay`, `Multiplier`, `Jitter` fields with sensible defaults. `core/agent.go`
+[] - CONFIG: Wire `RetryConfig` into `ProcessQuery` retry loop — use consumer-provided values instead of hardcoded defaults. `core/conversation.go`
+[] - CONFIG: Add `Agent.SetProvider(Provider)` — swap provider at runtime for subsequent calls. `core/agent.go`
+[] - STEER: Add `Agent.Steer(Message)` — queue a transient message prepended to the next API call, consumed once, not persisted. `core/agent.go`
+[] - STEER: Add `Agent.SteerSystem(string)` — convenience for injecting system-level steering. `core/agent.go`
+[] - STEER: Wire steering into `prepareMessages()` — transient messages appended after history before API call. `core/conversation.go`
+[] - STEER: Add e2e test for steering — steer mid-session -> next API call includes injected context. `test/e2e_test.go`
+[] - HOOKS: Add `OnIteration` callback to `Options` — fire-and-forget callback with iteration number and message count. `core/agent.go`
+[] - HOOKS: Wire `OnIteration` into `ProcessQuery` loop — call at start of each iteration. `core/conversation.go`
+[] - HOOKS: Publish compaction event — emit event with strategy name, message count delta, estimated tokens saved. `core/conversation.go`
+[] - HOOKS: Add e2e test for iteration hook — callback fires each iteration with correct counts. `test/e2e_test.go`
+[] - HOOKS: Add e2e test for compaction event — context overflow -> compaction event published. `test/e2e_test.go`
 
 ## Turn Checkpoints (SP-010)
 

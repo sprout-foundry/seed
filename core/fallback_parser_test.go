@@ -2,6 +2,7 @@ package core
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -479,6 +480,54 @@ func TestMatchBrace_Unmatched(t *testing.T) {
 	}
 }
 
+// TestMatchBrace_BracketsInsideString verifies that { or } characters
+// inside a JSON string value do NOT affect bracket depth counting.
+func TestMatchBrace_BracketsInsideString(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{})
+	tests := []struct {
+		input string
+		start int
+		end   int
+	}{
+		// Literal { inside string should not increase depth
+		{`{"key": "has { brace"}`, 0, 21},
+		// Literal } inside string should not decrease depth
+		{`{"key": "has } brace"}`, 0, 21},
+		// Both { and } inside string
+		{`{"key": "has { and }"}`, 0, 21},
+		// Multiple brackets in string
+		{`{"key": "{{}} nested"}`, 0, 21},
+		// Escaped backslash followed by closing quote and bracket
+		{`{"key": "\\"}`, 0, 12},
+		// Two escaped backslashes
+		{`{"key": "\\\\"}`, 0, 14},
+	}
+	for _, tc := range tests {
+		result, err := fp.matchBrace(tc.input, tc.start)
+		if err != nil {
+			t.Errorf("matchBrace(%q, %d) error: %v", tc.input, tc.start, err)
+			continue
+		}
+		if result != tc.end {
+			t.Errorf("matchBrace(%q, %d) = %d, want %d", tc.input, tc.start, result, tc.end)
+		}
+	}
+}
+
+// TestMatchBrace_MixedBracketsInsideString verifies that [ and ] inside
+// strings are also ignored when matching {}.
+func TestMatchBrace_MixedBracketsInsideString(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{})
+	input := `{"arr": "[1,2,3]", "obj": "{}"}`
+	result, err := fp.matchBrace(input, 0)
+	if err != nil {
+		t.Fatalf("matchBrace error: %v", err)
+	}
+	if result != len(input)-1 {
+		t.Errorf("matchBrace = %d, want %d", result, len(input)-1)
+	}
+}
+
 func TestParse_JSONFence_NoLanguageTag(t *testing.T) {
 	fp := NewFallbackParser(FallbackParserOptions{})
 	content := "```\n{\"tool_calls\": [{\"id\": \"1\", \"type\": \"function\", \"function\": {\"name\": \"noLang\", \"arguments\": \"{}\"}}]}\n```"
@@ -567,5 +616,514 @@ func TestParse_TrimmedEmptyContent(t *testing.T) {
 	result := fp.Parse("")
 	if len(result.ToolCalls) != 0 {
 		t.Errorf("expected no tool calls from empty, got %d", len(result.ToolCalls))
+	}
+}
+
+func TestParse_JSONFence_SingleToolCallObject(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{})
+	content := "```\n{\"id\": \"call_abc\", \"type\": \"function\", \"function\": {\"name\": \"search\", \"arguments\": \"{\\\"q\\\": \\\"hello\\\"}\"}}\n```"
+	result := fp.Parse(content)
+	if len(result.ToolCalls) != 1 {
+		t.Fatalf("expected 1 tool call from single ToolCall object, got %d", len(result.ToolCalls))
+	}
+	if result.ToolCalls[0].ID != "call_abc" {
+		t.Errorf("expected ID 'call_abc', got %q", result.ToolCalls[0].ID)
+	}
+	if result.ToolCalls[0].Function.Name != "search" {
+		t.Errorf("expected name 'search', got %q", result.ToolCalls[0].Function.Name)
+	}
+	if result.ToolCalls[0].Function.Arguments != `{"q": "hello"}` {
+		t.Errorf("unexpected args: %s", result.ToolCalls[0].Function.Arguments)
+	}
+}
+
+func TestParse_JSONFence_SingleToolCallObject_WithJSONTag(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{})
+	content := "```json\n{\"id\": \"call_1\", \"type\": \"function\", \"function\": {\"name\": \"calc\", \"arguments\": \"{}\"}}\n```"
+	result := fp.Parse(content)
+	if len(result.ToolCalls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(result.ToolCalls))
+	}
+	if result.ToolCalls[0].Function.Name != "calc" {
+		t.Errorf("expected name 'calc', got %q", result.ToolCalls[0].Function.Name)
+	}
+}
+
+func TestParse_JSONFence_CleanContentRemovesEntireFence(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{})
+	content := "Before ```json\n{\"tool_calls\": [{\"id\": \"1\", \"type\": \"function\", \"function\": {\"name\": \"x\", \"arguments\": \"{}\"}}]}\n``` After"
+	result := fp.Parse(content)
+	if len(result.ToolCalls) == 0 {
+		t.Fatal("expected tool calls")
+	}
+	// The entire fence (including markers) should be removed
+	if strings.Contains(result.CleanedContent, "```") {
+		t.Errorf("cleaned content should not contain fence markers, got: %q", result.CleanedContent)
+	}
+	// Surrounding text should be preserved
+	if !strings.Contains(result.CleanedContent, "Before") {
+		t.Error("expected 'Before' in cleaned content")
+	}
+	if !strings.Contains(result.CleanedContent, "After") {
+		t.Error("expected 'After' in cleaned content")
+	}
+}
+
+func TestParse_JSONFence_MultipleFences(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{})
+	content := "First:\n```\n{\"tool_calls\": [{\"id\": \"1\", \"type\": \"function\", \"function\": {\"name\": \"first\", \"arguments\": \"{}\"}}]}\n```\nSecond:\n```json\n{\"tool_calls\": [{\"id\": \"2\", \"type\": \"function\", \"function\": {\"name\": \"second\", \"arguments\": \"{}\"}}]}\n```"
+	result := fp.Parse(content)
+	if len(result.ToolCalls) != 2 {
+		t.Fatalf("expected 2 tool calls from multiple fences, got %d", len(result.ToolCalls))
+	}
+	if result.ToolCalls[0].Function.Name != "first" {
+		t.Errorf("expected first tool 'first', got %q", result.ToolCalls[0].Function.Name)
+	}
+	if result.ToolCalls[1].Function.Name != "second" {
+		t.Errorf("expected second tool 'second', got %q", result.ToolCalls[1].Function.Name)
+	}
+}
+
+func TestParse_JSONFence_NoNewlineAfterFence(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{})
+	// Fence with no newline after opening markers — content starts immediately
+	content := "```{\"tool_calls\": [{\"id\": \"1\", \"type\": \"function\", \"function\": {\"name\": \"inline\", \"arguments\": \"{}\"}}]}```"
+	result := fp.Parse(content)
+	if len(result.ToolCalls) != 1 {
+		t.Fatalf("expected 1 tool call from inline fence, got %d", len(result.ToolCalls))
+	}
+	if result.ToolCalls[0].Function.Name != "inline" {
+		t.Errorf("expected name 'inline', got %q", result.ToolCalls[0].Function.Name)
+	}
+}
+
+func TestParse_JSONFence_SingleToolCall_WithoutType(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{})
+	content := "```json\n{\"id\": \"call_abc\", \"function\": {\"name\": \"search\", \"arguments\": \"{}\"}}\n```"
+	result := fp.Parse(content)
+	if len(result.ToolCalls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(result.ToolCalls))
+	}
+	if result.ToolCalls[0].Function.Name != "search" {
+		t.Errorf("expected name 'search', got %q", result.ToolCalls[0].Function.Name)
+	}
+	// Type should default to "function" even when absent from JSON
+	if result.ToolCalls[0].Type != "function" {
+		t.Errorf("expected type 'function', got %q", result.ToolCalls[0].Type)
+	}
+}
+
+func TestParse_JSONFence_SingleToolCall_PreservesExplicitType(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{})
+	content := "```\n{\"id\": \"call_abc\", \"type\": \"function\", \"function\": {\"name\": \"search\", \"arguments\": \"{\\\"q\\\": \\\"hello\\\"}\"}}\n```"
+	result := fp.Parse(content)
+	if len(result.ToolCalls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(result.ToolCalls))
+	}
+	if result.ToolCalls[0].Type != "function" {
+		t.Errorf("expected type 'function', got %q", result.ToolCalls[0].Type)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tests for extractBareJSON (Strategy 2)
+// ---------------------------------------------------------------------------
+
+// TestParse_BareJSON_InsideCodeFenceIgnored verifies that JSON tool calls
+// inside ```json fences are NOT extracted by the bare JSON strategy.
+// The fence extraction handles them instead, and the bare strategy should
+// see only spaces in place of fenced content.
+func TestParse_BareJSON_InsideCodeFenceIgnored(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{})
+	// Content that is ONLY a fenced JSON block — the bare JSON path should
+	// see only spaces and extract nothing. The fence parser alone should
+	// produce the tool call.
+	content := "```json\n{\"tool_calls\": [{\"id\": \"1\", \"type\": \"function\", \"function\": {\"name\": \"fencedOnly\", \"arguments\": \"{}\"}}]}\n```"
+	result := fp.Parse(content)
+
+	// We expect exactly 1 tool call (from the JSON fence extractor, not bare).
+	if len(result.ToolCalls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(result.ToolCalls))
+	}
+	if result.ToolCalls[0].Function.Name != "fencedOnly" {
+		t.Errorf("expected name 'fencedOnly', got %q", result.ToolCalls[0].Function.Name)
+	}
+
+	// The fence content should be removed from cleaned content, so the
+	// tool call body should NOT appear in cleaned output.
+	if strings.Contains(result.CleanedContent, "fencedOnly") {
+		t.Error("cleaned content should not contain the tool call body")
+	}
+}
+
+// TestParse_BareJSON_MixedFencedAndBare verifies that both fenced JSON tool
+// calls AND bare JSON tool calls in the same content are extracted.
+func TestParse_BareJSON_MixedFencedAndBare(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{})
+	fenced := "```json\n{\"tool_calls\": [{\"id\": \"1\", \"type\": \"function\", \"function\": {\"name\": \"fencedTool\", \"arguments\": \"{}\"}}]}\n```"
+	bare := `{"tool_calls": [{"id": "2", "type": "function", "function": {"name": "bareTool", "arguments": "{}"}}]}`
+	content := fenced + "\n\n" + bare
+	result := fp.Parse(content)
+
+	// Both strategies should fire, producing 2 tool calls (dedup won't remove
+	// them because they have different names).
+	if len(result.ToolCalls) != 2 {
+		t.Fatalf("expected 2 tool calls (1 fenced + 1 bare), got %d", len(result.ToolCalls))
+	}
+	names := map[string]bool{
+		result.ToolCalls[0].Function.Name: true,
+		result.ToolCalls[1].Function.Name: true,
+	}
+	if !names["fencedTool"] {
+		t.Errorf("expected 'fencedTool' in tool calls, got %v", names)
+	}
+	if !names["bareTool"] {
+		t.Errorf("expected 'bareTool' in tool calls, got %v", names)
+	}
+}
+
+// TestParse_BareJSON_WithSurroundingProse verifies that bare JSON surrounded
+// by natural language is correctly extracted and cleaned.
+func TestParse_BareJSON_WithSurroundingProse(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{})
+	content := `I will do the search. Here is the tool call: {"tool_calls": [{"id": "1", "type": "function", "function": {"name": "search", "arguments": "{\"q\": \"test\"}"}}]}. Done!`
+	result := fp.Parse(content)
+
+	if len(result.ToolCalls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(result.ToolCalls))
+	}
+	if result.ToolCalls[0].Function.Name != "search" {
+		t.Errorf("expected name 'search', got %q", result.ToolCalls[0].Function.Name)
+	}
+
+	// Cleaned content should remove the bare JSON and preserve surrounding prose
+	if strings.Contains(result.CleanedContent, `"search"`) {
+		t.Error("cleaned content should not contain the JSON body")
+	}
+	// The prose text should be collapsed into a single string
+	if result.CleanedContent == "" {
+		t.Error("expected some cleaned prose content")
+	}
+}
+
+// TestParse_BareJSON_DeeplyNested verifies that deeply nested JSON objects
+// are matched correctly by matchBrace.
+func TestParse_BareJSON_DeeplyNested(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{})
+	content := `{"tool_calls": [{"id": "1", "type": "function", "function": {"name": "deep", "arguments": "{\"nested\": \"value\", \"level\": 3}"}}]}`
+	result := fp.Parse(content)
+
+	if len(result.ToolCalls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(result.ToolCalls))
+	}
+	if result.ToolCalls[0].Function.Name != "deep" {
+		t.Errorf("expected name 'deep', got %q", result.ToolCalls[0].Function.Name)
+	}
+}
+
+// TestParse_BareJSON_EscapedQuotesInJSON verifies that JSON with escaped
+// quotes in values is matched correctly and the bare parser doesn't get
+// confused by the inner quotes.
+func TestParse_BareJSON_EscapedQuotesInJSON(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{})
+	// The arguments string contains escaped quotes within the JSON value.
+	content := `{"tool_calls": [{"id": "1", "type": "function", "function": {"name": "query", "arguments": "{\"q\": \"She said \\\"hello\\\"\"}"}}]}`
+	result := fp.Parse(content)
+
+	if len(result.ToolCalls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(result.ToolCalls))
+	}
+	if result.ToolCalls[0].Function.Name != "query" {
+		t.Errorf("expected name 'query', got %q", result.ToolCalls[0].Function.Name)
+	}
+	// The arguments should preserve the escaped quotes
+	expectedArgs := `{"q": "She said \"hello\""}`
+	if result.ToolCalls[0].Function.Arguments != expectedArgs {
+		t.Errorf("unexpected args: got %q, want %q", result.ToolCalls[0].Function.Arguments, expectedArgs)
+	}
+}
+
+// TestParse_BareJSON_InvalidJSONSkipped verifies that text that looks like
+// JSON but is not valid JSON is simply skipped.
+func TestParse_BareJSON_InvalidJSONSkipped(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{})
+	// This has a "tool_calls" pattern marker so ShouldUseFallback returns true,
+	// but the JSON itself is invalid so parseToolCallsJSON should return nil.
+	content := `This has tool_calls but is invalid: {"tool_calls": [invalid json here]}`
+	result := fp.Parse(content)
+
+	// No valid tool calls should be extracted
+	if len(result.ToolCalls) != 0 {
+		t.Errorf("expected no tool calls from invalid JSON, got %d", len(result.ToolCalls))
+	}
+	// Cleaned content should equal original since no blocks found
+	if result.CleanedContent != content {
+		t.Errorf("expected cleaned content to equal original, got %q", result.CleanedContent)
+	}
+}
+
+// TestParse_BareJSON_MultipleSegments verifies that multiple separate bare
+// JSON tool call segments in one content are all extracted.
+func TestParse_BareJSON_MultipleSegments(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{})
+	// Two bare JSON arrays separated by prose. Each array contains direct
+	// ToolCall objects, which parseToolCallsJSON handles as "Direct array of tool calls".
+	content := `[{"id": "1", "type": "function", "function": {"name": "first", "arguments": "{}"}}] some text [{"id": "2", "type": "function", "function": {"name": "second", "arguments": "{}"}}] more text`
+	result := fp.Parse(content)
+
+	if len(result.ToolCalls) != 2 {
+		t.Fatalf("expected 2 tool calls, got %d", len(result.ToolCalls))
+	}
+	if result.ToolCalls[0].Function.Name != "first" {
+		t.Errorf("expected first name 'first', got %q", result.ToolCalls[0].Function.Name)
+	}
+	if result.ToolCalls[1].Function.Name != "second" {
+		t.Errorf("expected second name 'second', got %q", result.ToolCalls[1].Function.Name)
+	}
+}
+
+// TestParse_BareJSON_EmptyBraces verifies that empty {} (which doesn't parse
+// as a tool call) is skipped and doesn't cause issues.
+func TestParse_BareJSON_EmptyBraces(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{})
+	// Empty braces should not parse as tool calls — parseToolCallsJSON returns nil
+	content := `Here is some text with {} empty braces and [[ ]] brackets`
+	result := fp.Parse(content)
+
+	// No tool calls should be extracted from empty braces
+	if len(result.ToolCalls) != 0 {
+		t.Errorf("expected no tool calls from empty braces, got %d", len(result.ToolCalls))
+	}
+}
+
+// TestParse_BareJSON_ArrayOfTwoToolCalls verifies that a bare JSON array
+// containing two tool calls is correctly parsed.
+func TestParse_BareJSON_ArrayOfTwoToolCalls(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{})
+	content := `[{"id": "1", "type": "function", "function": {"name": "tool1", "arguments": "{}"}}, {"id": "2", "type": "function", "function": {"name": "tool2", "arguments": "{}"}}]`
+	result := fp.Parse(content)
+
+	if len(result.ToolCalls) != 2 {
+		t.Fatalf("expected 2 tool calls, got %d", len(result.ToolCalls))
+	}
+	if result.ToolCalls[0].Function.Name != "tool1" {
+		t.Errorf("expected first name 'tool1', got %q", result.ToolCalls[0].Function.Name)
+	}
+	if result.ToolCalls[1].Function.Name != "tool2" {
+		t.Errorf("expected second name 'tool2', got %q", result.ToolCalls[1].Function.Name)
+	}
+}
+
+// TestParse_BareJSON_ToolCallsWrapper verifies that a {"tool_calls": [...]}
+// wrapper format works in bare JSON context.
+func TestParse_BareJSON_ToolCallsWrapper(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{})
+	content := `{"tool_calls": [{"id": "1", "type": "function", "function": {"name": "wrapper", "arguments": "{}"}}]}`
+	result := fp.Parse(content)
+
+	if len(result.ToolCalls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(result.ToolCalls))
+	}
+	if result.ToolCalls[0].Function.Name != "wrapper" {
+		t.Errorf("expected name 'wrapper', got %q", result.ToolCalls[0].Function.Name)
+	}
+	if result.ToolCalls[0].ID != "1" {
+		t.Errorf("expected ID '1', got %q", result.ToolCalls[0].ID)
+	}
+}
+
+// TestParse_BareJSON_FunctionCallFormat verifies that the legacy
+// {"function_call": {"name": "...", "arguments": "..."}} format works in
+// bare JSON context.
+func TestParse_BareJSON_FunctionCallFormat(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{})
+	content := `{"function_call": {"name": "legacyFunc", "arguments": "{\"x\": 42}"}}`
+	result := fp.Parse(content)
+
+	if len(result.ToolCalls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(result.ToolCalls))
+	}
+	if result.ToolCalls[0].Function.Name != "legacyFunc" {
+		t.Errorf("expected name 'legacyFunc', got %q", result.ToolCalls[0].Function.Name)
+	}
+	if result.ToolCalls[0].Function.Arguments != `{"x": 42}` {
+		t.Errorf("unexpected args: got %q, want %q", result.ToolCalls[0].Function.Arguments, `{"x": 42}`)
+	}
+}
+
+// TestParse_BareJSON_SingleToolCallObject verifies that a bare single
+// ToolCall object (with id, type, function) is correctly parsed.
+func TestParse_BareJSON_SingleToolCallObject(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{})
+	content := `{"id": "single_abc", "type": "function", "function": {"name": "singleObj", "arguments": "{\"a\": 1}"}}`
+	result := fp.Parse(content)
+
+	if len(result.ToolCalls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(result.ToolCalls))
+	}
+	if result.ToolCalls[0].ID != "single_abc" {
+		t.Errorf("expected ID 'single_abc', got %q", result.ToolCalls[0].ID)
+	}
+	if result.ToolCalls[0].Function.Name != "singleObj" {
+		t.Errorf("expected name 'singleObj', got %q", result.ToolCalls[0].Function.Name)
+	}
+	if result.ToolCalls[0].Function.Arguments != `{"a": 1}` {
+		t.Errorf("unexpected args: got %q, want %q", result.ToolCalls[0].Function.Arguments, `{"a": 1}`)
+	}
+}
+
+// TestParse_BareJSON_SizeLimit verifies that segments over 50000 characters
+// are skipped by the size limit check in extractBareJSON.
+func TestParse_BareJSON_SizeLimit(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{})
+
+	// Build a very large JSON string where the balanced braces span >50000 chars.
+	// Include "tool_calls" as a key so shouldUseFallback returns true,
+	// but do NOT structure the data as a tool call format so parseToolCallsJSON
+	// returns nil for every segment. We pad with non-tool-call JSON so that
+	// even inner segments (which get skipped once the outer is skipped) don't
+	// happen to parse as tool calls.
+	filler := strings.Repeat(`"x": 1, `, 10000) // ~80000 chars of filler
+	content := `{"tool_calls": true, "data": {` + filler + `}}`
+	// The outer {} is well over 50000 chars, so extractBareJSON skips it.
+	// The inner {} is also >50000 chars (same issue as outer), so it's also skipped.
+
+	result := fp.Parse(content)
+
+	// No tool calls should be extracted from oversized segments.
+	if len(result.ToolCalls) != 0 {
+		t.Errorf("expected 0 tool calls from oversized segment, got %d", len(result.ToolCalls))
+	}
+}
+
+// TestParse_BareJSON_CleanedContentPreservesProse verifies that after
+// extracting bare JSON tool calls, the cleaned content preserves
+// surrounding prose but removes the JSON.
+func TestParse_BareJSON_CleanedContentPreservesProse(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{})
+	content := `Before the tool call: {"tool_calls": [{"id": "1", "type": "function", "function": {"name": "search", "arguments": "{}"}}]} After the tool call.`
+	result := fp.Parse(content)
+
+	if len(result.ToolCalls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(result.ToolCalls))
+	}
+
+	// Cleaned content should NOT contain the JSON body
+	if strings.Contains(result.CleanedContent, `"search"`) ||
+		strings.Contains(result.CleanedContent, `"tool_calls"`) {
+		t.Error("cleaned content should not contain JSON body")
+	}
+
+	// Cleaned content should contain the surrounding prose (collapsed)
+	if !strings.Contains(result.CleanedContent, "Before") {
+		t.Error("expected 'Before' in cleaned content")
+	}
+	if !strings.Contains(result.CleanedContent, "After") {
+		t.Error("expected 'After' in cleaned content")
+	}
+}
+
+// TestParse_BareJSON_CleanedContentWithFences verifies that when both fenced
+// AND bare JSON exist, cleaned content removes both but keeps prose.
+func TestParse_BareJSON_CleanedContentWithFences(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{})
+	fenced := "```json\n{\"tool_calls\": [{\"id\": \"1\", \"type\": \"function\", \"function\": {\"name\": \"fenced\", \"arguments\": \"{}\"}}]}\n```"
+	bare := `{"tool_calls": [{"id": "2", "type": "function", "function": {"name": "bare", "arguments": "{}"}}]}`
+	content := "Prologue " + fenced + " Epilogue " + bare + " Postscript"
+	result := fp.Parse(content)
+
+	if len(result.ToolCalls) != 2 {
+		t.Fatalf("expected 2 tool calls, got %d", len(result.ToolCalls))
+	}
+
+	// Cleaned content should not contain any fence markers
+	if strings.Contains(result.CleanedContent, "```") {
+		t.Error("cleaned content should not contain fence markers")
+	}
+
+	// Cleaned content should not contain JSON bodies
+	if strings.Contains(result.CleanedContent, `"fenced"`) {
+		t.Error("cleaned content should not contain fenced JSON body")
+	}
+	if strings.Contains(result.CleanedContent, `"bare"`) {
+		t.Error("cleaned content should not contain bare JSON body")
+	}
+
+	// Cleaned content should preserve surrounding prose
+	if !strings.Contains(result.CleanedContent, "Prologue") {
+		t.Error("expected 'Prologue' in cleaned content")
+	}
+	if !strings.Contains(result.CleanedContent, "Epilogue") {
+		t.Error("expected 'Epilogue' in cleaned content")
+	}
+	if !strings.Contains(result.CleanedContent, "Postscript") {
+		t.Error("expected 'Postscript' in cleaned content")
+	}
+}
+
+// TestParse_BareJSON_JsonInStringNotExtracted verifies that prose text
+// containing braces in strings is not falsely extracted as tool calls.
+// The text "He said { \"name\": \"hello\" }" is NOT a valid tool call.
+func TestParse_BareJSON_JsonInStringNotExtracted(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{})
+	// This text contains a brace-delimited substring that might look like
+	// JSON, but it doesn't parse as a valid tool call structure.
+	content := `He said { "name": "hello" } and then left.`
+	result := fp.Parse(content)
+
+	// The text does contain "tool_calls" pattern? No it doesn't.
+	// So ShouldUseFallback should return false, and no parsing happens.
+	// Even if it did parse, { "name": "hello" } is not a tool call.
+	if len(result.ToolCalls) != 0 {
+		t.Errorf("expected no tool calls from prose with braces, got %d", len(result.ToolCalls))
+	}
+}
+
+// TestParse_BareJSON_ToolUseFormat verifies that the tool_use format
+// {"tool_use": {"name": "tool", "input": {...}}} works in bare JSON context.
+func TestParse_BareJSON_ToolUseFormat(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{})
+	// Must include "tool_use" key so that containsToolCallPatterns returns true,
+	// and the bare JSON scanner finds the {tool_use: {...}} segment.
+	content := `{"tool_use": {"name": "calculate", "input": {"expr": "1+1", "mode": "fast"}}}`
+	result := fp.Parse(content)
+
+	if len(result.ToolCalls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(result.ToolCalls))
+	}
+	if result.ToolCalls[0].Function.Name != "calculate" {
+		t.Errorf("expected name 'calculate', got %q", result.ToolCalls[0].Function.Name)
+	}
+	// Input is a map, should be serialized to JSON string
+	if !json.Valid([]byte(result.ToolCalls[0].Function.Arguments)) {
+		t.Errorf("expected valid JSON args, got: %q", result.ToolCalls[0].Function.Arguments)
+	}
+}
+
+// TestParse_BareJSON_WithNewlinesAndFormatting verifies that bare JSON
+// with newlines and indentation is handled correctly.
+func TestParse_BareJSON_WithNewlinesAndFormatting(t *testing.T) {
+	fp := NewFallbackParser(FallbackParserOptions{})
+	content := `
+{
+  "tool_calls": [
+    {
+      "id": "1",
+      "type": "function",
+      "function": {
+        "name": "indented",
+        "arguments": "{}"
+      }
+    }
+  ]
+}
+`
+	result := fp.Parse(content)
+
+	if len(result.ToolCalls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(result.ToolCalls))
+	}
+	if result.ToolCalls[0].Function.Name != "indented" {
+		t.Errorf("expected name 'indented', got %q", result.ToolCalls[0].Function.Name)
 	}
 }
