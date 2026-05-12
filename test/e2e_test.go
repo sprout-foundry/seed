@@ -800,6 +800,107 @@ func TestE2E_IncompleteResponse_WithToolCalls(t *testing.T) {
 	h.AssertStateHasNMessages(agent, 4)
 }
 
+// --- Tentative Post-Tool Response Tests ---
+
+func TestE2E_TentativeResponse_PlanningStub(t *testing.T) {
+	// Provider returns a tentative planning stub ("Let me check...") with no
+	// tool calls. The validator should detect this and continue the loop
+	// instead of finalizing. The second response is the actual answer.
+	h := NewHarnessWithT(t)
+	h.Provider().AddTextResponse("Let me check the file contents.")
+	h.Provider().AddTextResponse("The file contains the expected configuration data that was requested.")
+
+	agent := h.NewAgent()
+	result, err := agent.Run(context.Background(), "What's in the file?")
+	h.AssertNoError(err)
+	h.AssertEquals(result, "The file contains the expected configuration data that was requested.")
+
+	// Provider called twice: tentative stub + actual response
+	h.AssertProviderCalledN(2)
+
+	// State: user + assistant(tentative) + assistant(final)
+	h.AssertStateHasNMessages(agent, 3)
+}
+
+func TestE2E_TentativeResponse_AfterToolExecution(t *testing.T) {
+	// Scenario: tool executes, then provider returns a tentative planning stub
+	// instead of using the tool result. The loop should continue and get a
+	// real response.
+	h := NewHarnessWithT(t)
+	h.Provider().AddToolCallResponse(
+		"Reading the file",
+		core.ToolCall{
+			ID: "call_1",
+			Function: core.ToolCallFunction{
+				Name:      "read_file",
+				Arguments: `{"path":"config.yaml"}`,
+			},
+		},
+	)
+	h.Provider().AddTextResponse("I'll analyze the results now.")
+	h.Provider().AddTextResponse("The configuration has three sections: database, cache, and logging. All are properly configured.")
+
+	h.Executor().AddToolResult("call_1", "database:\n  host: localhost\n  port: 5432")
+
+	agent := h.NewAgent()
+	result, err := agent.Run(context.Background(), "Read config.yaml and summarize")
+	h.AssertNoError(err)
+	h.AssertEquals(result, "The configuration has three sections: database, cache, and logging. All are properly configured.")
+
+	// Provider called 3 times: tool call -> tentative stub -> actual response
+	h.AssertProviderCalledN(3)
+	h.AssertExecutorCalledN(1)
+
+	// State: user + assistant(tool call) + tool result + assistant(tentative) + assistant(final)
+	h.AssertStateHasNMessages(agent, 5)
+}
+
+func TestE2E_TentativeResponse_MaxContinuations(t *testing.T) {
+	// Provider keeps returning tentative responses. After maxContinuations,
+	// the loop force-finalizes. These responses must NOT end with "..." or
+	// other truncation markers, otherwise the LooksTruncated check fires first
+	// and the test exercises the wrong code path.
+	h := NewHarnessWithT(t)
+	h.Provider().AddTextResponse("Let me check the file.")
+	h.Provider().AddTextResponse("I'll need to look at it.")
+	h.Provider().AddTextResponse("I'm going to find the answer.")
+	h.Provider().AddTextResponse("Let me think about this one.")
+
+	agent := h.NewAgent()
+	result, err := agent.Run(context.Background(), "test")
+	h.AssertNoError(err)
+	h.AssertEquals(result, "Let me think about this one.")
+
+	// Provider called 4 times: 1 initial + 3 continuations (4th force-finalized)
+	h.AssertProviderCalledN(4)
+
+	// State: user + 4 assistant messages
+	h.AssertStateHasNMessages(agent, 5)
+}
+
+func TestE2E_TentativeResponse_SubstantiveNotTentative(t *testing.T) {
+	// A response that starts with "Let me" but is over 40 words should NOT
+	// be treated as tentative — it's substantive enough to finalize.
+	h := NewHarnessWithT(t)
+	h.Provider().AddTextResponse(
+		"Let me provide a comprehensive answer. The file contains configuration data with multiple sections including database settings, cache parameters, and logging levels. Each section has been reviewed and appears to be correctly configured for production use. All values are within acceptable ranges and no changes are required at this time.",
+	)
+
+	agent := h.NewAgent()
+	result, err := agent.Run(context.Background(), "test")
+	h.AssertNoError(err)
+
+	// Provider called only once — substantive response not treated as tentative
+	h.AssertProviderCalledN(1)
+
+	// State: user + assistant
+	h.AssertStateHasNMessages(agent, 2)
+
+	// Result should be the substantive response
+	expected := "Let me provide a comprehensive answer. The file contains configuration data with multiple sections including database settings, cache parameters, and logging levels. Each section has been reviewed and appears to be correctly configured for production use. All values are within acceptable ranges and no changes are required at this time."
+	h.AssertEquals(result, expected)
+}
+
 // --- InjectInput Tests ---
 
 func TestE2E_InjectInput_Accepted(t *testing.T) {
@@ -1961,4 +2062,39 @@ func TestE2E_IncompleteResponse_Streaming_CompleteShortAnswer(t *testing.T) {
 
 	// State: user + assistant
 	h.AssertStateHasNMessages(agent, 2)
+}
+
+func TestE2E_TentativeResponse_Streaming(t *testing.T) {
+	// Provider streams a tentative planning stub ("Let me check.") with no
+	// tool calls. The validator should detect this and continue the loop.
+	// The second call streams a complete answer.
+	h := NewHarnessWithT(t)
+
+	// First call: tentative streaming response
+	h.Provider().
+		WithStreaming().
+		AddStreamChunks("Let me ", "check.").
+		AddTextResponse("Let me check.")
+
+	// Second call: complete streaming response
+	h.Provider().
+		AddStreamChunks("The file contains the expected configuration data.").
+		AddTextResponse("The file contains the expected configuration data.")
+
+	agent := h.NewAgent()
+	result, err := agent.RunStream(context.Background(), "What's in the file?")
+	h.AssertNoError(err)
+
+	// RunStream returns empty when buffer has content
+	h.AssertEquals(result, "")
+
+	// Streaming buffer should contain both streamed contents
+	buf := agent.StreamingBuffer()
+	h.AssertEquals(buf.String(), "Let me check.The file contains the expected configuration data.")
+
+	// Provider called twice: tentative stub + actual response
+	h.AssertProviderCalledN(2)
+
+	// State: user + assistant(tentative) + assistant(final)
+	h.AssertStateHasNMessages(agent, 3)
 }

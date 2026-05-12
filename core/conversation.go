@@ -171,6 +171,27 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 				ch.agent.debugLog("[validate] Max continuations (%d) reached, force-finalizing\n", maxContinuations)
 			}
 
+			// Check if the response is a tentative planning stub — e.g.,
+			// "Let me check..." or "I'll need to..." — where the model is
+			// planning what to do next instead of providing a real answer.
+			// The validator method name references "PostTool" because this
+			// pattern is most common after tool execution, but the check
+			// applies to any assistant message with no tool calls.
+			// Continue the loop so the model can produce an actual response.
+			if a.validator != nil && a.validator.LooksLikeTentativePostToolResponse(assistantMsg.Content) {
+				if ch.continuationCount < maxContinuations {
+					ch.continuationCount++
+					ch.agent.debugLog("[validate] Tentative response detected (continuation %d/%d), looping again\n",
+						ch.continuationCount, maxContinuations)
+					ch.enqueueTransientMessage(Message{
+						Role:    "user",
+						Content: "Please provide your actual response now.",
+					})
+					continue
+				}
+				ch.agent.debugLog("[validate] Max continuations (%d) reached, force-finalizing\n", maxContinuations)
+			}
+
 			ch.agent.debugLog("[OK] Conversation complete\n")
 			completed = true
 			break
