@@ -49,6 +49,7 @@
 
 [x] - STRUCTURAL: Standardize error wrapping — adopt `fmt.Errorf("operation: %w", err)` convention across all error paths. `core/`
 [x] - STRUCTURAL: Add `Len()` to `State` — needed by tests and debug logging. `core/state.go`
+[x] - STRUCTURAL: Remove unused sentinel errors or wire them — `ErrNoProvider` and `ErrNoExecutor` panic at construction; decide whether to keep as sentinels or remove. `core/errors.go`
 [] - STRUCTURAL: Remove unused sentinel errors or wire them — `ErrNoProvider` and `ErrNoExecutor` panic at construction; decide whether to keep as sentinels or remove. `core/errors.go`
 
 ## Fallback Parsing (SP-006)
@@ -106,7 +107,9 @@
 
 [x] - CHECKPOINT: Define `TurnCheckpoint` struct — `StartIndex`, `EndIndex`, `Summary`, `ActionableSummary` with JSON tags. `core/turn_checkpoints.go`
 [x] - CHECKPOINT: Add `[]TurnCheckpoint` to `State` — mutex-protected access with `AddCheckpoint`, `GetCheckpoints`, `SetCheckpoints`, `ClearCheckpoints`. `core/state.go`
+[x] - CHECKPOINT: Add checkpoint serialization to ExportState/ImportState — checkpoints round-trip through JSON. `core/state.go`
 [] - CHECKPOINT: Add checkpoint serialization to ExportState/ImportState — checkpoints round-trip through JSON. `core/state.go`
+[x] - CHECKPOINT: Implement Go-only summary builder — extract user question, tool calls, errors, files modified, final status from turn messages. `core/turn_checkpoints.go`
 [] - CHECKPOINT: Implement Go-only summary builder — extract user question, tool calls, errors, files modified, final status from turn messages. `core/turn_checkpoints.go`
 [x] - CHECKPOINT: Implement actionable summary builder — bullet list of accomplishments with file paths and commands. `core/turn_checkpoints.go`
 [x] - CHECKPOINT: Implement async `RecordTurnCheckpointAsync()` — snapshot messages, compute summary in background goroutine. `core/turn_checkpoints.go`
@@ -114,7 +117,34 @@
 [x] - CHECKPOINT: Implement index shifting — update checkpoint StartIndex/EndIndex by delta after compaction removes messages. `core/turn_checkpoints.go`
 [x] - CHECKPOINT: Handle consecutive-assistant boundary — if summary + next message are both assistant with no tool calls, merge or drop. `core/turn_checkpoints.go`
 [x] - CHECKPOINT: Wire recording into ConversationHandler — set `queryStartIndex` when user message added, record checkpoint in `finalize()`. `core/conversation.go`
+[x] - CHECKPOINT: Wire checkpoint compaction into `prepareMessages()` — use checkpoint-compacted messages before sending to provider. `core/conversation.go`
 [] - CHECKPOINT: Wire checkpoint compaction into `prepareMessages()` — use checkpoint-compacted messages before sending to provider. `core/conversation.go`
 [x] - CHECKPOINT: Add e2e checkpoint recording test — completed turn -> checkpoint created with summary and actionable summary. `test/e2e_test.go`
 [x] - CHECKPOINT: Add e2e checkpoint compaction test — multiple turns -> checkpoints consumed -> message count reduced. `test/e2e_test.go`
 [x] - CHECKPOINT: Add e2e index shifting test — compaction removes messages -> remaining checkpoints have valid indices. `test/e2e_test.go`
+
+## Response Processing Hardening (SP-011)
+
+[] - NORMALIZE: Create `ToolCallNormalizer` struct with `Normalize(calls []ToolCall) NormalizedToolCalls` — strips `<|channel|>` suffix, generates missing IDs, deduplicates by ID+args, repairs JSON arguments, normalizes Type to "function". `core/tool_call_normalizer.go` (new file)
+[] - NORMALIZE: Wire normalizer into `runLoop` — run on structured `tool_calls` before execution. `core/conversation.go`
+[] - NORMALIZE: Handle malformed structured tool calls — inject transient message asking model to re-emit, discard malformed calls. `core/conversation.go`
+[] - FINISH: Implement finish reason dispatch — explicit switch on `""`, `"stop"`, `"length"`, `"content_filter"`, default. `core/conversation.go`
+[] - FINISH: Handle `"stop"` with empty content — treat as incomplete, ask model to continue. `core/conversation.go`
+[] - FINISH: Handle `"stop"` with incomplete content — send transient message asking for final answer. `core/conversation.go`
+[] - FINISH: Handle `"stop"` with tentative content after tool results — implement `followsRecentToolResults()` scan, reject with specific message, accept after 2 rejections (match sprout). `core/conversation.go`
+[] - FINISH: Handle `"length"` — always continue (model hit token limit). `core/conversation.go`
+[] - FINISH: Handle `"content_filter"` — retry once, then return error to consumer on second occurrence. `core/conversation.go`
+[] - BLANK: Implement `isBlankIteration(content)` — check if content is empty/whitespace. `core/conversation.go`
+[] - BLANK: Implement `isRepetitiveContent(content)` — compare against previous assistant message. `core/conversation.go`
+[] - BLANK: Wire blank/repetitive detection — separate `consecutiveBlank` counter, 1st → reminder, 2nd consecutive → force-finalize with error. `core/conversation.go`
+[] - ANSI: Add `sanitizeANSI(content)` — strip ANSI escape codes from content. `core/conversation.go`
+[] - NORMALIZE: Add e2e test — `<|channel|>0` suffix stripped → tool name matches → executes. `test/e2e_test.go`
+[] - FINISH: Add e2e test — `finish_reason: "stop"` with empty content → continuation → complete response. `test/e2e_test.go`
+[] - FINISH: Add e2e test — `finish_reason: "length"` → continuation. `test/e2e_test.go`
+[] - FINISH: Add e2e test — `finish_reason: "content_filter"` → retry once → second occurrence → error returned. `test/e2e_test.go`
+[] - NORMALIZE: Add e2e test — malformed structured tool call → transient message → model re-emits. `test/e2e_test.go`
+[] - NORMALIZE: Add e2e test — missing tool call ID → synthetic ID generated → tool result linked. `test/e2e_test.go`
+[] - NORMALIZE: Add e2e test — duplicate tool calls → only unique calls execute. `test/e2e_test.go`
+[] - BLANK: Add e2e test — blank iteration → reminder → 2nd blank → error. `test/e2e_test.go`
+[] - BLANK: Add e2e test — repetitive content → reminder → 2nd → error. `test/e2e_test.go`
+[] - ANSI: Add e2e test — ANSI codes stripped from content. `test/e2e_test.go`

@@ -22,6 +22,7 @@ architectural area, its current state, and open work.
 | SP-008 | [Conversation Optimizer](./SP-008-conversation-optimizer.md) | 📋 Spec |
 | SP-009 | [Configuration, Steering & Extensibility](./SP-009-configuration-steering.md) | 📋 Spec |
 | SP-010 | [Turn Checkpoints](./SP-010-turn-checkpoints.md) | 📋 Spec |
+| SP-011 | [Response Processing Hardening](./SP-011-response-processing-hardening.md) | 📋 Spec |
 
 ## Out of Scope
 
