@@ -24,6 +24,7 @@ architectural area, its current state, and open work.
 | Spec | Title | Status |
 |------|-------|--------|
 | SP-011 | [Response Processing Hardening](./SP-011-response-processing-hardening.md) | ⚠️ Partial — `ToolCallNormalizer` exists but not wired; finish reason dispatch, blank/repetitive detection, and ANSI sanitization are absent |
+| SP-013 | [Tool Registry](./SP-013-tool-registry.md) | 📋 Spec |
 
 ## Out of Scope
 
