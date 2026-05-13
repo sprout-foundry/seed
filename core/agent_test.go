@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 // --- Mock implementations ---
@@ -730,5 +732,251 @@ func TestAgent_OnIteration_CallbackPanicRecovered(t *testing.T) {
 	}
 	if result != "OK" {
 		t.Errorf("expected 'OK', got %q", result)
+	}
+}
+
+// --- OnCheckpoint tests ---
+
+func TestAgent_OnCheckpoint_CallbackFired(t *testing.T) {
+	var checkpoints []TurnCheckpoint
+	var mu sync.Mutex
+
+	provider := &mockProvider{
+		chatResp: &ChatResponse{
+			Choices: []ChatChoice{{Message: Message{Role: "assistant", Content: "Hello!"}}},
+			Usage:   ChatUsage{TotalTokens: 15},
+		},
+		info:       ProviderInfo{ContextSize: 10000},
+		tokenCount: 100,
+	}
+	a, err := NewAgent(Options{
+		Provider: provider,
+		Executor: &mockExecutor{},
+		OnCheckpoint: func(cp TurnCheckpoint) {
+			mu.Lock()
+			defer mu.Unlock()
+			checkpoints = append(checkpoints, cp)
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = a.Run(context.Background(), "test query")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Give the async callback goroutine time to fire.
+	// RecordTurnCheckpointAsync spawns a goroutine that builds the summary
+	// and invokes the callback; it completes almost instantly but we wait
+	// a small amount to avoid flaky tests.
+	time.Sleep(50 * time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if len(checkpoints) != 1 {
+		t.Fatalf("expected 1 OnCheckpoint call, got %d", len(checkpoints))
+	}
+	cp := checkpoints[0]
+	if cp.Summary == "" {
+		t.Error("expected non-empty summary")
+	}
+	if cp.UserMessage != "test query" {
+		t.Errorf("expected user message 'test query', got %q", cp.UserMessage)
+	}
+	if cp.StartIndex != 0 {
+		t.Errorf("expected StartIndex 0, got %d", cp.StartIndex)
+	}
+	if cp.EndIndex < 0 {
+		t.Errorf("expected non-negative EndIndex, got %d", cp.EndIndex)
+	}
+	// The turn has 2 messages (user + assistant), so EndIndex should be 1
+	if cp.EndIndex != 1 {
+		t.Errorf("expected EndIndex 1, got %d", cp.EndIndex)
+	}
+	if cp.ActionableSummary == "" {
+		t.Error("expected non-empty ActionableSummary")
+	}
+}
+
+func TestAgent_OnCheckpoint_NilNoop(t *testing.T) {
+	provider := &mockProvider{
+		chatResp: &ChatResponse{
+			Choices: []ChatChoice{{Message: Message{Role: "assistant", Content: "OK"}}},
+			Usage:   ChatUsage{TotalTokens: 10},
+		},
+		info:       ProviderInfo{ContextSize: 10000},
+		tokenCount: 50,
+	}
+	a, err := NewAgent(Options{
+		Provider:     provider,
+		Executor:     &mockExecutor{},
+		OnCheckpoint: nil, // explicitly nil — should be a no-op
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Should not panic even when OnCheckpoint is nil.
+	_, err = a.Run(context.Background(), "test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestAgent_OnCheckpoint_PanicRecovered(t *testing.T) {
+	provider := &mockProvider{
+		chatResp: &ChatResponse{
+			Choices: []ChatChoice{{Message: Message{Role: "assistant", Content: "Response"}}},
+			Usage:   ChatUsage{TotalTokens: 10},
+		},
+		info:       ProviderInfo{ContextSize: 10000},
+		tokenCount: 50,
+	}
+	a, err := NewAgent(Options{
+		Provider: provider,
+		Executor: &mockExecutor{},
+		OnCheckpoint: func(cp TurnCheckpoint) {
+			_ = cp
+			panic("telemetry error")
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Should not crash; the panic inside the callback is recovered
+	// by RecordTurnCheckpointAsync and the agent continues normally.
+	result, err := a.Run(context.Background(), "test")
+	if err != nil {
+		t.Fatalf("unexpected error despite callback panic: %v", err)
+	}
+	if result != "Response" {
+		t.Errorf("expected 'Response', got %q", result)
+	}
+}
+
+func TestAgent_OnCheckpoint_OnlyOnCompletedTurns(t *testing.T) {
+	var checkpoints []TurnCheckpoint
+	var mu sync.Mutex
+
+	// Provider always returns tool calls, so the loop never reaches a
+	// content-only final response. With MaxIterations it will hit the
+	// iteration cap without ever setting turnCompleted=true.
+	provider := &mockProvider{
+		chatResp: &ChatResponse{
+			Choices: []ChatChoice{{
+				Message: Message{
+					Role: "assistant",
+					ToolCalls: []ToolCall{{
+						ID:       "call_1",
+						Function: ToolCallFunction{Name: "loop", Arguments: "{}"},
+					}},
+				},
+			}},
+			Usage: ChatUsage{TotalTokens: 10},
+		},
+		info:       ProviderInfo{ContextSize: 10000},
+		tokenCount: 100,
+	}
+	executor := &mockExecutor{
+		results: []Message{{Role: "tool", Content: "loop result", ToolCallID: "call_1"}},
+	}
+	a, err := NewAgent(Options{
+		Provider:      provider,
+		Executor:      executor,
+		MaxIterations: 3,
+		OnCheckpoint: func(cp TurnCheckpoint) {
+			mu.Lock()
+			defer mu.Unlock()
+			checkpoints = append(checkpoints, cp)
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = a.Run(context.Background(), "Loop")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Wait long enough for any async callback to fire (there shouldn't be one).
+	time.Sleep(50 * time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if len(checkpoints) != 0 {
+		t.Fatalf("expected 0 OnCheckpoint calls for incomplete turn, got %d", len(checkpoints))
+	}
+}
+
+func TestAgent_OnCheckpoint_MultipleTurns(t *testing.T) {
+	var checkpoints []TurnCheckpoint
+	var mu sync.Mutex
+
+	provider := &mockProvider{
+		chatResp: &ChatResponse{
+			Choices: []ChatChoice{{Message: Message{Role: "assistant", Content: "Done"}}},
+			Usage:   ChatUsage{TotalTokens: 10},
+		},
+		info:       ProviderInfo{ContextSize: 10000},
+		tokenCount: 50,
+	}
+	a, err := NewAgent(Options{
+		Provider: provider,
+		Executor: &mockExecutor{},
+		OnCheckpoint: func(cp TurnCheckpoint) {
+			mu.Lock()
+			defer mu.Unlock()
+			checkpoints = append(checkpoints, cp)
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// First query
+	_, err = a.Run(context.Background(), "first query")
+	if err != nil {
+		t.Fatalf("run 1 failed: %v", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+
+	// Second query on the same agent (state persists)
+	_, err = a.Run(context.Background(), "second query")
+	if err != nil {
+		t.Fatalf("run 2 failed: %v", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if len(checkpoints) != 2 {
+		t.Fatalf("expected 2 OnCheckpoint calls, got %d", len(checkpoints))
+	}
+
+	if checkpoints[0].UserMessage != "first query" {
+		t.Errorf("expected checkpoint[0].UserMessage 'first query', got %q", checkpoints[0].UserMessage)
+	}
+	if checkpoints[1].UserMessage != "second query" {
+		t.Errorf("expected checkpoint[1].UserMessage 'second query', got %q", checkpoints[1].UserMessage)
+	}
+
+	// The second turn appends to the same state, so its EndIndex must be
+	// higher than the first turn's EndIndex.
+	if checkpoints[0].EndIndex >= checkpoints[1].EndIndex {
+		t.Errorf("expected checkpoint[1].EndIndex > checkpoint[0].EndIndex (%d >= %d)",
+			checkpoints[1].EndIndex, checkpoints[0].EndIndex)
+	}
+
+	// StartIndex for the second turn should be >= StartIndex for the first.
+	if checkpoints[1].StartIndex < checkpoints[0].StartIndex {
+		t.Errorf("expected checkpoint[1].StartIndex >= checkpoint[0].StartIndex (%d < %d)",
+			checkpoints[1].StartIndex, checkpoints[0].StartIndex)
 	}
 }

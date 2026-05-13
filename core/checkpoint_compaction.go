@@ -8,13 +8,16 @@ import (
 
 // RecordTurnCheckpointAsync asynchronously builds a checkpoint from the given
 // messages and stores it in state. It spawns a goroutine to compute the summary
-// so it doesn't block the conversation loop.
+// so it doesn't block the conversation loop. The onCheckpoint callback, if
+// non-nil, is invoked with the built checkpoint in its own goroutine after it
+// is stored in state. If the callback panics, the panic is caught and the
+// agent continues normally.
 //
 // The message slice is snapshotted immediately (before the goroutine starts) so
 // the background computation sees a consistent view even if the caller mutates
 // the original slice. If the summary computation takes longer than timeout, a
 // minimal checkpoint is stored instead.
-func RecordTurnCheckpointAsync(state *State, messages []Message, startIndex, endIndex int, timeout time.Duration) {
+func RecordTurnCheckpointAsync(state *State, messages []Message, startIndex, endIndex int, timeout time.Duration, onCheckpoint func(TurnCheckpoint)) {
 	// Snapshot messages immediately so the goroutine sees a consistent view.
 	turnMessages := make([]Message, len(messages))
 	copy(turnMessages, messages)
@@ -30,17 +33,26 @@ func RecordTurnCheckpointAsync(state *State, messages []Message, startIndex, end
 			done <- cp
 		}()
 
+		var cp TurnCheckpoint
 		select {
-		case cp := <-done:
-			state.AddCheckpoint(cp)
+		case cp = <-done:
 		case <-time.After(timeout):
 			// Store minimal checkpoint if computation timed out.
-			state.AddCheckpoint(TurnCheckpoint{
+			cp = TurnCheckpoint{
 				StartIndex:        startIndex,
 				EndIndex:          endIndex,
 				Summary:           "Turn completed (summary timed out)",
 				ActionableSummary: "Turn completed (summary timed out)",
-			})
+			}
+		}
+		state.AddCheckpoint(cp)
+		if onCheckpoint != nil {
+			go func() {
+				defer func() {
+					recover()
+				}()
+				onCheckpoint(cp)
+			}()
 		}
 	}()
 }

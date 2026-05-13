@@ -1056,7 +1056,7 @@ func TestRecordTurnCheckpointAsync(t *testing.T) {
 		{Role: "assistant", Content: "Test response."},
 	}
 
-	RecordTurnCheckpointAsync(state, messages, 0, 1, 5*time.Second)
+	RecordTurnCheckpointAsync(state, messages, 0, 1, 5*time.Second, nil)
 
 	// Wait for async completion
 	time.Sleep(100 * time.Millisecond)
@@ -1088,7 +1088,7 @@ func TestRecordTurnCheckpointAsync_Timeout(t *testing.T) {
 		messages = append(messages, Message{Role: "assistant", Content: strings.Repeat("y", 1000)})
 	}
 
-	RecordTurnCheckpointAsync(state, messages, 0, len(messages)-1, 1*time.Millisecond)
+	RecordTurnCheckpointAsync(state, messages, 0, len(messages)-1, 1*time.Millisecond, nil)
 
 	// Wait for async completion
 	time.Sleep(100 * time.Millisecond)
@@ -1113,7 +1113,7 @@ func TestRecordTurnCheckpointAsync_SnapshotIsolation(t *testing.T) {
 		{Role: "assistant", Content: "Original response."},
 	}
 
-	RecordTurnCheckpointAsync(state, messages, 0, 1, 5*time.Second)
+	RecordTurnCheckpointAsync(state, messages, 0, 1, 5*time.Second, nil)
 
 	// Mutate the original slice immediately after calling.
 	// The async goroutine should see the snapshot, not these mutations.

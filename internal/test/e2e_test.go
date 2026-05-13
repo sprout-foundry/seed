@@ -5815,3 +5815,209 @@ func TestE2E_Compaction_LongConversation_RecentTurnsIntact(t *testing.T) {
 		}
 	}
 }
+
+// --- Checkpoint Summary Dropping Test ---
+
+func TestE2E_CheckpointSummariesDroppedWhenOverContext(t *testing.T) {
+	// Scenario: checkpoint summaries themselves exceed context limits.
+	// When compaction runs and checkpoint summaries are still too large,
+	// the oldest summaries should be dropped entirely — not replaced with
+	// additional metadata or re-summarized.
+	//
+	// Setup:
+	// 1. Create an agent with a small context window
+	// 2. Pre-populate state with checkpoint summary messages (Meta["checkpoint"]="true")
+	//    that are large enough to exceed the context limit
+	// 3. Run a query — compaction should trigger
+	// 4. Verify oldest checkpoint summaries are dropped, not replaced
+	h := NewHarnessWithT(t)
+	h.Provider().
+		WithTokenEstimate(200000). // Ensure over context limit
+		WithInfo(core.ProviderInfo{
+			Model:       "mock",
+			ContextSize: 2048,
+			HasVision:   false,
+		}).
+		AddTextResponse("Response after compaction")
+
+	agent := h.NewAgent()
+
+	// Add checkpoint summary messages that are large enough to trigger
+	// checkpoint dropping. Each summary is ~1000 chars (~250 tokens).
+	// With 15 summaries × ~260 tokens each ≈ 3900 tokens, which exceeds
+	// the 2048 context limit. The target (0.85 * 2048 = 1740) means
+	// dropping the oldest summaries should bring us under.
+	numCheckpoints := 15
+	for i := 0; i < numCheckpoints; i++ {
+		summaryContent := fmt.Sprintf(
+			"- Question: What was discussed in turn %d?\n- Result: The assistant provided a detailed analysis of topic %d covering multiple aspects.\n- Read: file%d.txt\n- Command: cat file%d.txt\n",
+			i+1, i+1, i+1, i+1,
+		)
+		// Pad to ~1000 chars to ensure meaningful token count (~250 tokens each)
+		for len(summaryContent) < 1000 {
+			summaryContent += fmt.Sprintf(" Additional context for turn %d: the discussion covered implementation details, edge cases, and best practices. ", i+1)
+		}
+		agent.State().AddMessage(core.Message{
+			Role:    "user",
+			Content: summaryContent,
+			Meta:    map[string]string{core.MetaKeyCheckpoint: "true"},
+		})
+	}
+
+	// Add recent messages (protected zone)
+	for i := 0; i < 10; i++ {
+		agent.State().AddMessage(core.Message{
+			Role:    "user",
+			Content: fmt.Sprintf("Recent question %d", i+1),
+		})
+		agent.State().AddMessage(core.Message{
+			Role:    "assistant",
+			Content: fmt.Sprintf("Recent answer %d with enough words to be substantive", i+1),
+		})
+	}
+
+	// Record checkpoint summaries before compaction for comparison.
+	// Use a counter for the total count (not map length, which counts unique contents).
+	numCpBefore := 0
+	cpContentsBefore := make(map[string]bool)
+	for _, msg := range agent.State().Messages() {
+		if msg.Meta != nil && msg.Meta[core.MetaKeyCheckpoint] == "true" {
+			numCpBefore++
+			cpContentsBefore[msg.Content] = true
+		}
+	}
+	if numCpBefore != numCheckpoints {
+		t.Fatalf("expected %d checkpoint summaries before compaction, got %d", numCheckpoints, numCpBefore)
+	}
+
+	// Run query — this triggers compaction
+	_, err := agent.Run(context.Background(), "Final query after many turns")
+	h.AssertNoError(err)
+
+	// Verify compaction event was published with strategy "checkpoint_drop"
+	h.AssertEventPublished(events.EventTypeCompaction)
+	compactionEvents := h.FindEvents(events.EventTypeCompaction)
+	if len(compactionEvents) != 1 {
+		t.Fatalf("expected 1 compaction event, got %d", len(compactionEvents))
+	}
+	cpEventData, ok := compactionEvents[0].Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected compaction event data to be map[string]interface{}, got %T", compactionEvents[0].Data)
+	}
+	strategy, ok := cpEventData["strategy"].(string)
+	if !ok || strategy != "checkpoint_drop" {
+		t.Errorf("expected compaction strategy 'checkpoint_drop', got %q", strategy)
+	}
+
+	// Verify provider was called
+	h.AssertProviderCalledN(1)
+
+	// Check the provider request to verify checkpoint summaries were dropped
+	lastReq := h.Provider().LastRequest()
+	if lastReq == nil {
+		t.Fatal("expected provider to have been called")
+	}
+
+	// Count checkpoint summaries in the request
+	cpCountInRequest := 0
+	var cpContentsInRequest []string
+	for _, msg := range lastReq.Messages {
+		if msg.Meta != nil && msg.Meta[core.MetaKeyCheckpoint] == "true" {
+			cpCountInRequest++
+			cpContentsInRequest = append(cpContentsInRequest, msg.Content)
+		}
+	}
+
+	// Verify that some checkpoint summaries were dropped
+	if cpCountInRequest >= numCheckpoints {
+		t.Errorf("expected checkpoint summaries to be dropped, but found %d (same as before: %d)",
+			cpCountInRequest, numCheckpoints)
+	}
+	if cpCountInRequest == 0 {
+		t.Error("expected at least some checkpoint summaries to remain after dropping")
+	}
+
+	// Verify that the dropped summaries are the OLDEST ones (first added)
+	// and the newest ones are preserved.
+	// Track which contents were dropped vs. kept.
+	droppedContents := make(map[string]bool)
+	keptContents := make(map[string]bool)
+	for originalContent := range cpContentsBefore {
+		foundInRequest := false
+		for _, reqContent := range cpContentsInRequest {
+			if reqContent == originalContent {
+				foundInRequest = true
+				break
+			}
+		}
+		if !foundInRequest {
+			droppedContents[originalContent] = true
+		} else {
+			keptContents[originalContent] = true
+		}
+	}
+
+	// Verify oldest summaries were dropped (turn 1, 2, 3 should be among the dropped)
+	droppedOldest := 0
+	for content := range droppedContents {
+		if strings.Contains(content, "turn 1") ||
+			strings.Contains(content, "turn 2") ||
+			strings.Contains(content, "turn 3") {
+			droppedOldest++
+		}
+	}
+	if droppedOldest < 3 {
+		t.Errorf("expected at least turns 1-3 to be dropped, found %d of them dropped", droppedOldest)
+	}
+
+	// Verify newest summaries are preserved (turn 15 should be among the kept)
+	foundNewest := false
+	for content := range keptContents {
+		if strings.Contains(content, "turn 15") {
+			foundNewest = true
+			break
+		}
+	}
+	if !foundNewest {
+		t.Error("expected the newest checkpoint summary (turn 15) to be preserved")
+	}
+
+	// Verify that no new metadata messages were created to replace dropped summaries
+	// (i.e., we didn't replace summaries with "[Summarized: ...]" or similar)
+	for _, msg := range lastReq.Messages {
+		if msg.Role == "user" && msg.Meta == nil {
+			// Non-checkpoint user messages should be the recent ones or the final query
+			if strings.Contains(msg.Content, "Summarized") ||
+				strings.Contains(msg.Content, "[metadata") ||
+				strings.Contains(msg.Content, "[compacted") {
+				t.Errorf("found replacement metadata message: %q", msg.Content)
+			}
+		}
+	}
+
+	// Verify the final query is intact
+	lastMsg := lastReq.Messages[len(lastReq.Messages)-1]
+	if lastMsg.Content != "Final query after many turns" {
+		t.Errorf("expected final query intact, got %q", lastMsg.Content)
+	}
+	if lastMsg.Meta != nil && lastMsg.Meta[core.MetaKeyCheckpoint] == "true" {
+		t.Error("final query should not have checkpoint meta")
+	}
+
+	// Verify the system prompt is still first
+	if len(lastReq.Messages) == 0 || lastReq.Messages[0].Role != "system" {
+		t.Error("expected system prompt as first message")
+	}
+
+	// Verify recent messages are preserved (they're in the protected zone)
+	recentPreserved := 0
+	for _, msg := range lastReq.Messages {
+		if strings.HasPrefix(msg.Content, "Recent question") ||
+			strings.HasPrefix(msg.Content, "Recent answer") {
+			recentPreserved++
+		}
+	}
+	if recentPreserved < 20 {
+		t.Errorf("expected at least 20 recent messages preserved, got %d", recentPreserved)
+	}
+}

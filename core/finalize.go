@@ -19,7 +19,7 @@ func (ch *ConversationHandler) finalize(query string) (string, error) {
 	if ch.turnCompleted && ch.queryStartIndex >= 0 && ch.turnEndIndex >= ch.queryStartIndex {
 		if ch.turnEndIndex < len(messages) {
 			turnMessages := messages[ch.queryStartIndex : ch.turnEndIndex+1]
-			RecordTurnCheckpointAsync(ch.agent.state, turnMessages, ch.queryStartIndex, ch.turnEndIndex, 5*time.Second)
+			RecordTurnCheckpointAsync(ch.agent.state, turnMessages, ch.queryStartIndex, ch.turnEndIndex, 5*time.Second, ch.agent.onCheckpoint)
 		} else {
 			ch.agent.debugLog("[checkpoint] Skipping checkpoint: turnEndIndex %d >= messages len %d\n",
 				ch.turnEndIndex, len(messages))

@@ -192,8 +192,9 @@
 [x] - COMPACTION: Update `CompactionResult.Strategy` values — `"tool_trim"`, `"checkpoint_drop"`, `"truncation"`, `"emergency"`. `core/compaction.go`
 [x] - COMPACTION: Rewrite `compaction_test.go` — test new algorithm phases, protected boundary, checkpoint dropping, head+tail truncation, turn dropping with fallback. `core/compaction_test.go`
 [x] - COMPACTION: Remove `ShiftCheckpointIndices` tests from `turn_checkpoints_test.go`. `core/turn_checkpoints_test.go`
+[x] - COMPACTION: Add e2e test — long conversation (50+ turns) → recent turns intact, old turns summarized with actionable detail. `test/e2e_test.go`
 [] - COMPACTION: Add e2e test — long conversation (50+ turns) → recent turns intact, old turns summarized with actionable detail. `test/e2e_test.go`
-[] - COMPACTION: Add e2e test — conversation exceeding context after checkpoint compaction → oldest summaries dropped, not replaced with metadata. `test/e2e_test.go`
+[x] - COMPACTION: Add e2e test — conversation exceeding context after checkpoint compaction → oldest summaries dropped, not replaced with metadata. `test/e2e_test.go`
 
 ## Checkpoint Hooks (SP-015)
 

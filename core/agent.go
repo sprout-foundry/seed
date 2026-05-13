@@ -135,6 +135,12 @@ type Options struct {
 	// structured tool calls will not be cleaned before execution. Default
 	// (false): normalizer is enabled.
 	DisableNormalizer bool
+	// OnCheckpoint is an optional fire-and-forget callback invoked after each
+	// completed turn. It receives the TurnCheckpoint summarizing what happened
+	// in the turn. The callback is invoked asynchronously after the checkpoint
+	// is built and stored in state. If the callback panics, the panic is caught
+	// and the agent continues normally.
+	OnCheckpoint func(TurnCheckpoint)
 }
 
 // Agent is the main entry point for the conversation engine.
@@ -159,6 +165,7 @@ type Agent struct {
 	validator      *ResponseValidator
 	optimizer      *ConversationOptimizer
 	onIteration    func(iteration int, messages int, tokenEstimate int, contextSize int)
+	onCheckpoint   func(TurnCheckpoint)
 	retryConfig    RetryConfig
 
 	// steerMu / steerMsgs hold externally-queued steering messages.
@@ -239,6 +246,7 @@ func NewAgent(opts Options) (*Agent, error) {
 		validator:          validator,
 		optimizer:          opts.Optimizer,
 		onIteration:        opts.OnIteration,
+		onCheckpoint:       opts.OnCheckpoint,
 		retryConfig:        opts.RetryConfig,
 	}, nil
 }
