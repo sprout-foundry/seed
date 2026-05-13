@@ -75,8 +75,8 @@ type ChatRequest struct {
 // ChatResponse is a response from the chat completion endpoint.
 type ChatResponse struct {
 	ID      string       `json:"id"`
-	Object  string       `json:"object,omitempty"`   // e.g. "chat.completion"
-	Created int64        `json:"created,omitempty"`  // Unix timestamp
+	Object  string       `json:"object,omitempty"`  // e.g. "chat.completion"
+	Created int64        `json:"created,omitempty"` // Unix timestamp
 	Model   string       `json:"model"`
 	Choices []ChatChoice `json:"choices"`
 	Usage   ChatUsage    `json:"usage"`
