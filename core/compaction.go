@@ -25,7 +25,7 @@ const (
 // metadata about what strategy was used and how much was saved.
 type CompactionResult struct {
 	Messages     []Message
-	Strategy     string // "none" or "emergency"
+	Strategy     string // "none", "checkpoint_drop", or "emergency"
 	TokensBefore int
 	TokensAfter  int
 }
@@ -45,7 +45,8 @@ func (r CompactionResult) MessageCountDelta(before int) int {
 
 // Compact reduces messages to fit within the token limit.
 // If under the limit or too few messages, returns as-is.
-// Otherwise applies emergency truncation.
+// Otherwise tries dropping checkpoint summaries first, then falls
+// back to emergency truncation.
 func Compact(messages []Message, tokenLimit int) CompactionResult {
 	tokensBefore := roughTokens(messages)
 
@@ -67,14 +68,83 @@ func Compact(messages []Message, tokenLimit int) CompactionResult {
 		}
 	}
 
-	// Emergency truncation — aggressively trim content
-	result := emergencyTruncate(messages, tokenLimit)
+	// Target: emergency truncation threshold — same as emergencyTruncate.
+	targetTokens := int(float64(tokenLimit) * emergencyTargetFraction)
+
+	// Phase 1: Try dropping checkpoint summaries to free space.
+	dropped := dropOldestCheckpointSummaries(messages, defaultRecentToKeep, targetTokens)
+
+	if roughTokens(dropped) <= targetTokens {
+		// Dropping checkpoints alone brought us under the threshold.
+		return CompactionResult{
+			Messages:     dropped,
+			Strategy:     "checkpoint_drop",
+			TokensBefore: tokensBefore,
+			TokensAfter:  roughTokens(dropped),
+		}
+	}
+
+	// Phase 2: Emergency truncation on the already-dropped messages.
+	result := emergencyTruncate(dropped, tokenLimit)
 	return CompactionResult{
 		Messages:     result,
 		Strategy:     "emergency",
 		TokensBefore: tokensBefore,
 		TokensAfter:  roughTokens(result),
 	}
+}
+
+// DropOldestCheckpointSummaries drops checkpoint summary messages (oldest first)
+// until the token count is at or below targetTokens, or there are no more
+// removable checkpoint messages outside the recent boundary.
+//
+// It uses defaultRecentToKeep as the recent boundary: messages within the
+// last defaultRecentToKeep positions are never dropped.
+//
+// This function works on a copy and never mutates the original slice.
+func DropOldestCheckpointSummaries(messages []Message, targetTokens int) []Message {
+	return dropOldestCheckpointSummaries(messages, defaultRecentToKeep, targetTokens)
+}
+
+// dropOldestCheckpointSummaries is the unexported implementation that accepts
+// a custom recentToKeep boundary.
+func dropOldestCheckpointSummaries(messages []Message, recentToKeep int, targetTokens int) []Message {
+	// Work on a copy so we never mutate the original.
+	msgs := make([]Message, len(messages))
+	copy(msgs, messages)
+
+	// Nothing to drop with too few messages.
+	if len(msgs) <= defaultMinMessages {
+		return msgs
+	}
+
+	// Repeatedly drop the oldest checkpoint message outside the recent zone
+	// until we're under targetTokens.
+	for roughTokens(msgs) > targetTokens && len(msgs) > defaultMinMessages {
+		dropIdx := -1
+		recentStart := len(msgs) - recentToKeep
+		if recentStart < 1 {
+			recentStart = 1
+		}
+
+		// Find the oldest checkpoint message outside the recent boundary.
+		for i := 0; i < recentStart && i < len(msgs); i++ {
+			if msgs[i].Meta != nil && msgs[i].Meta[MetaKeyCheckpoint] == "true" {
+				dropIdx = i
+				break
+			}
+		}
+
+		// No removable checkpoint message found.
+		if dropIdx < 0 {
+			break
+		}
+
+		// Remove the message at dropIdx.
+		msgs = append(msgs[:dropIdx], msgs[dropIdx+1:]...)
+	}
+
+	return msgs
 }
 
 // emergencyTruncate aggressively trims message content to fit the limit.
