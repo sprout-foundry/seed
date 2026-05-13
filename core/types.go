@@ -1,13 +1,26 @@
 package core
 
+// MetaKeyCheckpoint is the Meta key set on messages inserted by checkpoint
+// compaction so they can be identified without string matching.
+const MetaKeyCheckpoint = "checkpoint"
+
 // Message represents a single message in a conversation.
 type Message struct {
-	Role             string      `json:"role"`
-	Content          string      `json:"content"`
-	ReasoningContent string      `json:"reasoning_content,omitempty"`
-	ToolCallID       string      `json:"tool_call_id,omitempty"`
-	ToolCalls        []ToolCall  `json:"tool_calls,omitempty"`
-	Images           []ImageData `json:"images,omitempty"`
+	Role             string            `json:"role"`
+	Content          string            `json:"content"`
+	ReasoningContent string            `json:"reasoning_content,omitempty"`
+	ToolCallID       string            `json:"tool_call_id,omitempty"`
+	ToolCalls        []ToolCall        `json:"tool_calls,omitempty"`
+	Images           []ImageData       `json:"images,omitempty"`
+	Meta             map[string]string `json:"-"`
+}
+
+// SetMeta sets a key-value pair in the Meta map, initializing it if nil.
+func (m *Message) SetMeta(key, value string) {
+	if m.Meta == nil {
+		m.Meta = make(map[string]string)
+	}
+	m.Meta[key] = value
 }
 
 // ToolCall represents a function call requested by the model.

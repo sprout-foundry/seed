@@ -1,6 +1,7 @@
 package core
 
 import (
+	"maps"
 	"sort"
 	"time"
 )
@@ -165,12 +166,21 @@ func BuildCheckpointCompactedMessages(messages []Message, checkpoints []TurnChec
 	for msgIdx < len(msgs) {
 		if consIdx < len(consumables) && msgIdx == consumables[consIdx].origStart {
 			ri := consumables[consIdx]
-			newMsgs = append(newMsgs, Message{Role: "user", Content: ri.summary})
+			newMsgs = append(newMsgs, Message{
+				Role:    "user",
+				Content: ri.summary,
+				Meta:    map[string]string{MetaKeyCheckpoint: "true"},
+			})
 			msgIdx = ri.origEnd + 1
 			consIdx++
 			continue
 		}
-		newMsgs = append(newMsgs, msgs[msgIdx])
+		// Deep-copy Meta to avoid shared map references.
+		msg := msgs[msgIdx]
+		if msg.Meta != nil {
+			msg.Meta = maps.Clone(msg.Meta)
+		}
+		newMsgs = append(newMsgs, msg)
 		msgIdx++
 	}
 
