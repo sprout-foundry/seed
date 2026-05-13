@@ -147,7 +147,7 @@
 ## Tool Registry (SP-013)
 
 [x] - REGISTRY: Create `ToolConfig` struct — Name, Description, Parameters ([]ParameterConfig), Handler (ToolHandler), HandlerImages (ToolHandlerWithImages), Aliases ([]string), Timeout (time.Duration), MaxResultSize (int), SafeForParallel (bool). `core/tool_registry.go` (new file)
-[] - REGISTRY: Create `ToolConfig` struct — Name, Description, Parameters ([]ParameterConfig), Handler (ToolHandler), HandlerImages (ToolHandlerWithImages), Aliases ([]string), Timeout (time.Duration), MaxResultSize (int), SafeForParallel (bool). `core/tool_registry.go` (new file)
+[x] - REGISTRY: Create `ToolConfig` struct — Name, Description, Parameters ([]ParameterConfig), Handler (ToolHandler), HandlerImages (ToolHandlerWithImages), Aliases ([]string), Timeout (time.Duration), MaxResultSize (int), SafeForParallel (bool). `core/tool_registry.go` (new file)
 [x] - REGISTRY: Create `ParameterConfig` struct — Name, Type, Required, Alternatives, Description. `core/tool_registry.go`
 [x] - REGISTRY: Create `ToolHandler` type — `func(ctx context.Context, args map[string]interface{}) (string, error)`. `core/tool_registry.go`
 [x] - REGISTRY: Create `ToolHandlerWithImages` type — `func(ctx context.Context, args map[string]interface{}) ([]ImageData, string, error)`. `core/tool_registry.go`

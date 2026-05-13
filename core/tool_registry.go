@@ -251,6 +251,15 @@ func (r *ToolRegistry) Execute(ctx context.Context, calls []ToolCall) []Message 
 			go func(s toolCallSlot) {
 				defer func() { <-sem }()
 				defer wg.Done()
+				defer func() {
+					if rec := recover(); rec != nil {
+						msg := ToolResultMessage(s.call.ID, stripChannelSuffix(s.call.Function.Name),
+							fmt.Sprintf("tool panicked: %v", rec))
+						mu.Lock()
+						results[s.idx] = msg
+						mu.Unlock()
+					}
+				}()
 				msg := r.executeSingle(ctx, s.call, s.idx)
 				mu.Lock()
 				results[s.idx] = msg
@@ -281,7 +290,7 @@ func (r *ToolRegistry) executeSingle(ctx context.Context, call ToolCall, callIdx
 		return ToolResultMessage(call.ID, name, fmt.Sprintf("Failed to parse arguments: %s", parseErr))
 	}
 	cb := r.getCircuitBreaker(name)
-	if !cb.Allow() {
+	if cb != nil && !cb.Allow() {
 		result := "Circuit breaker is open — temporarily rejecting requests"
 		r.recordEnd(name, call.ID, "error", result, start)
 		return ToolResultMessage(call.ID, name, result)
@@ -302,11 +311,15 @@ func (r *ToolRegistry) executeSingle(ctx context.Context, call ToolCall, callIdx
 		result = r.PostExecuteHook(name, result)
 	}
 	if handlerErr != nil {
-		cb.RecordFailure()
+		if cb != nil {
+			cb.RecordFailure()
+		}
 		r.recordEnd(name, call.ID, "error", result, start)
 		return ToolResultMessage(call.ID, name, result)
 	}
-	cb.RecordSuccess()
+	if cb != nil {
+		cb.RecordSuccess()
+	}
 	r.recordEnd(name, call.ID, "success", result, start)
 	return ToolResultMessage(call.ID, name, result)
 }
@@ -358,15 +371,16 @@ func (r *ToolRegistry) recordEnd(name, callID, status, result string, start time
 	})
 }
 
-// getCircuitBreaker returns the circuit breaker for a given tool.
+// getCircuitBreaker returns the circuit breaker for a given tool, or nil
+// if the tool is not registered.
 func (r *ToolRegistry) getCircuitBreaker(name string) *circuitBreaker {
 	r.mu.RLock()
+	defer r.mu.RUnlock()
 	cb, ok := r.circuitBreakers[name]
-	r.mu.RUnlock()
-	if ok {
-		return cb
+	if !ok {
+		return nil
 	}
-	return newCircuitBreaker(r.cbThreshold, r.cbResetTimeout)
+	return cb
 }
 
 // resolveName looks up a tool name, resolving aliases (case-insensitive).
