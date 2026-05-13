@@ -62,44 +62,46 @@ func NewAgentStreamHandler(agent *Agent, state *State) *AgentStreamHandler {
 }
 
 // OnContent handles a streaming content chunk: writes to the stream buffer,
-// publishes stream_chunk and agent_message events, and invokes the flush
-// callback. Empty content chunks are silently ignored.
+// delegates to OutputManager.PublishOutput for event publishing, and invokes
+// the flush callback. Empty content chunks are silently ignored.
 func (h *AgentStreamHandler) OnContent(content string) {
 	if content == "" {
 		return
 	}
 	h.agent.outputMgr.ContentBuffer().Write([]byte(content))
-	if h.agent.eventPublisher != nil {
-		h.agent.eventPublisher.Publish(EventTypeStreamChunk,
-			map[string]interface{}{"chunk": content, "content_type": "text"})
-		h.agent.eventPublisher.Publish("agent_message",
-			map[string]interface{}{"category": "info", "message": content})
-	}
+	h.agent.outputMgr.PublishOutput(OutputEvent{Type: "content", Content: content, Source: "stream"})
 	h.agent.outputMgr.Flush()
 }
 
 // OnReasoning handles a streaming reasoning chunk: writes to the reasoning
-// buffer, publishes a stream_chunk event, and invokes the flush callback.
-// Empty reasoning chunks are silently ignored.
+// buffer, delegates to OutputManager.PublishOutput for event publishing, and
+// invokes the flush callback. Empty reasoning chunks are silently ignored.
 func (h *AgentStreamHandler) OnReasoning(reasoning string) {
 	if reasoning == "" {
 		return
 	}
 	h.agent.outputMgr.ReasoningBuffer().Write([]byte(reasoning))
-	if h.agent.eventPublisher != nil {
-		h.agent.eventPublisher.Publish(EventTypeStreamChunk,
-			map[string]interface{}{"chunk": reasoning, "content_type": "reasoning"})
-	}
+	h.agent.outputMgr.PublishOutput(OutputEvent{Type: "reasoning", Content: reasoning, Source: "stream"})
 	h.agent.outputMgr.Flush()
 }
 
-// OnDone handles the end of streaming: records token usage, publishes metrics,
-// and appends the final assistant message to the agent's state.
+// OnDone handles the end of streaming: records token usage and publishes
+// metrics. The assistant message is NOT added to state here; that is the
+// responsibility of runLoop, which adds the message after fallback parsing
+// and normalization to avoid a race window where observers could see the
+// un-normalized version.
 func (h *AgentStreamHandler) OnDone(resp *ChatResponse) {
 	if resp == nil {
 		return
 	}
 	h.response = resp
+	if len(resp.Choices) == 0 {
+		if h.agent.eventPublisher != nil {
+			h.agent.eventPublisher.Publish(EventTypeError,
+				map[string]interface{}{"message": "stream returned zero choices", "error": "zero_choices"})
+		}
+		return
+	}
 	if resp.Usage.TotalTokens > 0 {
 		h.state.AddTokens(resp.Usage.PromptTokens,
 			resp.Usage.CompletionTokens, resp.Usage.TotalTokens)
@@ -114,13 +116,6 @@ func (h *AgentStreamHandler) OnDone(resp *ChatResponse) {
 				"total_cost":         h.state.TotalCost(),
 			})
 		}
-	}
-	if len(resp.Choices) > 0 {
-		assistantMsg := resp.ToMessage()
-		if assistantMsg.Role == "" {
-			assistantMsg.Role = "assistant"
-		}
-		h.state.AddMessage(assistantMsg)
 	}
 }
 

@@ -392,7 +392,7 @@ func TestAgentStreamHandler_OnDone_RecordsTokens(t *testing.T) {
 	}
 }
 
-func TestAgentStreamHandler_OnDone_AddsMessageToState(t *testing.T) {
+func TestAgentStreamHandler_OnDone_DoesNotAddMessageToState(t *testing.T) {
 	a, err := NewAgent(Options{
 		Provider: &mockProvider{},
 		Executor: &mockExecutor{},
@@ -403,25 +403,27 @@ func TestAgentStreamHandler_OnDone_AddsMessageToState(t *testing.T) {
 	state := a.State()
 	h := NewAgentStreamHandler(a, state)
 
-	content := "assistant response content"
+	// Add a pre-existing message so we can verify it's not modified.
+	state.AddMessage(Message{Role: "user", Content: "hello"})
+
 	h.OnDone(&ChatResponse{
 		Choices: []ChatChoice{{
-			Message: Message{Role: "assistant", Content: content},
+			Message: Message{Role: "assistant", Content: "assistant response"},
 		}},
-		Usage: ChatUsage{TotalTokens: 0},
+		Usage: ChatUsage{TotalTokens: 10, PromptTokens: 5, CompletionTokens: 5},
 	})
 
+	// OnDone should NOT add the assistant message to state.
+	// That is the responsibility of runLoop, which adds the message after
+	// fallback parsing and normalization.
 	msgs := state.Messages()
 	if len(msgs) != 1 {
-		t.Fatalf("expected 1 message, got %d", len(msgs))
+		t.Fatalf("expected 1 message (original), got %d — OnDone should not add messages", len(msgs))
 	}
 
-	if msgs[0].Role != "assistant" {
-		t.Errorf("expected role 'assistant', got %q", msgs[0].Role)
-	}
-
-	if msgs[0].Content != content {
-		t.Errorf("expected content %q, got %q", content, msgs[0].Content)
+	// The original user message should be unchanged.
+	if msgs[0].Role != "user" {
+		t.Errorf("expected role 'user', got %q", msgs[0].Role)
 	}
 }
 
