@@ -5624,3 +5624,194 @@ func TestE2E_DuplicateToolCalls_OnlyUniqueExecute(t *testing.T) {
 		t.Errorf("expected message 5 to be assistant, got %q", messages[4].Role)
 	}
 }
+
+// --- Long Conversation Compaction Tests ---
+
+func TestE2E_Compaction_LongConversation_RecentTurnsIntact(t *testing.T) {
+	// Verify that checkpoint compaction correctly handles a long conversation
+	// with 50+ turns: old turns are replaced with actionable summaries while
+	// the most recent turn and the new query remain intact.
+	const turnsCount = 50
+
+	h := NewHarnessWithT(t)
+
+	// Use a small context size (4096) and high token estimate (200000)
+	// so that compaction is triggered.
+	h.Provider().
+		WithTokenEstimate(200000).
+		WithInfo(core.ProviderInfo{
+			Model:       "mock",
+			ContextSize: 4096,
+			HasVision:   false,
+		})
+
+	// Add 51 text responses (one per each of the 50 turns + 1 final turn)
+	for i := 1; i <= turnsCount+1; i++ {
+		h.Provider().AddTextResponse(
+			fmt.Sprintf("Answer %d: This is a detailed and comprehensive response about the topic that provides useful information for the user.", i),
+		)
+	}
+
+	agent := h.NewAgent()
+
+	// --- Phase 1: Run 50 turns ---
+	for i := 1; i <= turnsCount; i++ {
+		_, err := agent.Run(context.Background(), fmt.Sprintf("Question %d about topic", i))
+		h.AssertNoError(err)
+	}
+
+	// Wait for all async checkpoint recordings to complete.
+	// Checkpoints are recorded via goroutines so their order is not guaranteed.
+	// Sort by StartIndex for deterministic verification.
+	checkpoints := waitForCheckpoints(t, agent, turnsCount)
+	if len(checkpoints) != turnsCount {
+		t.Fatalf("expected %d checkpoints, got %d", turnsCount, len(checkpoints))
+	}
+	sort.Slice(checkpoints, func(i, j int) bool {
+		return checkpoints[i].StartIndex < checkpoints[j].StartIndex
+	})
+
+	// State should have 100 messages (50 turns × 2 messages each).
+	if got := agent.State().Len(); got != turnsCount*2 {
+		t.Fatalf("expected %d messages after %d turns, got %d", turnsCount*2, turnsCount, got)
+	}
+
+	// --- Phase 2: Run one more turn (turn 51) ---
+	// This triggers checkpoint compaction in prepareMessages() which replaces
+	// the consumed checkpoint ranges with summary messages.
+	_, err := agent.Run(context.Background(), "Question 51 about topic")
+	h.AssertNoError(err)
+
+	// State should have 102 messages (51 turns × 2 messages each).
+	if got := agent.State().Len(); got != (turnsCount+1)*2 {
+		t.Fatalf("expected %d messages after %d turns, got %d", (turnsCount+1)*2, turnsCount+1, got)
+	}
+
+	// The provider was called once per turn (50 turns before + 1 final turn).
+	// We verify the final turn's request by checking LastRequest.
+
+	// --- Verify provider request ---
+	lastReq := h.Provider().LastRequest()
+	if lastReq == nil {
+		t.Fatal("expected provider to have been called")
+	}
+
+	// The system prompt should be prepended as the first message.
+	if len(lastReq.Messages) == 0 || lastReq.Messages[0].Role != "system" {
+		t.Errorf("expected first message to be system, got role %q", func() string {
+			if len(lastReq.Messages) > 0 {
+				return lastReq.Messages[0].Role
+			}
+			return "(empty)"
+		}())
+	}
+
+	// The last message should be the new user query (intact, not summarized).
+	if lastReq.Messages[len(lastReq.Messages)-1].Role != "user" {
+		t.Errorf("expected last message to be user, got role %q", lastReq.Messages[len(lastReq.Messages)-1].Role)
+	}
+	if lastReq.Messages[len(lastReq.Messages)-1].Content != "Question 51 about topic" {
+		t.Errorf("expected last message content to be 'Question 51 about topic', got %q",
+			lastReq.Messages[len(lastReq.Messages)-1].Content)
+	}
+
+	// Verify message count reduction: raw state has 102 messages, but the
+	// provider request should have significantly fewer due to checkpoint
+	// compaction (50 old turns → 50 summary messages + 1 query + 1 system).
+	// We expect roughly 52 messages (1 system + 50 summaries + 1 new query),
+	// definitely far fewer than 102.
+	if len(lastReq.Messages) >= agent.State().Len() {
+		t.Errorf("expected message count reduction: request has %d messages, raw state has %d",
+			len(lastReq.Messages), agent.State().Len())
+	}
+
+	// --- Verify old turns are summarized ---
+	summaryCount := 0
+	questionTopics := make(map[string]bool)
+	hasActionableDetail := false
+
+	for i := 1; i < len(lastReq.Messages)-1; i++ {
+		msg := lastReq.Messages[i]
+
+		// Checkpoint summary messages have role "user" and Meta["checkpoint"] == "true".
+		if msg.Role != "user" {
+			continue
+		}
+		if msg.Meta == nil || msg.Meta["checkpoint"] != "true" {
+			// Could be a recent turn that survived (unlikely with 50 turns) or
+			// a non-checkpoint user message.
+			continue
+		}
+
+		summaryCount++
+
+		// Extract the question topic from the summary to verify multiple
+		// distinct turns are represented.
+		if strings.Contains(msg.Content, "Question") {
+			questionTopics[msg.Content] = true
+		}
+
+		// Verify actionable detail: summaries should contain structured content
+		// like "- Question:", "- Result:", "- Read:", or "User asked:" from the
+		// ActionableSummary field.
+		if strings.Contains(msg.Content, "- Question:") ||
+			strings.Contains(msg.Content, "- Result:") ||
+			strings.Contains(msg.Content, "- Read:") ||
+			strings.Contains(msg.Content, "- Command:") ||
+			strings.Contains(msg.Content, "User asked:") {
+			hasActionableDetail = true
+		}
+	}
+
+	// All 50 turns should be replaced by summary messages.
+	if summaryCount != turnsCount {
+		t.Errorf("expected %d summary messages in provider request, got %d", turnsCount, summaryCount)
+	}
+
+	// Verify actionable detail is present in summaries.
+	if !hasActionableDetail {
+		t.Error("expected summaries to contain actionable detail (e.g., '- Question:', '- Result:', 'User asked:')")
+	}
+
+	// Verify multiple distinct turns are represented in the summaries.
+	if len(questionTopics) < 3 {
+		t.Errorf("expected summaries for at least 3 distinct turns, got %d topics: %v",
+			len(questionTopics), questionTopics)
+	}
+
+	// --- Verify the new query is intact and has no checkpoint meta ---
+	lastMsg := lastReq.Messages[len(lastReq.Messages)-1]
+	if lastMsg.Meta != nil && lastMsg.Meta["checkpoint"] == "true" {
+		t.Error("expected the new query message to NOT have checkpoint meta")
+	}
+
+	// --- Verify checkpoint data ---
+	// The checkpoint for turn 1 should cover indices 0-1 (user query + assistant response).
+	if len(checkpoints) > 0 {
+		cp1 := checkpoints[0]
+		if cp1.StartIndex != 0 {
+			t.Errorf("expected checkpoint 0 StartIndex 0, got %d", cp1.StartIndex)
+		}
+		if cp1.EndIndex != 1 {
+			t.Errorf("expected checkpoint 0 EndIndex 1, got %d", cp1.EndIndex)
+		}
+		if cp1.Summary == "" {
+			t.Error("expected checkpoint 0 Summary to be non-empty")
+		}
+		if cp1.ActionableSummary == "" {
+			t.Error("expected checkpoint 0 ActionableSummary to be non-empty")
+		}
+	}
+
+	// --- Verify the checkpoint for the most recent completed turn (turn 50) ---
+	if len(checkpoints) >= turnsCount {
+		cpLast := checkpoints[turnsCount-1]
+		// Turn 50: user at index 98, assistant at index 99.
+		if cpLast.StartIndex != 98 {
+			t.Errorf("expected last checkpoint StartIndex 98, got %d", cpLast.StartIndex)
+		}
+		if cpLast.EndIndex != 99 {
+			t.Errorf("expected last checkpoint EndIndex 99, got %d", cpLast.EndIndex)
+		}
+	}
+}
