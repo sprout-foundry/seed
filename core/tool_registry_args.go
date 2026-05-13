@@ -3,8 +3,8 @@ package core
 import (
 	"encoding/json"
 	"fmt"
-	"strings"
 	"strconv"
+	"strings"
 )
 
 // stringResult holds the result of a handler execution.
@@ -193,7 +193,7 @@ func coerceValue(val interface{}, expectedType string) interface{} {
 // repairJSON attempts to fix common JSON issues.
 func repairJSON(s string) string {
 	s = strings.TrimSpace(s)
-	if s == "" {
+	if s == "" || s == "null" {
 		return "{}"
 	}
 
@@ -234,9 +234,9 @@ func truncateResult(result string, maxSize int) string {
 // ToolResultMessage creates a Message for a tool result.
 func ToolResultMessage(toolCallID, toolName string, content string) Message {
 	return Message{
-		Role:         "tool",
-		Content:      content,
-		ToolCallID:   toolCallID,
+		Role:       "tool",
+		Content:    content,
+		ToolCallID: toolCallID,
 	}
 }
 

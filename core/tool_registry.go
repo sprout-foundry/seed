@@ -5,20 +5,20 @@ import (
 	"fmt"
 	"reflect"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 )
 
-// Compile-time check: ToolRegistry must satisfy ToolExecutor.
 var _ ToolExecutor = (*ToolRegistry)(nil)
 
 // ParameterConfig defines a single parameter within a tool's schema.
 type ParameterConfig struct {
 	Name         string
-	Type         string // "string", "number", "integer", "boolean", "array", "object"
+	Type         string
 	Required     bool
-	Alternatives []string // alternative parameter names the model might use
+	Alternatives []string
 	Description  string
 }
 
@@ -30,24 +30,26 @@ type ToolHandlerWithImages func(ctx context.Context, args map[string]interface{}
 
 // ToolConfig configures a tool registered in the registry.
 type ToolConfig struct {
-	Name            string
-	Description     string
-	Parameters      []ParameterConfig
-	Handler         ToolHandler
+	Name              string
+	Description       string
+	Parameters        []ParameterConfig
+	Handler           ToolHandler
 	HandlerWithImages ToolHandlerWithImages
-	Aliases         []string
-	Timeout         time.Duration
-	MaxResultSize   int
-	SafeForParallel bool
+	Aliases           []string
+	Timeout           time.Duration
+	MaxResultSize     int
+	SafeForParallel   bool
 }
 
 // ToolRegistryOptions configures a ToolRegistry.
 type ToolRegistryOptions struct {
-	DefaultTimeout  time.Duration
-	MaxResultSize   int
-	EventPublisher  EventPublisher
-	PreExecuteHook  func(name string, args map[string]interface{}) error
-	PostExecuteHook func(name string, result string) string
+	DefaultTimeout          time.Duration
+	MaxResultSize           int
+	EventPublisher          EventPublisher
+	PreExecuteHook          func(name string, args map[string]interface{}) error
+	PostExecuteHook         func(name string, result string) string
+	CircuitBreakerThreshold int
+	CircuitBreakerTimeout   time.Duration
 }
 
 // ToolRegistry manages a collection of registered tools and executes them
@@ -58,7 +60,9 @@ type ToolRegistry struct {
 	aliases         map[string]string
 	defaultTimeout  time.Duration
 	maxResultSize   int
-	circuitBreaker  *circuitBreaker
+	circuitBreakers map[string]*circuitBreaker
+	cbThreshold     int
+	cbResetTimeout  time.Duration
 	eventPublisher  EventPublisher
 	PreExecuteHook  func(name string, args map[string]interface{}) error
 	PostExecuteHook func(name string, result string) string
@@ -72,7 +76,6 @@ type toolEntry struct {
 var channelSuffixRe = regexp.MustCompile(`<\|channel\|\>\d+$`)
 
 // NewToolRegistry creates a new ToolRegistry with the given options.
-// Defaults: 5min timeout, 50KB max result size, circuit breaker threshold 5.
 func NewToolRegistry(opts ToolRegistryOptions) *ToolRegistry {
 	defaultTimeout := opts.DefaultTimeout
 	if defaultTimeout <= 0 {
@@ -80,28 +83,35 @@ func NewToolRegistry(opts ToolRegistryOptions) *ToolRegistry {
 	}
 	maxResultSize := opts.MaxResultSize
 	if maxResultSize <= 0 {
-		maxResultSize = 50 * 1024 // 50KB
+		maxResultSize = 50 * 1024
 	}
-
 	ep := opts.EventPublisher
 	if ep == nil || reflect.ValueOf(ep).IsNil() {
 		ep = noopEventPublisher{}
 	}
-
+	cbThreshold := opts.CircuitBreakerThreshold
+	if cbThreshold <= 0 {
+		cbThreshold = 5
+	}
+	cbResetTimeout := opts.CircuitBreakerTimeout
+	if cbResetTimeout <= 0 {
+		cbResetTimeout = 30 * time.Second
+	}
 	return &ToolRegistry{
-		tools:          make(map[string]*toolEntry),
-		aliases:        make(map[string]string),
-		defaultTimeout: defaultTimeout,
-		maxResultSize:  maxResultSize,
-		circuitBreaker: newCircuitBreaker(5, 30*time.Second),
-		eventPublisher: ep,
-		PreExecuteHook: opts.PreExecuteHook,
+		tools:           make(map[string]*toolEntry),
+		aliases:         make(map[string]string),
+		defaultTimeout:  defaultTimeout,
+		maxResultSize:   maxResultSize,
+		circuitBreakers: make(map[string]*circuitBreaker),
+		cbThreshold:     cbThreshold,
+		cbResetTimeout:  cbResetTimeout,
+		eventPublisher:  ep,
+		PreExecuteHook:  opts.PreExecuteHook,
 		PostExecuteHook: opts.PostExecuteHook,
 	}
 }
 
-// Register adds a single tool to the registry. Returns an error if the
-// configuration is invalid or a tool with the same name is already registered.
+// Register adds a single tool to the registry.
 func (r *ToolRegistry) Register(config ToolConfig) error {
 	if config.Name == "" {
 		return fmt.Errorf("tool name must not be empty")
@@ -109,11 +119,10 @@ func (r *ToolRegistry) Register(config ToolConfig) error {
 	if config.Handler == nil && config.HandlerWithImages == nil {
 		return fmt.Errorf("tool %q must have a Handler or HandlerWithImages", config.Name)
 	}
-
 	entry := &toolEntry{
 		config: config,
 		tool: Tool{
-			Type:     "function",
+			Type: "function",
 			Function: ToolFunction{
 				Name:        config.Name,
 				Description: config.Description,
@@ -121,19 +130,16 @@ func (r *ToolRegistry) Register(config ToolConfig) error {
 			},
 		},
 	}
-
 	r.mu.Lock()
 	defer r.mu.Unlock()
-
 	if _, exists := r.tools[config.Name]; exists {
 		return fmt.Errorf("tool %q is already registered", config.Name)
 	}
-
 	r.tools[config.Name] = entry
 	for _, alias := range config.Aliases {
 		r.aliases[strings.ToLower(alias)] = config.Name
 	}
-
+	r.circuitBreakers[config.Name] = newCircuitBreaker(r.cbThreshold, r.cbResetTimeout)
 	return nil
 }
 
@@ -148,18 +154,16 @@ func (r *ToolRegistry) RegisterAll(configs []ToolConfig) error {
 }
 
 // Unregister removes a tool and its aliases by canonical name.
-// Returns true if the tool was found and removed.
 func (r *ToolRegistry) Unregister(name string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-
-	canonical := r.resolveName(name)
+	canonical := r.resolveNameLocked(name)
 	entry, exists := r.tools[canonical]
 	if !exists {
 		return false
 	}
-
 	delete(r.tools, canonical)
+	delete(r.circuitBreakers, canonical)
 	for alias, can := range r.aliases {
 		if can == entry.config.Name {
 			delete(r.aliases, alias)
@@ -168,25 +172,25 @@ func (r *ToolRegistry) Unregister(name string) bool {
 	return true
 }
 
-// GetTools returns all registered tool definitions.
+// GetTools returns all registered tool definitions, sorted by name.
 func (r *ToolRegistry) GetTools() []Tool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-
 	tools := make([]Tool, 0, len(r.tools))
 	for _, entry := range r.tools {
 		tools = append(tools, entry.tool)
 	}
+	sort.Slice(tools, func(i, j int) bool {
+		return tools[i].Function.Name < tools[j].Function.Name
+	})
 	return tools
 }
 
 // GetTool returns the Tool definition for the given name (resolving aliases).
-// Returns nil if the tool is not found.
 func (r *ToolRegistry) GetTool(name string) *Tool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-
-	canonical := r.resolveName(name)
+	canonical := r.resolveNameLocked(name)
 	entry, exists := r.tools[canonical]
 	if !exists {
 		return nil
@@ -199,7 +203,7 @@ func (r *ToolRegistry) GetTool(name string) *Tool {
 func (r *ToolRegistry) HasTool(name string) bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	_, exists := r.tools[r.resolveName(name)]
+	_, exists := r.tools[r.resolveNameLocked(name)]
 	return exists
 }
 
@@ -207,7 +211,6 @@ func (r *ToolRegistry) HasTool(name string) bool {
 func (r *ToolRegistry) ToolNames() []string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-
 	names := make([]string, 0, len(r.tools))
 	for name := range r.tools {
 		names = append(names, name)
@@ -220,33 +223,35 @@ func (r *ToolRegistry) Execute(ctx context.Context, calls []ToolCall) []Message 
 	if len(calls) == 0 {
 		return nil
 	}
-
-	var sequential []toolCallSlot
-	var parallel []toolCallSlot
-
+	var sequential, parallel []toolCallSlot
 	for i, call := range calls {
 		name := r.resolveName(stripChannelSuffix(call.Function.Name))
 		r.mu.RLock()
 		entry, exists := r.tools[name]
 		r.mu.RUnlock()
-
 		if !exists || !entry.config.SafeForParallel {
 			sequential = append(sequential, toolCallSlot{idx: i, call: call})
 			continue
 		}
 		parallel = append(parallel, toolCallSlot{idx: i, call: call})
 	}
-
 	results := make([]Message, len(calls))
-
+	// Check context before spawning parallel goroutines.
+	if len(parallel) > 0 && ctx.Err() != nil {
+		sequential = append(sequential, parallel...)
+		parallel = nil
+	}
+	sem := make(chan struct{}, 4)
 	if len(parallel) > 0 {
 		var wg sync.WaitGroup
 		var mu sync.Mutex
 		wg.Add(len(parallel))
 		for _, slot := range parallel {
+			sem <- struct{}{}
 			go func(s toolCallSlot) {
+				defer func() { <-sem }()
 				defer wg.Done()
-				msg := r.executeSingle(ctx, s.call)
+				msg := r.executeSingle(ctx, s.call, s.idx)
 				mu.Lock()
 				results[s.idx] = msg
 				mu.Unlock()
@@ -254,65 +259,54 @@ func (r *ToolRegistry) Execute(ctx context.Context, calls []ToolCall) []Message 
 		}
 		wg.Wait()
 	}
-
 	for _, slot := range sequential {
-		results[slot.idx] = r.executeSingle(ctx, slot.call)
+		results[slot.idx] = r.executeSingle(ctx, slot.call, slot.idx)
 	}
-
 	return results
 }
 
 // executeSingle runs a single tool call through the full execution pipeline.
-func (r *ToolRegistry) executeSingle(ctx context.Context, call ToolCall) Message {
+func (r *ToolRegistry) executeSingle(ctx context.Context, call ToolCall, callIdx int) Message {
 	start := time.Now()
 	name := r.resolveName(stripChannelSuffix(call.Function.Name))
-
 	args, parseErr := parseAndValidateArgs(r, name, call.Function.Name, call.Function.Arguments)
 	r.eventPublisher.Publish(EventTypeToolStart, map[string]any{
-		"tool_name":     name,
-		"tool_call_id":  call.ID,
-		"arguments":     call.Function.Arguments,
-		"tool_index":    -1,
+		"tool_name":    name,
+		"tool_call_id": call.ID,
+		"arguments":    call.Function.Arguments,
+		"tool_index":   callIdx,
 	})
-
 	if parseErr != nil {
-		result := fmt.Sprintf("Failed to parse arguments: %s", parseErr)
-		r.recordEnd(name, call.ID, "error", result, start)
-		return ToolResultMessage(call.ID, name, result)
+		r.recordEnd(name, call.ID, "error", fmt.Sprintf("Failed to parse arguments: %s", parseErr), start)
+		return ToolResultMessage(call.ID, name, fmt.Sprintf("Failed to parse arguments: %s", parseErr))
 	}
-
-	if !r.circuitBreaker.Allow() {
+	cb := r.getCircuitBreaker(name)
+	if !cb.Allow() {
 		result := "Circuit breaker is open — temporarily rejecting requests"
-		r.circuitBreaker.RecordFailure()
 		r.recordEnd(name, call.ID, "error", result, start)
 		return ToolResultMessage(call.ID, name, result)
 	}
-
 	if r.PreExecuteHook != nil {
 		if err := r.PreExecuteHook(name, args); err != nil {
 			result := fmt.Sprintf("Pre-execute hook rejected: %s", err)
-			r.circuitBreaker.RecordFailure()
 			r.recordEnd(name, call.ID, "error", result, start)
 			return ToolResultMessage(call.ID, name, result)
 		}
 	}
-
 	result, handlerErr := r.runWithTimeout(ctx, name, args)
 	if handlerErr != nil {
 		result = handlerErr.Error()
 	}
 	result = truncateResult(result, r.toolMaxResultSize(name))
-
 	if r.PostExecuteHook != nil {
 		result = r.PostExecuteHook(name, result)
 	}
-
 	if handlerErr != nil {
-		r.circuitBreaker.RecordFailure()
+		cb.RecordFailure()
 		r.recordEnd(name, call.ID, "error", result, start)
 		return ToolResultMessage(call.ID, name, result)
 	}
-	r.circuitBreaker.RecordSuccess()
+	cb.RecordSuccess()
 	r.recordEnd(name, call.ID, "success", result, start)
 	return ToolResultMessage(call.ID, name, result)
 }
@@ -322,19 +316,15 @@ func (r *ToolRegistry) runWithTimeout(ctx context.Context, name string, args map
 	r.mu.RLock()
 	entry, exists := r.tools[name]
 	r.mu.RUnlock()
-
 	if !exists {
 		return "", fmt.Errorf("unknown tool: %s", name)
 	}
-
 	timeout := r.defaultTimeout
 	if entry.config.Timeout > 0 {
 		timeout = entry.config.Timeout
 	}
-
 	execCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-
 	ch := make(chan stringResult, 1)
 	go func() {
 		if entry.config.HandlerWithImages != nil {
@@ -345,7 +335,6 @@ func (r *ToolRegistry) runWithTimeout(ctx context.Context, name string, args map
 			ch <- stringResult{text: text, err: err}
 		}
 	}()
-
 	select {
 	case res := <-ch:
 		if res.err != nil {
@@ -369,16 +358,33 @@ func (r *ToolRegistry) recordEnd(name, callID, status, result string, start time
 	})
 }
 
+// getCircuitBreaker returns the circuit breaker for a given tool.
+func (r *ToolRegistry) getCircuitBreaker(name string) *circuitBreaker {
+	r.mu.RLock()
+	cb, ok := r.circuitBreakers[name]
+	r.mu.RUnlock()
+	if ok {
+		return cb
+	}
+	return newCircuitBreaker(r.cbThreshold, r.cbResetTimeout)
+}
+
 // resolveName looks up a tool name, resolving aliases (case-insensitive).
 func (r *ToolRegistry) resolveName(name string) string {
-	canonical := name
-	if _, exists := r.tools[canonical]; exists {
-		return canonical
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.resolveNameLocked(name)
+}
+
+// resolveNameLocked looks up a tool name, resolving aliases.
+// Caller MUST hold r.mu (RLock or Lock).
+func (r *ToolRegistry) resolveNameLocked(name string) string {
+	if _, exists := r.tools[name]; exists {
+		return name
 	}
 	if resolved, ok := r.aliases[strings.ToLower(name)]; ok {
 		return resolved
 	}
-	// Case-insensitive canonical name lookup.
 	lower := strings.ToLower(name)
 	for cn := range r.tools {
 		if strings.ToLower(cn) == lower {

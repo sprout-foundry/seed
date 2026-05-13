@@ -151,27 +151,27 @@
 [x] - REGISTRY: Create `ParameterConfig` struct — Name, Type, Required, Alternatives, Description. `core/tool_registry.go`
 [x] - REGISTRY: Create `ToolHandler` type — `func(ctx context.Context, args map[string]interface{}) (string, error)`. `core/tool_registry.go`
 [x] - REGISTRY: Create `ToolHandlerWithImages` type — `func(ctx context.Context, args map[string]interface{}) ([]ImageData, string, error)`. `core/tool_registry.go`
-[] - REGISTRY: Create `ToolRegistry` struct — tools map, handlers map, defaultTimeout, maxResultSize, circuitBreaker, eventPublisher, PreExecuteHook, PostExecuteHook. `core/tool_registry.go`
-[] - REGISTRY: Implement `NewToolRegistry(opts ToolRegistryOptions)` — configure defaults (5min timeout, 50K max result). `core/tool_registry.go`
-[] - REGISTRY: Implement `Register(config ToolConfig)` — validate config, index by name and aliases, generate Tool definition. `core/tool_registry.go`
-[] - REGISTRY: Implement `RegisterAll(configs []ToolConfig)` — batch registration. `core/tool_registry.go`
-[] - REGISTRY: Implement `Unregister(name string)` — remove tool and its aliases. `core/tool_registry.go`
-[] - REGISTRY: Implement `GetTools() []Tool` — satisfy ToolExecutor interface, return all registered tool definitions for LLM. `core/tool_registry.go`
-[] - REGISTRY: Implement `Execute(ctx, calls []ToolCall) []Message` — satisfy ToolExecutor interface, dispatch each call through pipeline. `core/tool_registry.go`
-[] - REGISTRY: Implement name resolution — resolve aliases, strip `<|channel|>` suffix for gpt-oss compatibility. `core/tool_registry.go`
-[] - REGISTRY: Implement argument parsing — JSON parse with repair for malformed arguments. `core/tool_registry.go`
-[] - REGISTRY: Implement argument validation — check required parameters present, coerce types, resolve alternative parameter names. `core/tool_registry.go`
-[] - REGISTRY: Implement sequential execution — iterate calls, execute each, collect results. `core/tool_registry.go`
-[] - REGISTRY: Implement parallel execution — detect all-safe batches, execute concurrent with goroutine pool, maintain result ordering. `core/tool_registry.go`
-[] - REGISTRY: Implement per-tool timeout — create context with tool-specific or default timeout, run handler in goroutine. `core/tool_registry.go`
-[] - REGISTRY: Implement result truncation — cap result at MaxResultSize, append truncation notice. `core/tool_registry.go`
-[] - REGISTRY: Integrate circuit breaker — check before execution, record after execution, return rejection message on block. `core/tool_registry.go`
-[] - REGISTRY: Integrate event publishing — publish tool_start before execution, tool_end after execution with timing. `core/tool_registry.go`
-[] - REGISTRY: Implement PreExecuteHook — run before each tool, return error to block (error message becomes tool result). Use for security classification. `core/tool_registry.go`
-[] - REGISTRY: Implement PostExecuteHook — run after each tool, receive and return result string. Use for redaction/sanitization. `core/tool_registry.go`
-[] - REGISTRY: Implement lookup helpers — `GetTool(name)`, `HasTool(name)`, `ToolNames()`. `core/tool_registry.go`
-[] - REGISTRY: Wire ToolRegistry into interfaces — verify it satisfies ToolExecutor interface. `core/interfaces.go`
-[] - REGISTRY: Add unit tests — registration, aliases, name resolution, argument validation, type coercion. `core/tool_registry_test.go` (new file)
-[] - REGISTRY: Add unit tests — sequential execution, parallel execution, timeout, result truncation. `core/tool_registry_test.go`
-[] - REGISTRY: Add unit tests — PreExecuteHook blocking, PostExecuteHook modification, circuit breaker integration. `core/tool_registry_test.go`
-[] - REGISTRY: Add unit tests — `<|channel|>` suffix stripped → tool found → executes. `core/tool_registry_test.go`
+[x] - REGISTRY: Create `ToolRegistry` struct — tools map, handlers map, defaultTimeout, maxResultSize, circuitBreaker, eventPublisher, PreExecuteHook, PostExecuteHook. `core/tool_registry.go`
+[x] - REGISTRY: Implement `NewToolRegistry(opts ToolRegistryOptions)` — configure defaults (5min timeout, 50K max result). `core/tool_registry.go`
+[x] - REGISTRY: Implement `Register(config ToolConfig)` — validate config, index by name and aliases, generate Tool definition. `core/tool_registry.go`
+[x] - REGISTRY: Implement `RegisterAll(configs []ToolConfig)` — batch registration. `core/tool_registry.go`
+[x] - REGISTRY: Implement `Unregister(name string)` — remove tool and its aliases. `core/tool_registry.go`
+[x] - REGISTRY: Implement `GetTools() []Tool` — satisfy ToolExecutor interface, return all registered tool definitions for LLM. `core/tool_registry.go`
+[x] - REGISTRY: Implement `Execute(ctx, calls []ToolCall) []Message` — satisfy ToolExecutor interface, dispatch each call through pipeline. `core/tool_registry.go`
+[x] - REGISTRY: Implement name resolution — resolve aliases, strip `<|channel|>` suffix for gpt-oss compatibility. `core/tool_registry.go`
+[x] - REGISTRY: Implement argument parsing — JSON parse with repair for malformed arguments. `core/tool_registry.go`
+[x] - REGISTRY: Implement argument validation — check required parameters present, coerce types, resolve alternative parameter names. `core/tool_registry.go`
+[x] - REGISTRY: Implement sequential execution — iterate calls, execute each, collect results. `core/tool_registry.go`
+[x] - REGISTRY: Implement parallel execution — detect all-safe batches, execute concurrent with goroutine pool, maintain result ordering. `core/tool_registry.go`
+[x] - REGISTRY: Implement per-tool timeout — create context with tool-specific or default timeout, run handler in goroutine. `core/tool_registry.go`
+[x] - REGISTRY: Implement result truncation — cap result at MaxResultSize, append truncation notice. `core/tool_registry.go`
+[x] - REGISTRY: Integrate circuit breaker — check before execution, record after execution, return rejection message on block. `core/tool_registry.go`
+[x] - REGISTRY: Integrate event publishing — publish tool_start before execution, tool_end after execution with timing. `core/tool_registry.go`
+[x] - REGISTRY: Implement PreExecuteHook — run before each tool, return error to block (error message becomes tool result). Use for security classification. `core/tool_registry.go`
+[x] - REGISTRY: Implement PostExecuteHook — run after each tool, receive and return result string. Use for redaction/sanitization. `core/tool_registry.go`
+[x] - REGISTRY: Implement lookup helpers — `GetTool(name)`, `HasTool(name)`, `ToolNames()`. `core/tool_registry.go`
+[x] - REGISTRY: Wire ToolRegistry into interfaces — verify it satisfies ToolExecutor interface. `core/interfaces.go`
+[x] - REGISTRY: Add unit tests — registration, aliases, name resolution, argument validation, type coercion. `core/tool_registry_test.go` (new file)
+[x] - REGISTRY: Add unit tests — sequential execution, parallel execution, timeout, result truncation. `core/tool_registry_test.go`
+[x] - REGISTRY: Add unit tests — PreExecuteHook blocking, PostExecuteHook modification, circuit breaker integration. `core/tool_registry_test.go`
+[x] - REGISTRY: Add unit tests — `<|channel|>` suffix stripped → tool found → executes. `core/tool_registry_test.go`

@@ -117,6 +117,9 @@ func (h *AgentStreamHandler) OnDone(resp *ChatResponse) {
 	}
 	if len(resp.Choices) > 0 {
 		assistantMsg := resp.ToMessage()
+		if assistantMsg.Role == "" {
+			assistantMsg.Role = "assistant"
+		}
 		h.state.AddMessage(assistantMsg)
 	}
 }

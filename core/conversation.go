@@ -214,6 +214,9 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 		// (inline for non-streaming; via OnDone for streaming)
 
 		assistantMsg := resp.ToMessage()
+		if assistantMsg.Role == "" {
+			assistantMsg.Role = "assistant"
+		}
 
 		// Dispatch on finish reason from the first choice.
 		// This provides explicit handling for each termination signal
@@ -621,7 +624,11 @@ func (ch *ConversationHandler) ProcessQuery(ctx context.Context, query string) (
 					}
 				}
 
-				ch.agent.state.AddMessage(resp.ToMessage())
+				msg := resp.ToMessage()
+				if msg.Role == "" {
+					msg.Role = "assistant"
+				}
+				ch.agent.state.AddMessage(msg)
 				return resp, nil
 			}
 

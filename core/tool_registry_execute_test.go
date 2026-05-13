@@ -29,7 +29,8 @@ func TestExecute_ArgsErrorUnknown(t *testing.T) {
 	reg.Register(ToolConfig{
 		Name: "arg_rcv", Parameters: []ParameterConfig{{Name: "x", Type: "string", Required: true}},
 		Handler: func(ctx context.Context, args map[string]interface{}) (string, error) {
-			recv = args; return "ok", nil
+			recv = args
+			return "ok", nil
 		},
 	})
 	reg.Execute(context.Background(), []ToolCall{{ID: "c1", Type: "function", Function: ToolCallFunction{Name: "arg_rcv", Arguments: `{"x": "hello"}`}}})
@@ -62,7 +63,8 @@ func TestTimeout(t *testing.T) {
 	reg := NewToolRegistry(ToolRegistryOptions{DefaultTimeout: 50 * time.Millisecond})
 	reg.Register(ToolConfig{
 		Name: "slow", Handler: func(ctx context.Context, args map[string]interface{}) (string, error) {
-			time.Sleep(200 * time.Millisecond); return "done", nil
+			time.Sleep(200 * time.Millisecond)
+			return "done", nil
 		},
 	})
 	results := reg.Execute(context.Background(), []ToolCall{{ID: "c1", Type: "function", Function: ToolCallFunction{Name: "slow", Arguments: "{}"}}})
@@ -84,7 +86,8 @@ func TestTimeout(t *testing.T) {
 	reg3 := NewToolRegistry(ToolRegistryOptions{DefaultTimeout: 30 * time.Second})
 	reg3.Register(ToolConfig{
 		Name: "cancel_me", Handler: func(ctx context.Context, args map[string]interface{}) (string, error) {
-			<-ctx.Done(); return "", ctx.Err()
+			<-ctx.Done()
+			return "", ctx.Err()
 		},
 	})
 	ctx, cancel := context.WithCancel(context.Background())
@@ -98,7 +101,8 @@ func TestTimeout(t *testing.T) {
 	reg4.Register(ToolConfig{
 		Name: "per_tool", Timeout: 50 * time.Millisecond,
 		Handler: func(ctx context.Context, args map[string]interface{}) (string, error) {
-			time.Sleep(200 * time.Millisecond); return "done", nil
+			time.Sleep(200 * time.Millisecond)
+			return "done", nil
 		},
 	})
 	results = reg4.Execute(context.Background(), []ToolCall{{ID: "c1", Type: "function", Function: ToolCallFunction{Name: "per_tool", Arguments: "{}"}}})
@@ -186,9 +190,9 @@ func TestCircuitBreaker(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		_ = reg3.Execute(context.Background(), []ToolCall{{ID: fmt.Sprintf("c%d", i), Type: "function", Function: ToolCallFunction{Name: "recovery_cb", Arguments: "{}"}}})
 	}
-	reg3.circuitBreaker.mu.Lock()
-	reg3.circuitBreaker.state = breakerHalfOpen
-	reg3.circuitBreaker.mu.Unlock()
+	reg3.circuitBreakers["recovery_cb"].mu.Lock()
+	reg3.circuitBreakers["recovery_cb"].state = breakerHalfOpen
+	reg3.circuitBreakers["recovery_cb"].mu.Unlock()
 	results = reg3.Execute(context.Background(), []ToolCall{{ID: "c_recovery", Type: "function", Function: ToolCallFunction{Name: "recovery_cb", Arguments: "{}"}}})
 	if len(results) != 1 || results[0].Content != "recovered" {
 		t.Errorf("expected 'recovered', got: %q", results[0].Content)
@@ -201,7 +205,8 @@ func TestCircuitBreaker(t *testing.T) {
 func TestCircuitBreakerUnit(t *testing.T) {
 	cb := newCircuitBreaker(3, 100*time.Millisecond)
 	for i := 0; i < 3; i++ {
-		cb.Allow(); cb.RecordFailure()
+		cb.Allow()
+		cb.RecordFailure()
 	}
 	if cb.Allow() {
 		t.Error("expected false when open")
@@ -215,10 +220,12 @@ func TestCircuitBreakerUnit(t *testing.T) {
 	}
 	cb2 := newCircuitBreaker(3, 100*time.Millisecond)
 	for i := 0; i < 3; i++ {
-		cb2.Allow(); cb2.RecordFailure()
+		cb2.Allow()
+		cb2.RecordFailure()
 	}
 	time.Sleep(150 * time.Millisecond)
-	cb2.Allow(); cb2.RecordFailure()
+	cb2.Allow()
+	cb2.RecordFailure()
 	if cb2.Allow() {
 		t.Error("expected false after half-open failure")
 	}
@@ -231,7 +238,9 @@ func TestParallel(t *testing.T) {
 	reg.Register(ToolConfig{
 		Name: "par_safe", SafeForParallel: true,
 		Handler: func(ctx context.Context, args map[string]interface{}) (string, error) {
-			atomic.AddInt64(&executed, 1); time.Sleep(50 * time.Millisecond); return "safe", nil
+			atomic.AddInt64(&executed, 1)
+			time.Sleep(50 * time.Millisecond)
+			return "safe", nil
 		},
 	})
 	results := reg.Execute(context.Background(), []ToolCall{
@@ -248,7 +257,11 @@ func TestParallel(t *testing.T) {
 	reg2.Register(ToolConfig{
 		Name: "par_unsafe",
 		Handler: func(ctx context.Context, args map[string]interface{}) (string, error) {
-			mu.Lock(); order = append(order, "start"); time.Sleep(50 * time.Millisecond); order = append(order, "end"); mu.Unlock()
+			mu.Lock()
+			order = append(order, "start")
+			time.Sleep(50 * time.Millisecond)
+			order = append(order, "end")
+			mu.Unlock()
 			return "unsafe", nil
 		},
 	})
@@ -266,7 +279,8 @@ func TestParallel(t *testing.T) {
 	reg3.Register(ToolConfig{
 		Name: "ordered", SafeForParallel: true,
 		Handler: func(ctx context.Context, args map[string]interface{}) (string, error) {
-			time.Sleep(50 * time.Millisecond); return "result", nil
+			time.Sleep(50 * time.Millisecond)
+			return "result", nil
 		},
 	})
 	calls := []ToolCall{
