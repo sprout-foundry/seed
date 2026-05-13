@@ -9,6 +9,11 @@ type EventPublisher interface {
 	Publish(eventType string, data any)
 }
 
+// noopEventPublisher is a no-op implementation used when no publisher is provided.
+type noopEventPublisher struct{}
+
+func (noopEventPublisher) Publish(string, any) {}
+
 // Generic event type constants used by the core package.
 // These are the only event types that any consumer of core needs to handle.
 const (

@@ -200,6 +200,13 @@ func NewAgent(opts Options) (*Agent, error) {
 		normalizer = NewToolCallNormalizer()
 	}
 
+	// Nil-guard: if no EventPublisher is provided, use a no-op so call sites
+	// never need to nil-check.
+	ep := opts.EventPublisher
+	if ep == nil {
+		ep = noopEventPublisher{}
+	}
+
 	return &Agent{
 		provider:           opts.Provider,
 		executor:           opts.Executor,
@@ -207,9 +214,9 @@ func NewAgent(opts Options) (*Agent, error) {
 		systemPrompt:       systemPrompt,
 		maxIterations:      opts.MaxIterations,
 		debug:              opts.Debug,
-		eventPublisher:     opts.EventPublisher,
+		eventPublisher:     ep,
 		state:              NewState(),
-		outputMgr:          NewOutputManager(opts.EventPublisher),
+		outputMgr:          NewOutputManager(ep),
 		inputInjectionChan: make(chan string, 1),
 		fallbackParser:     fallbackParser,
 		normalizer:         normalizer,
