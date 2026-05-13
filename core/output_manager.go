@@ -158,8 +158,6 @@ func (om *defaultOutputManager) PublishOutput(event OutputEvent) {
 		case "content":
 			om.eventPublisher.Publish(EventTypeStreamChunk,
 				map[string]interface{}{"chunk": event.Content, "content_type": "text"})
-			om.eventPublisher.Publish("agent_message",
-				map[string]interface{}{"category": "info", "message": event.Content})
 		case "reasoning":
 			om.eventPublisher.Publish(EventTypeStreamChunk,
 				map[string]interface{}{"chunk": event.Content, "content_type": "reasoning"})
