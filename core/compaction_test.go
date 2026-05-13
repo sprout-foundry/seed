@@ -7,34 +7,30 @@ import (
 
 // --- Compaction tests ---
 
-func TestCompactor_NoOpWhenUnderLimit(t *testing.T) {
-	c := NewCompactor()
+func TestCompact_NoOpWhenUnderLimit(t *testing.T) {
 	messages := []Message{
 		{Role: "system", Content: "You are helpful."},
 		{Role: "user", Content: "Hi"},
 		{Role: "assistant", Content: "Hello!"},
 	}
-	result := c.Compact(messages, 10000)
+	result := Compact(messages, 10000)
 	if len(result.Messages) != len(messages) {
 		t.Errorf("expected no compaction, got %d messages", len(result.Messages))
 	}
 }
 
-func TestCompactor_NoOpWhenTooFewMessages(t *testing.T) {
-	c := NewCompactor()
+func TestCompact_NoOpWhenTooFewMessages(t *testing.T) {
 	messages := []Message{
 		{Role: "user", Content: "Hi"},
 		{Role: "assistant", Content: "Hello"},
 	}
-	result := c.Compact(messages, 10)
+	result := Compact(messages, 10)
 	if len(result.Messages) != len(messages) {
 		t.Errorf("expected no compaction for < minMessages, got %d", len(result.Messages))
 	}
 }
 
-func TestCompactor_EmergencyTruncation(t *testing.T) {
-	c := NewCompactor()
-
+func TestCompact_EmergencyTruncation(t *testing.T) {
 	// Build messages with very long content — more than recentToKeep
 	messages := []Message{
 		{Role: "system", Content: "You are helpful."},
@@ -51,7 +47,7 @@ func TestCompactor_EmergencyTruncation(t *testing.T) {
 		})
 	}
 
-	result := c.Compact(messages, 100)
+	result := Compact(messages, 100)
 
 	// Should have fewer messages
 	if len(result.Messages) >= len(messages) {
@@ -64,28 +60,26 @@ func TestCompactor_EmergencyTruncation(t *testing.T) {
 	}
 
 	// Token count should be significantly reduced
-	origTokens := c.roughTokens(messages)
-	newTokens := c.roughTokens(result.Messages)
+	origTokens := roughTokens(messages)
+	newTokens := roughTokens(result.Messages)
 	if newTokens >= origTokens {
 		t.Errorf("expected token reduction: %d -> %d", origTokens, newTokens)
 	}
 }
 
-func TestCompactor_RoughTokens(t *testing.T) {
-	c := NewCompactor()
+func TestCompact_RoughTokens(t *testing.T) {
 	messages := []Message{
 		{Role: "user", Content: "Hello world"},
 	}
-	tokens := c.roughTokens(messages)
+	tokens := roughTokens(messages)
 	if tokens <= 0 {
 		t.Errorf("expected positive token count, got %d", tokens)
 	}
 }
 
-func TestCompactor_TruncateHeadTail(t *testing.T) {
-	c := NewCompactor()
+func TestCompact_TruncateHeadTail(t *testing.T) {
 	s := strings.Repeat("a", 100)
-	result := c.truncateHeadTail(s, 10, 10)
+	result := truncateHeadTail(s, 10, 10)
 	if !strings.Contains(result, "[truncated]") {
 		t.Error("expected truncation marker")
 	}
@@ -97,10 +91,9 @@ func TestCompactor_TruncateHeadTail(t *testing.T) {
 	}
 }
 
-func TestCompactor_TruncateHead(t *testing.T) {
-	c := NewCompactor()
+func TestCompact_TruncateHead(t *testing.T) {
 	s := strings.Repeat("a", 100)
-	result := c.truncateHead(s, 10)
+	result := truncateHead(s, 10)
 	if !strings.Contains(result, "[truncated]") {
 		t.Error("expected truncation marker")
 	}
@@ -111,14 +104,13 @@ func TestCompactor_TruncateHead(t *testing.T) {
 
 // --- CompactionResult metadata tests ---
 
-func TestCompactor_ResultMetadata_NoOp(t *testing.T) {
-	c := NewCompactor()
+func TestCompact_ResultMetadata_NoOp(t *testing.T) {
 	messages := []Message{
 		{Role: "system", Content: "You are helpful."},
 		{Role: "user", Content: "Hi"},
 		{Role: "assistant", Content: "Hello!"},
 	}
-	result := c.Compact(messages, 10000)
+	result := Compact(messages, 10000)
 
 	if result.Strategy != "none" {
 		t.Errorf("expected strategy 'none', got %q", result.Strategy)
@@ -134,9 +126,7 @@ func TestCompactor_ResultMetadata_NoOp(t *testing.T) {
 	}
 }
 
-func TestCompactor_ResultMetadata_Emergency(t *testing.T) {
-	c := NewCompactor()
-
+func TestCompact_ResultMetadata_Emergency(t *testing.T) {
 	messages := []Message{
 		{Role: "system", Content: "You are helpful."},
 	}
@@ -151,7 +141,7 @@ func TestCompactor_ResultMetadata_Emergency(t *testing.T) {
 		})
 	}
 
-	result := c.Compact(messages, 100)
+	result := Compact(messages, 100)
 
 	if result.Strategy != "emergency" {
 		t.Errorf("expected strategy 'emergency', got %q", result.Strategy)
@@ -164,7 +154,7 @@ func TestCompactor_ResultMetadata_Emergency(t *testing.T) {
 	}
 }
 
-func TestCompactor_ResultMetadata_TokensSaved(t *testing.T) {
+func TestCompact_ResultMetadata_TokensSaved(t *testing.T) {
 	// Test TokensSaved() helper
 	noneResult := CompactionResult{
 		Messages:     []Message{{Role: "user", Content: "hi"}},

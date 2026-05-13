@@ -698,8 +698,7 @@ func (ch *ConversationHandler) ProcessQueryStream(ctx context.Context, query str
 
 // compactMessages reduces the message list to fit within the context window.
 func (ch *ConversationHandler) compactMessages(messages []Message, limit int) CompactionResult {
-	compactor := NewCompactor()
-	return compactor.Compact(messages, limit)
+	return Compact(messages, limit)
 }
 
 // enqueueTransientMessage adds a message that will be sent once then discarded.
