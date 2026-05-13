@@ -19,7 +19,25 @@ func (ch *ConversationHandler) finalize(query string) (string, error) {
 	if ch.turnCompleted && ch.queryStartIndex >= 0 && ch.turnEndIndex >= ch.queryStartIndex {
 		if ch.turnEndIndex < len(messages) {
 			turnMessages := messages[ch.queryStartIndex : ch.turnEndIndex+1]
-			RecordTurnCheckpointAsync(ch.agent.state, turnMessages, ch.queryStartIndex, ch.turnEndIndex, 5*time.Second, ch.agent.onCheckpoint)
+
+			// Build the checkpoint synchronously and store it in state.
+			builder := NewTurnSummaryBuilder()
+			cp := builder.Build(turnMessages)
+			cp.StartIndex = ch.queryStartIndex
+			cp.EndIndex = ch.turnEndIndex
+			ch.agent.state.AddCheckpoint(cp)
+
+			// Fire OnCheckpoint synchronously with panic recovery.
+			if ch.agent.onCheckpoint != nil {
+				func() {
+					defer func() {
+						if r := recover(); r != nil {
+							ch.agent.debugLog("[!!] OnCheckpoint callback panicked: %v\n", r)
+						}
+					}()
+					ch.agent.onCheckpoint(cp)
+				}()
+			}
 		} else {
 			ch.agent.debugLog("[checkpoint] Skipping checkpoint: turnEndIndex %d >= messages len %d\n",
 				ch.turnEndIndex, len(messages))

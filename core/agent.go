@@ -135,11 +135,12 @@ type Options struct {
 	// structured tool calls will not be cleaned before execution. Default
 	// (false): normalizer is enabled.
 	DisableNormalizer bool
-	// OnCheckpoint is an optional fire-and-forget callback invoked after each
-	// completed turn. It receives the TurnCheckpoint summarizing what happened
-	// in the turn. The callback is invoked asynchronously after the checkpoint
-	// is built and stored in state. If the callback panics, the panic is caught
-	// and the agent continues normally.
+	// OnCheckpoint is an optional fire-and-forget callback invoked synchronously
+	// after each completed turn. It receives the TurnCheckpoint summarizing what
+	// happened in the turn. The callback is invoked immediately after the
+	// checkpoint is built and stored in state, before finalize() returns.
+	// If the callback panics, the panic is caught and the agent continues
+	// normally.
 	OnCheckpoint func(TurnCheckpoint)
 }
 

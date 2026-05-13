@@ -7,7 +7,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 )
 
 // --- Mock implementations ---
@@ -767,12 +766,8 @@ func TestAgent_OnCheckpoint_CallbackFired(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Give the async callback goroutine time to fire.
-	// RecordTurnCheckpointAsync spawns a goroutine that builds the summary
-	// and invokes the callback; it completes almost instantly but we wait
-	// a small amount to avoid flaky tests.
-	time.Sleep(50 * time.Millisecond)
-
+	// OnCheckpoint fires synchronously in finalize(), so the callback has
+	// already been invoked by the time Run() returns.
 	mu.Lock()
 	defer mu.Unlock()
 
@@ -848,7 +843,7 @@ func TestAgent_OnCheckpoint_PanicRecovered(t *testing.T) {
 	}
 
 	// Should not crash; the panic inside the callback is recovered
-	// by RecordTurnCheckpointAsync and the agent continues normally.
+	// synchronously in finalize() and the agent continues normally.
 	result, err := a.Run(context.Background(), "test")
 	if err != nil {
 		t.Fatalf("unexpected error despite callback panic: %v", err)
@@ -903,9 +898,8 @@ func TestAgent_OnCheckpoint_OnlyOnCompletedTurns(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Wait long enough for any async callback to fire (there shouldn't be one).
-	time.Sleep(50 * time.Millisecond)
-
+	// OnCheckpoint fires synchronously; with turnCompleted=false no callback
+	// should have been invoked.
 	mu.Lock()
 	defer mu.Unlock()
 
@@ -944,15 +938,14 @@ func TestAgent_OnCheckpoint_MultipleTurns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run 1 failed: %v", err)
 	}
-	time.Sleep(50 * time.Millisecond)
 
 	// Second query on the same agent (state persists)
 	_, err = a.Run(context.Background(), "second query")
 	if err != nil {
 		t.Fatalf("run 2 failed: %v", err)
 	}
-	time.Sleep(50 * time.Millisecond)
 
+	// OnCheckpoint fires synchronously; both callbacks have already run.
 	mu.Lock()
 	defer mu.Unlock()
 
