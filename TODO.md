@@ -175,3 +175,36 @@
 [x] - REGISTRY: Add unit tests — sequential execution, parallel execution, timeout, result truncation. `core/tool_registry_test.go`
 [x] - REGISTRY: Add unit tests — PreExecuteHook blocking, PostExecuteHook modification, circuit breaker integration. `core/tool_registry_test.go`
 [x] - REGISTRY: Add unit tests — `<|channel|>` suffix stripped → tool found → executes. `core/tool_registry_test.go`
+
+## Context Compaction Hardening (SP-014)
+
+[ ] - COMPACTION: Add `Meta map[string]string` to `Message` struct (`json:"-"` tag) — enables reliable checkpoint summary identification without string matching. `core/types.go`
+[ ] - COMPACTION: Update `BuildCheckpointCompactedMessages` to set `Meta["checkpoint"] = "true"` on inserted summary messages. `core/checkpoint_compaction.go`
+[ ] - COMPACTION: Update `BuildCheckpointCompactedMessages` to use `ActionableSummary` with 500-char guard (fall back to `Summary` if over). `core/checkpoint_compaction.go`
+[ ] - COMPACTION: Remove `structuralCompact`, `compactTurns`, `summarizeTurn`, `checkpointCompact` from Compactor — these create redundant or destructive summaries. `core/compaction.go`
+[ ] - COMPACTION: Remove `Compactor` struct and `NewCompactor` — convert to package-level `Compact()` function with constants. `core/compaction.go`
+[ ] - COMPACTION: Implement `dropOldestCheckpointSummaries` — drop oldest `Meta["checkpoint"] == "true"` messages one at a time, respecting `recentToKeep` boundary. `core/compaction.go`
+[ ] - COMPACTION: Implement `truncateOldContentHeadTail` — truncate old non-recent messages using `truncateHeadTail` (600 head, 400 tail) instead of `truncateHead`. `core/compaction.go`
+[ ] - COMPACTION: Implement `dropOldestTurns` — drop complete turns (user + assistant + tool chain) oldest first, with fallback to individual message dropping. `core/compaction.go`
+[ ] - COMPACTION: Update `compactMessages()` in `conversation.go` to call package-level `Compact()`. `core/conversation.go`
+[ ] - COMPACTION: Delete `checkpoint_shifting.go` — `ShiftCheckpointIndices` is dead code (never called, indices are stable on append-only state). `core/checkpoint_shifting.go`
+[ ] - COMPACTION: Increase truncation limits in `TurnSummaryBuilder` — user question 200→300, response 150→250, result 200→300, error 150→200. `core/turn_summary.go`
+[ ] - COMPACTION: Update `CompactionResult.Strategy` values — `"tool_trim"`, `"checkpoint_drop"`, `"truncation"`, `"emergency"`. `core/compaction.go`
+[ ] - COMPACTION: Rewrite `compaction_test.go` — test new algorithm phases, protected boundary, checkpoint dropping, head+tail truncation, turn dropping with fallback. `core/compaction_test.go`
+[ ] - COMPACTION: Remove `ShiftCheckpointIndices` tests from `turn_checkpoints_test.go`. `core/turn_checkpoints_test.go`
+[ ] - COMPACTION: Add e2e test — long conversation (50+ turns) → recent turns intact, old turns summarized with actionable detail. `internal/test/e2e_test.go`
+[ ] - COMPACTION: Add e2e test — conversation exceeding context after checkpoint compaction → oldest summaries dropped, not replaced with metadata. `internal/test/e2e_test.go`
+
+## Checkpoint Hooks (SP-015)
+
+[x] - HOOK: Add `UserMessage` field to `TurnCheckpoint` — stores original user query truncated to 2000 chars. `core/turn_summary.go`
+[ ] - HOOK: Add `OnCheckpoint func(TurnCheckpoint)` to `Options` — fire-and-forget callback invoked after each completed turn. `core/agent.go`
+[ ] - HOOK: Store `onCheckpoint` on `Agent` and wire in `NewAgent`. `core/agent.go`
+[ ] - HOOK: Fire `OnCheckpoint` synchronously in `finalize()` with the built checkpoint, wrapped in panic recovery. `core/finalize.go`
+[ ] - HOOK: Add `Agent.Checkpoints()` convenience method — returns copy of all recorded checkpoints. `core/agent.go`
+[ ] - HOOK: Add `BuildCheckpointSummary` public convenience function (already exists) — used by finalize for synchronous build. `core/turn_summary.go`
+[ ] - HOOK: Add unit test — OnCheckpoint fires with correct checkpoint data after completed turn. `core/agent_test.go`
+[ ] - HOOK: Add unit test — OnCheckpoint nil is safe (no-op). `core/agent_test.go`
+[ ] - HOOK: Add unit test — OnCheckpoint panic is caught, agent continues. `core/agent_test.go`
+[ ] - HOOK: Add unit test — Agent.Checkpoints() returns all recorded checkpoints. `core/state_test.go`
+[ ] - HOOK: Add e2e test — multiple turns → OnCheckpoint fires for each completed turn with correct summaries. `internal/test/e2e_test.go`

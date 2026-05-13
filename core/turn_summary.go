@@ -16,6 +16,11 @@ type TurnCheckpoint struct {
 	// EndIndex is the index of the last message in the turn (the final assistant response).
 	EndIndex int `json:"end_index"`
 
+	// UserMessage is the original user query that started the turn, truncated
+	// to 2000 characters. This is the best target for embedding-based search
+	// to find "what did the user ask that led to this outcome?"
+	UserMessage string `json:"user_message"`
+
 	// Summary is a concise description of what happened in the turn.
 	Summary string `json:"summary"`
 
@@ -129,6 +134,7 @@ func (b *TurnSummaryBuilder) Build(messages []Message) TurnCheckpoint {
 	return TurnCheckpoint{
 		StartIndex:        0,
 		EndIndex:          len(messages) - 1,
+		UserMessage:       truncateString(extracted.userQuestion, 2000),
 		Summary:           summary,
 		ActionableSummary: actionable,
 	}
