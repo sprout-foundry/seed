@@ -454,6 +454,89 @@ def has_staged_changes(repo: pathlib.Path) -> bool:
     return result.returncode != 0
 
 
+# ---------------------------------------------------------------------------
+# Post-agent validation
+# ---------------------------------------------------------------------------
+
+_PROVIDER_ERROR_PATTERNS = [
+    r"provider.*error",
+    r"provider.*failed",
+    r"connection.*refused",
+    r"connection.*reset",
+    r"etimedout",
+    r"etimedout",
+    r"502.*bad.*gateway",
+    r"503.*service.*unavailable",
+    r"504.*gateway.*timeout",
+    r"rate.*limit",
+    r"too.*many.*requests",
+    r"api.*key.*invalid",
+    r"unauthorized",
+    r"forbidden",
+    r"no.*provider.*found",
+    r"provider.*not.*configured",
+    r"chat.*failed",
+    r"chatstream.*failed",
+    r"llm.*error",
+    r"model.*not.*found",
+]
+_PROVIDER_ERROR_RE = re.compile("|".join(_PROVIDER_ERROR_PATTERNS), re.IGNORECASE)
+
+
+def has_provider_errors(output: str) -> bool:
+    """Check if agent output contains signs of provider failure."""
+    return _PROVIDER_ERROR_RE.search(output) is not None
+
+
+def validate_post_agent(
+    opts: Opts,
+    agent_result: subprocess.CompletedProcess[str],
+    todo_text: str,
+) -> bool:
+    """Validate that the agent actually completed work successfully.
+
+    Checks:
+    1. No provider errors in output (even if exit code 0)
+    2. There are staged changes (agent did actual work)
+    3. Build passes (go build ./...)
+
+    Returns True if all checks pass, False if any check fails.
+    """
+    # 1. Check for provider errors in output
+    combined_output = agent_result.stdout + agent_result.stderr
+    if has_provider_errors(combined_output):
+        _log(f"PROVIDER ERROR detected in agent output for TODO: {todo_text!r}")
+        _log("Skipping mark-complete due to provider failure")
+        return False
+
+    # 2. Check for staged changes (agent must have done actual work)
+    if not has_staged_changes(opts.repo):
+        _log(f"NO STAGED CHANGES after agent run for TODO: {todo_text!r}")
+        _log("Skipping mark-complete – agent did not produce any changes")
+        return False
+
+    # 3. Verify build passes
+    if not opts.dry_run:
+        _log("Verifying build passes...")
+        build_result = subprocess.run(
+            ["go", "build", "./..."],
+            cwd=str(opts.repo),
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        if build_result.returncode != 0:
+            _log(f"BUILD FAILED after agent run for TODO: {todo_text!r}")
+            _log(f"  Build output: {build_result.stderr[:500]}")
+            _log("Skipping mark-complete – build does not pass")
+            return False
+        _log("Build verification passed")
+    else:
+        _log("[DRY RUN] Would verify build passes (skipped)")
+
+    return True
+
+
 def run_sprout_commit(opts: Opts) -> subprocess.CompletedProcess[str]:
     """Run ``sprout commit --skip-prompt`` if there are staged changes."""
     if not has_staged_changes(opts.repo):
@@ -524,6 +607,13 @@ class TodoPipeline:
                     f"sprout agent failed for TODO {item.text!r} "
                     f"(exit code {agent_result.returncode})"
                 )
+
+            # 2.5. Post-agent validation — prevent false completions from provider errors
+            if not validate_post_agent(self.opts, agent_result, item.text):
+                _log(f"VALIDATION FAILED for TODO: {item.text!r}")
+                _log("Skipping mark-complete — agent did not produce valid results")
+                self.skipped.append(item.text)
+                return False
 
             # 3. Commit staged changes
             commit_result = run_sprout_commit(self.opts)
