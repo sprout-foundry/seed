@@ -543,7 +543,7 @@ func TestE2E_CompactionEventPublished(t *testing.T) {
 		t.Fatalf("expected compaction event data to be map[string]interface{}, got %T", compactionEvents[0].Data)
 	}
 
-	// strategy should be one of "checkpoint", "structural", or "emergency" (not "none")
+	// Strategy is "emergency" when compaction is needed, "none" otherwise.
 	strategy, ok := data["strategy"].(string)
 	if !ok {
 		t.Fatalf("expected strategy to be string, got %T", data["strategy"])
@@ -552,9 +552,10 @@ func TestE2E_CompactionEventPublished(t *testing.T) {
 		t.Errorf("expected strategy not 'none', got %q", strategy)
 	}
 	// With 100 pre-added messages (50 user/assistant pairs) plus the system prompt
-	// and final query, checkpoint compaction alone is insufficient; structural is used.
+	// and final query, compaction is needed. With checkpoint and structural
+	// strategies removed, emergency truncation is used.
 	// Assert the expected strategy to make the test self-documenting and catch algorithm changes.
-	h.AssertEquals(strategy, "structural")
+	h.AssertEquals(strategy, "emergency")
 
 	// messages_before > messages_after
 	messagesBefore, ok := data["messages_before"].(int)
@@ -594,7 +595,8 @@ func TestE2E_CompactionEventPublished(t *testing.T) {
 		t.Fatal("expected provider to have been called")
 	}
 	// Original: 1 system + 100 pre-added + 1 user query = 102 messages
-	// After structural compaction: ~26 messages (system + summary + recent)
+	// After emergency truncation: tool content trimmed, older content truncated,
+	// oldest messages dropped, preserving recent conversation.
 	if len(lastReq.Messages) >= 102 {
 		t.Errorf("expected compaction to reduce messages below 102, got %d", len(lastReq.Messages))
 	}
