@@ -104,6 +104,7 @@ type Options struct {
 	UI             UI           // nil = headless
 	SystemPrompt   string       // empty = minimal default for testing
 	MaxIterations  int          // 0 = unlimited
+	MaxTokens      int          // 0 = use provider default
 	Debug          bool
 	EventPublisher EventPublisher // nil = no events
 	// OnIteration is an optional callback invoked synchronously at the start of
@@ -116,6 +117,10 @@ type Options struct {
 	// Optimizer is used to optimize conversation history across iterations.
 	Optimizer   *ConversationOptimizer
 	RetryConfig RetryConfig // retry behavior for transient errors; zero values use defaults
+	// InitialMessages seeds the agent's conversation state with pre-existing
+	// messages (e.g., from a previous query in the same session). When empty,
+	// the agent starts with a blank slate.
+	InitialMessages []Message
 	// DisableFallbackParser disables the fallback tool-call parser. When
 	// disabled, malformed tool calls in model responses will not be recovered.
 	// Default (false): fallback parser is enabled when tools are configured.
@@ -137,6 +142,7 @@ type Agent struct {
 	ui             UI
 	systemPrompt   string
 	maxIterations  int
+	maxTokens      int
 	debug          bool
 	eventPublisher EventPublisher
 
@@ -207,15 +213,22 @@ func NewAgent(opts Options) (*Agent, error) {
 		ep = noopEventPublisher{}
 	}
 
+	// Create state, seeding with initial messages if provided.
+	st := NewState()
+	if len(opts.InitialMessages) > 0 {
+		st.SetMessages(opts.InitialMessages)
+	}
+
 	return &Agent{
 		provider:           opts.Provider,
 		executor:           opts.Executor,
 		ui:                 opts.UI,
 		systemPrompt:       systemPrompt,
 		maxIterations:      opts.MaxIterations,
+		maxTokens:          opts.MaxTokens,
 		debug:              opts.Debug,
 		eventPublisher:     ep,
-		state:              NewState(),
+		state:              st,
 		outputMgr:          NewOutputManager(ep),
 		inputInjectionChan: make(chan string, 1),
 		fallbackParser:     fallbackParser,
