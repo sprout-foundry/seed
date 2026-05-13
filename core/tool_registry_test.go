@@ -9,18 +9,30 @@ import (
 
 type mockEventPublisher struct {
 	mu     sync.Mutex
-	events []struct{ eventType string; data any }
+	events []struct {
+		eventType string
+		data      any
+	}
 }
 
 func (m *mockEventPublisher) Publish(eventType string, data any) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.events = append(m.events, struct{ eventType string; data any }{eventType, data})
+	m.events = append(m.events, struct {
+		eventType string
+		data      any
+	}{eventType, data})
 }
-func (m *mockEventPublisher) GetEvents() []struct{ eventType string; data any } {
+func (m *mockEventPublisher) GetEvents() []struct {
+	eventType string
+	data      any
+} {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	cp := make([]struct{ eventType string; data any }, len(m.events))
+	cp := make([]struct {
+		eventType string
+		data      any
+	}, len(m.events))
 	copy(cp, m.events)
 	return cp
 }
@@ -55,7 +67,11 @@ func TestRegister_HandlerWithImages(t *testing.T) {
 }
 
 func TestRegister_FailsAndDuplicate(t *testing.T) {
-	tests := []struct{ name string; config ToolConfig; sub string }{
+	tests := []struct {
+		name   string
+		config ToolConfig
+		sub    string
+	}{
 		{"empty_name", ToolConfig{Name: "", Handler: dummyHandler}, "empty"},
 		{"no_handler", ToolConfig{Name: "broken"}, "must have"},
 	}
@@ -208,7 +224,8 @@ func TestChannelSuffixResolved(t *testing.T) {
 	reg.Register(ToolConfig{
 		Name: "ch_test",
 		Handler: func(ctx context.Context, args map[string]interface{}) (string, error) {
-			*recv = "called"; return *recv, nil
+			*recv = "called"
+			return *recv, nil
 		},
 	})
 	results := reg.Execute(context.Background(), []ToolCall{{ID: "c1", Type: "function", Function: ToolCallFunction{Name: "ch_test<|channel|>0", Arguments: "{}"}}})
@@ -298,7 +315,8 @@ func TestArgs_TypeCoercion(t *testing.T) {
 			reg.Register(ToolConfig{
 				Name: "coerce", Parameters: []ParameterConfig{{Name: tc.key, Type: pType}},
 				Handler: func(ctx context.Context, args map[string]interface{}) (string, error) {
-					recv = args; return "ok", nil
+					recv = args
+					return "ok", nil
 				},
 			})
 			reg.Execute(context.Background(), []ToolCall{{ID: "c1", Type: "function", Function: ToolCallFunction{Name: "coerce", Arguments: tc.arg}}})
@@ -394,4 +412,3 @@ func TestNoopPublisher(t *testing.T) {
 	reg.Register(ToolConfig{Name: "np_evt", Handler: dummyHandler})
 	_ = reg.Execute(context.Background(), []ToolCall{{ID: "c1", Type: "function", Function: ToolCallFunction{Name: "np_evt", Arguments: "{}"}}})
 }
-

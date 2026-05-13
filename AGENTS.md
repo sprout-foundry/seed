@@ -68,6 +68,22 @@
 
 ---
 
+## ✅ CI Requirements (Required Before Completion)
+
+Every change **must** pass all CI checks before work is considered complete. Run these steps in order:
+
+1. **Format** — `gofmt -l .` must return empty. Fix with `go fmt ./...` if not.
+2. **Vet** — `go vet ./...` must pass with no issues.
+3. **Build** — `go build ./...` must compile cleanly.
+4. **Test** — `go test -race -count=1 ./...` must pass (race detector enabled, no caching).
+5. **Example** — `go run ./example/minimal/` must run without error.
+
+Convenience target: `make check` runs vet, format, build, and test.
+
+**Do not mark any task complete until all of the above pass.**
+
+---
+
 ## 🗺 Roadmap
 
 See [roadmap/README.md](./roadmap/README.md) for current spec status and open work.
