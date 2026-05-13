@@ -3,6 +3,7 @@ package core
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // --- Compaction tests ---
@@ -478,5 +479,132 @@ func TestCompact_CheckpointDropPreservesRecentMessages(t *testing.T) {
 			t.Errorf("recent message %d content mismatch: expected %q, got %q",
 				i, recentMsgs[i].Content, resultMsgs[i].Content)
 		}
+	}
+}
+
+// --- truncateOldContentHeadTail tests ---
+
+func TestTruncateOldContentHeadTail_PreservesHeadAndTail(t *testing.T) {
+	// Build content > 1200 chars (oldMsgMaxChars)
+	head := strings.Repeat("H", oldMsgHeadChars)
+	tail := strings.Repeat("T", oldMsgTailChars)
+	mid := strings.Repeat("M", 500)
+	longContent := head + mid + tail
+
+	result := truncateOldContentHeadTail(longContent)
+
+	// Should contain truncation marker
+	if !strings.Contains(result, "[truncated]") {
+		t.Error("expected truncation marker in result")
+	}
+
+	// Head should be preserved
+	if !strings.HasPrefix(result, head) {
+		t.Error("expected head content to be preserved")
+	}
+
+	// Tail should be preserved
+	if !strings.HasSuffix(result, tail) {
+		t.Error("expected tail content to be preserved")
+	}
+
+	// Total rune length should be head + marker + tail
+	markerLen := utf8.RuneCountInString("\n... [truncated] ...\n")
+	expectedLen := oldMsgHeadChars + markerLen + oldMsgTailChars
+	if utf8.RuneCountInString(result) != expectedLen {
+		t.Errorf("expected total length %d, got %d", expectedLen, utf8.RuneCountInString(result))
+	}
+
+	// Middle content should NOT be present
+	if strings.Contains(result, "MMMM") {
+		t.Error("expected middle content to be truncated")
+	}
+}
+
+func TestTruncateOldContentHeadTail_ShortContentNoOp(t *testing.T) {
+	// Content <= 1000 chars (oldMsgHeadChars + oldMsgTailChars) should be returned unchanged
+	shortContent := strings.Repeat("S", 900)
+
+	result := truncateOldContentHeadTail(shortContent)
+
+	if result != shortContent {
+		t.Errorf("expected unchanged content for short input, got %d runes", utf8.RuneCountInString(result))
+	}
+
+	// Exactly at boundary: 600 + 400 = 1000 runes, should also be unchanged
+	boundaryContent := strings.Repeat("B", oldMsgHeadChars+oldMsgTailChars)
+	result2 := truncateOldContentHeadTail(boundaryContent)
+	if result2 != boundaryContent {
+		t.Error("expected no truncation at exact boundary (1000 runes)")
+	}
+}
+
+func TestEmergencyTruncate_OldMessagesUseHeadTail(t *testing.T) {
+	// Build messages where old user/assistant messages exceed oldMsgMaxChars
+	messages := []Message{
+		{Role: "system", Content: "You are helpful."},
+	}
+
+	// Add old messages with long content (1400 chars each)
+	numOld := 10
+	for i := 0; i < numOld; i++ {
+		messages = append(messages, Message{
+			Role:    "user",
+			Content: "User " + strings.Repeat("O", oldMsgMaxChars+200),
+		})
+		messages = append(messages, Message{
+			Role:    "assistant",
+			Content: "Assistant " + strings.Repeat("A", oldMsgMaxChars+200),
+		})
+	}
+
+	// Add recent messages
+	for i := 0; i < 30; i++ {
+		messages = append(messages, Message{Role: "user", Content: "recent user " + string(rune('a'+i))})
+		messages = append(messages, Message{Role: "assistant", Content: "recent assistant " + string(rune('a'+i))})
+	}
+
+	// Calculate a token limit that triggers Phase 2 truncation but leaves
+	// old messages in place (Phase 3 shouldn't drop them).
+	// After Phase 2: old msgs ~1022 chars (~255 tokens each), recent ~9 tokens each.
+	// Budget for 20 old + 60 recent + system ≈ 5300 tokens.
+	// Set limit slightly above so Phase 3 doesn't drop everything.
+	afterPhase2Tokens := roughTokens(messages) - (numOld * 2 * 200 / charsPerToken) // rough savings from truncation
+	tokenLimit := afterPhase2Tokens + 500
+
+	result := emergencyTruncate(messages, tokenLimit)
+
+	// Find old (non-recent) messages and verify head+tail truncation
+	recentStart := len(result) - defaultRecentToKeep
+	if recentStart < 1 {
+		recentStart = 1
+	}
+
+	markerLen := utf8.RuneCountInString("\n... [truncated] ...\n")
+	expectedLen := oldMsgHeadChars + markerLen + oldMsgTailChars
+
+	truncatedCount := 0
+	for i := 1; i < recentStart && i < len(result); i++ {
+		msg := result[i]
+		if msg.Role == "system" || msg.Content == "" {
+			continue
+		}
+		if strings.Contains(msg.Content, "[truncated]") {
+			truncatedCount++
+			contentLen := utf8.RuneCountInString(msg.Content)
+			if contentLen != expectedLen {
+				t.Errorf("message %d: expected length %d (head+marker+tail), got %d",
+					i, expectedLen, contentLen)
+			}
+		}
+	}
+	if truncatedCount == 0 {
+		t.Error("expected at least one truncated old message, got none")
+	}
+
+	// Verify Phase 3 did not drop messages — all original messages should remain
+	if len(result) != len(messages) {
+		t.Errorf("expected no messages dropped by Phase 3: had %d, got %d",
+			len(messages), len(result))
 	}
 }

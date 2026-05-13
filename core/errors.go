@@ -23,6 +23,10 @@ var (
 
 	// ErrPaused is returned when Run is called while the agent is paused.
 	ErrPaused = errors.New("agent is paused")
+
+	// ErrZeroChoices is returned when the provider returns a valid response
+	// with zero choices, indicating an empty completion.
+	ErrZeroChoices = errors.New("provider returned zero choices")
 )
 
 // TransientError indicates a temporary failure that may succeed on retry.

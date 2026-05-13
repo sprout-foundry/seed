@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -214,8 +215,11 @@ func TestProcessQuery_EmptyChoices(t *testing.T) {
 	}
 
 	result, err := a.Run(context.Background(), "test")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err == nil {
+		t.Fatal("expected error for zero choices, got nil")
+	}
+	if !errors.Is(err, ErrZeroChoices) {
+		t.Fatalf("expected ErrZeroChoices, got %v", err)
 	}
 	if result != "" {
 		t.Errorf("expected empty result for empty choices, got %q", result)

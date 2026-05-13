@@ -16,6 +16,7 @@ const (
 
 	oldMsgMaxChars   = 1200
 	oldMsgHeadChars  = 600
+	oldMsgTailChars  = 400
 	charsPerToken    = 4
 	toolCallOverhead = 20
 	msgOverhead      = 10
@@ -183,7 +184,7 @@ func emergencyTruncate(messages []Message, tokenLimit int) []Message {
 			continue
 		}
 		if utf8.RuneCountInString(trimmed[i].Content) > oldMsgMaxChars {
-			trimmed[i].Content = truncateHead(trimmed[i].Content, oldMsgHeadChars)
+			trimmed[i].Content = truncateOldContentHeadTail(trimmed[i].Content)
 		}
 	}
 
@@ -239,4 +240,12 @@ func truncateHead(s string, headRunes int) string {
 		return s
 	}
 	return string(r[:headRunes]) + "\n... [truncated] ..."
+}
+
+// truncateOldContentHeadTail truncates old message content using head+tail
+// preservation: keeps oldMsgHeadChars from the start and oldMsgTailChars from
+// the end, with a truncation marker in between. This preserves both the
+// beginning context and the ending context of old messages.
+func truncateOldContentHeadTail(s string) string {
+	return truncateHeadTail(s, oldMsgHeadChars, oldMsgTailChars)
 }

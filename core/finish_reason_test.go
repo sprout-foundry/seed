@@ -387,8 +387,11 @@ func TestFinishReason_NoChoices(t *testing.T) {
 	})
 
 	result, err := agent.Run(context.Background(), "hi")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err == nil {
+		t.Fatal("expected error for zero choices, got nil")
+	}
+	if !errors.Is(err, ErrZeroChoices) {
+		t.Fatalf("expected ErrZeroChoices, got %v", err)
 	}
 	if result != "" {
 		t.Errorf("expected empty result, got %q", result)
