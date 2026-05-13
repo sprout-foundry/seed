@@ -250,10 +250,8 @@ func (a *Agent) Run(ctx context.Context, query string) (string, error) {
 
 // RunStream executes a single query through the streaming conversation loop.
 // It uses provider.ChatStream() instead of provider.Chat(), so content is
-// delivered incrementally via the StreamHandler callbacks. The streaming
-// buffer is populated with content as it arrives, and the return value is
-// empty when the buffer contains streamed content (the caller should read
-// from StreamingBuffer() instead).
+// delivered incrementally via the StreamHandler callbacks. The return value
+// is the final response content extracted from conversation state.
 func (a *Agent) RunStream(ctx context.Context, query string) (string, error) {
 	ch := newConversationHandler(a)
 	return ch.ProcessQueryStream(ctx, query)

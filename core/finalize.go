@@ -49,10 +49,5 @@ func (ch *ConversationHandler) finalize(query string) (string, error) {
 		}
 	}
 
-	// If streaming was used, return empty to avoid duplicate display
-	if ch.agent.outputMgr.ContentBuffer().Len() > 0 {
-		return "", nil
-	}
-
 	return finalContent, nil
 }

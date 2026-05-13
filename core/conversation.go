@@ -77,16 +77,17 @@ func newConversationHandler(a *Agent) *ConversationHandler {
 }
 
 // chatOperation encapsulates a single LLM call. The function performs the call
-// (via Chat or ChatStream) and is responsible for recording token usage and
-// appending the assistant message to state. In the non-streaming path, this is
-// done inline; in the streaming path, it is delegated to the stream handler's
-// OnDone callback.
+// (via Chat or ChatStream) and is responsible for recording token usage.
+// The assistant message is NOT appended by this function; that is the
+// responsibility of runLoop, which adds the message after fallback parsing
+// and normalization to avoid a race window where observers could see the
+// un-normalized version.
 type chatOperation func(ctx context.Context, req *ChatRequest, iter int) (*ChatResponse, error)
 
 // runLoop executes the shared conversation loop. The chatFn parameter performs
-// the LLM call and handles state recording (token tracking, message recording).
-// Both ProcessQuery and ProcessQueryStream delegate to this method with their
-// respective chat implementations.
+// the LLM call and records token usage. The assistant message is added by
+// runLoop itself after normalization. Both ProcessQuery and ProcessQueryStream
+// delegate to this method with their respective chat implementations.
 func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugName string, chatFn chatOperation) (string, error) {
 	ch.agent.debugLog("[~] %s: %s\n", debugName, query)
 	ch.conversationStart = time.Now()
@@ -210,13 +211,25 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 			return "", fmt.Errorf("chat failed: %w", err)
 		}
 
-		// State recording (tokens + message) is handled by chatFn
-		// (inline for non-streaming; via OnDone for streaming)
+		// Guard against zero-choice responses from the provider.
+		if len(resp.Choices) == 0 {
+			ch.agent.debugLog("[!!] Provider returned zero choices\n")
+			return "", fmt.Errorf("%w: provider returned empty response", ErrZeroChoices)
+		}
+
+		// State recording (tokens) is handled by chatFn.
+		// The assistant message is added to state here, before the finish-reason
+		// dispatch, so that continue/return-finalize paths inside the switch have
+		// it in state for the next iteration or finalize(). For fall-through paths,
+		// the fallback parser and normalizer update it in place below before any
+		// tool execution or loop exit. This ensures the message is never visible
+		// to observers before normalization has been applied.
 
 		assistantMsg := resp.ToMessage()
 		if assistantMsg.Role == "" {
 			assistantMsg.Role = "assistant"
 		}
+		a.state.AddMessage(assistantMsg)
 
 		// Dispatch on finish reason from the first choice.
 		// This provides explicit handling for each termination signal
@@ -389,13 +402,6 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 					a.debugLog("[fallback] Parsed %d tool calls from content\n", len(result.ToolCalls))
 					assistantMsg.ToolCalls = result.ToolCalls
 					assistantMsg.Content = result.CleanedContent
-					// Update the last message in state (already recorded by chatFn)
-					// so that tool results are not orphaned in the next iteration.
-					msgs := a.state.Messages()
-					if len(msgs) > 0 {
-						msgs[len(msgs)-1] = assistantMsg
-						a.state.SetMessages(msgs)
-					}
 				}
 			}
 		}
@@ -432,6 +438,13 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 			}
 
 			ch.agent.debugLog("[OK] Conversation complete\n")
+			// Sync the (potentially fallback-parsed) assistant message to state
+			// before finalization so the recorded content reflects normalization.
+			msgs := a.state.Messages()
+			if len(msgs) > 0 {
+				msgs[len(msgs)-1] = assistantMsg
+				a.state.SetMessages(msgs)
+			}
 			ch.turnCompleted = true
 			ch.turnEndIndex = ch.agent.state.Len() - 1
 			completed = true
@@ -454,12 +467,15 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 			// If every call was dropped, flag it for retry below.
 			allMalformed = len(normalized) == 0
 			assistantMsg.ToolCalls = []ToolCall(normalized)
-			// Update the last message in state so tool results are linked correctly.
-			msgs := a.state.Messages()
-			if len(msgs) > 0 {
-				msgs[len(msgs)-1] = assistantMsg
-				a.state.SetMessages(msgs)
-			}
+		}
+
+		// Sync the (potentially normalized) assistant message to state.
+		// This is done once after both fallback parsing and normalization,
+		// so tool results are linked to the correct tool calls in the next iteration.
+		msgs := a.state.Messages()
+		if len(msgs) > 0 {
+			msgs[len(msgs)-1] = assistantMsg
+			a.state.SetMessages(msgs)
 		}
 
 		if len(assistantMsg.ToolCalls) == 0 {
@@ -608,7 +624,11 @@ func (ch *ConversationHandler) ProcessQuery(ctx context.Context, query string) (
 
 			resp, err := ch.agent.provider.Chat(ctx, req)
 			if err == nil {
-				// Record token usage and assistant message inline
+				// Record token usage inline.
+				// The assistant message is NOT added to state here; that is the
+				// responsibility of runLoop, which adds the message after fallback
+				// parsing and normalization to avoid a race window where observers
+				// could see the un-normalized version.
 				if resp.Usage.TotalTokens > 0 {
 					ch.agent.state.AddTokens(resp.Usage.PromptTokens, resp.Usage.CompletionTokens, resp.Usage.TotalTokens)
 
@@ -624,11 +644,6 @@ func (ch *ConversationHandler) ProcessQuery(ctx context.Context, query string) (
 					}
 				}
 
-				msg := resp.ToMessage()
-				if msg.Role == "" {
-					msg.Role = "assistant"
-				}
-				ch.agent.state.AddMessage(msg)
 				return resp, nil
 			}
 
@@ -674,9 +689,8 @@ func (ch *ConversationHandler) ProcessQuery(ctx context.Context, query string) (
 // ProcessQueryStream handles a user query through the streaming conversation
 // flow. It uses provider.ChatStream() instead of provider.Chat(), so content
 // is delivered incrementally via StreamHandler callbacks. The streaming buffer
-// is populated as content arrives, and the return value is empty when the
-// buffer contains streamed content (the caller should read from
-// agent.StreamingBuffer() instead).
+// is populated as content arrives. The return value is the final response
+// content extracted from conversation state, just like ProcessQuery.
 func (ch *ConversationHandler) ProcessQueryStream(ctx context.Context, query string) (string, error) {
 	chatFn := func(ctx context.Context, req *ChatRequest, iter int) (*ChatResponse, error) {
 		streamHandler := NewAgentStreamHandler(ch.agent, ch.agent.state)
@@ -689,7 +703,7 @@ func (ch *ConversationHandler) ProcessQueryStream(ctx context.Context, query str
 		if resp == nil {
 			return nil, fmt.Errorf("chat stream returned no response")
 		}
-		// Token tracking and assistant message already recorded in OnDone
+		// Token tracking is done in OnDone; assistant message is added by runLoop.
 		return resp, nil
 	}
 
@@ -736,8 +750,8 @@ func (ch *ConversationHandler) isRepetitiveContent(content string) bool {
 
 // previousAssistantMessage returns the assistant message that precedes the
 // current one in the message history. The current assistant message is
-// already appended to state when this is called, so we skip it and look
-// back for the prior assistant message.
+// already in state (added by runLoop before finish-reason dispatch), so we
+// skip it and look back for the prior assistant message.
 func (ch *ConversationHandler) previousAssistantMessage() *Message {
 	msgs := ch.agent.state.Messages()
 	return findPreviousRole(msgs, "assistant", "assistant")
@@ -836,10 +850,11 @@ func normalizeForComparison(s string) string {
 
 // followsRecentToolResults scans the message history backwards from the most
 // recent message to determine whether the current turn follows tool results.
-// It walks back past the current assistant message (if any), then checks for
-// one or more "tool" role messages. Returns true if tool results are found
-// immediately before the current response, indicating the model just received
-// tool output and should act on it rather than planning.
+// It walks back past the current assistant message (added to state before
+// finish-reason dispatch) and checks for one or more "tool" role messages.
+// Returns true if tool results are found immediately before the current
+// response, indicating the model just received tool output and should act on
+// it rather than planning.
 func (ch *ConversationHandler) followsRecentToolResults() bool {
 	msgs := ch.agent.state.Messages()
 	if len(msgs) == 0 {
@@ -847,8 +862,7 @@ func (ch *ConversationHandler) followsRecentToolResults() bool {
 	}
 
 	i := len(msgs) - 1
-	// Skip the current assistant message (the one we're deciding about)
-	// because it was already added to state by chatFn.
+	// Skip the current assistant message (already in state from runLoop).
 	if msgs[i].Role == "assistant" {
 		i--
 	}
