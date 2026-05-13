@@ -179,7 +179,7 @@
 ## Context Compaction Hardening (SP-014)
 
 [x] - COMPACTION: Add `Meta map[string]string` to `Message` struct (`json:"-"` tag) — enables reliable checkpoint summary identification without string matching. `core/types.go`
-[] - COMPACTION: Update `BuildCheckpointCompactedMessages` to set `Meta["checkpoint"] = "true"` on inserted summary messages. `core/checkpoint_compaction.go`
+[x] - COMPACTION: Update `BuildCheckpointCompactedMessages` to set `Meta["checkpoint"] = "true"` on inserted summary messages. `core/checkpoint_compaction.go`
 [] - COMPACTION: Update `BuildCheckpointCompactedMessages` to use `ActionableSummary` with 500-char guard (fall back to `Summary` if over). `core/checkpoint_compaction.go`
 [] - COMPACTION: Remove `structuralCompact`, `compactTurns`, `summarizeTurn`, `checkpointCompact` from Compactor — these create redundant or destructive summaries. `core/compaction.go`
 [] - COMPACTION: Remove `Compactor` struct and `NewCompactor` — convert to package-level `Compact()` function with constants. `core/compaction.go`
