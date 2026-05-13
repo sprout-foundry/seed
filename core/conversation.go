@@ -132,6 +132,15 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 		default:
 		}
 
+		// Prepare messages and estimate tokens before the callback
+		// so OnIteration receives accurate token information.
+		messages := ch.prepareMessages()
+		tokenEstimate := ch.agent.provider.EstimateTokens(&ChatRequest{
+			Messages: messages,
+			Tools:    ch.agent.executor.GetTools(),
+		})
+		contextSize := ch.agent.provider.Info().ContextSize
+
 		// Fire OnIteration callback (synchronous; panics are caught to avoid crashing the agent)
 		if a.onIteration != nil {
 			func() {
@@ -140,21 +149,13 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 						a.debugLog("[!!] OnIteration callback panicked: %v\n", r)
 					}
 				}()
-				a.onIteration(iter, ch.agent.state.Len())
+				a.onIteration(iter, ch.agent.state.Len(), tokenEstimate, contextSize)
 			}()
 		}
 
-		ch.agent.debugLog("[~] Iteration %d - Messages: %d\n", iter, ch.agent.state.Len())
-
-		// Prepare messages
-		messages := ch.prepareMessages()
+		ch.agent.debugLog("[~] Iteration %d - Messages: %d, Tokens: %d\n", iter, ch.agent.state.Len(), tokenEstimate)
 
 		// Context management
-		tokenEstimate := ch.agent.provider.EstimateTokens(&ChatRequest{
-			Messages: messages,
-			Tools:    ch.agent.executor.GetTools(),
-		})
-		contextSize := ch.agent.provider.Info().ContextSize
 		if contextSize > 0 && tokenEstimate > contextSize {
 			beforeCount := len(messages)
 			result := ch.compactMessages(messages, contextSize)

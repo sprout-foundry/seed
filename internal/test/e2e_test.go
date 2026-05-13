@@ -3039,15 +3039,19 @@ func TestE2E_OnIteration_SingleIteration(t *testing.T) {
 	h.Provider().AddTextResponse("Done")
 
 	var calls []struct {
-		iter     int
-		messages int
+		iter          int
+		messages      int
+		tokenEstimate int
+		contextSize   int
 	}
 	agent := h.NewAgentWithOptions(core.Options{
-		OnIteration: func(iter int, messages int) {
+		OnIteration: func(iter int, messages int, tokenEstimate int, contextSize int) {
 			calls = append(calls, struct {
-				iter     int
-				messages int
-			}{iter, messages})
+				iter          int
+				messages      int
+				tokenEstimate int
+				contextSize   int
+			}{iter, messages, tokenEstimate, contextSize})
 		},
 	})
 
@@ -3080,15 +3084,19 @@ func TestE2E_OnIteration_MultipleIterations(t *testing.T) {
 	h.Executor().AddToolResult("call_1", "content")
 
 	var calls []struct {
-		iter     int
-		messages int
+		iter          int
+		messages      int
+		tokenEstimate int
+		contextSize   int
 	}
 	agent := h.NewAgentWithOptions(core.Options{
-		OnIteration: func(iter int, messages int) {
+		OnIteration: func(iter int, messages int, tokenEstimate int, contextSize int) {
 			calls = append(calls, struct {
-				iter     int
-				messages int
-			}{iter, messages})
+				iter          int
+				messages      int
+				tokenEstimate int
+				contextSize   int
+			}{iter, messages, tokenEstimate, contextSize})
 		},
 	})
 
@@ -3141,15 +3149,19 @@ func TestE2E_OnIteration_MaxContinuations(t *testing.T) {
 	h.Provider().AddTextResponse("Fourth and last...")
 
 	var calls []struct {
-		iter     int
-		messages int
+		iter          int
+		messages      int
+		tokenEstimate int
+		contextSize   int
 	}
 	agent := h.NewAgentWithOptions(core.Options{
-		OnIteration: func(iter int, messages int) {
+		OnIteration: func(iter int, messages int, tokenEstimate int, contextSize int) {
 			calls = append(calls, struct {
-				iter     int
-				messages int
-			}{iter, messages})
+				iter          int
+				messages      int
+				tokenEstimate int
+				contextSize   int
+			}{iter, messages, tokenEstimate, contextSize})
 		},
 	})
 
@@ -3182,7 +3194,7 @@ func TestE2E_OnIteration_CallbackPanicRecovered(t *testing.T) {
 	h.Provider().AddTextResponse("OK")
 
 	agent := h.NewAgentWithOptions(core.Options{
-		OnIteration: func(iter int, messages int) {
+		OnIteration: func(iter int, messages int, tokenEstimate int, contextSize int) {
 			panic("telemetry error")
 		},
 	})

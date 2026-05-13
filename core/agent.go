@@ -109,12 +109,13 @@ type Options struct {
 	Debug          bool
 	EventPublisher EventPublisher // nil = no events
 	// OnIteration is an optional callback invoked synchronously at the start of
-	// each conversation-loop iteration. It receives the iteration number (0-based)
-	// and the current message count in state (includes prior messages but not
-	// the LLM response for the current iteration). The agent does not await a
+	// each conversation-loop iteration. It receives the iteration number (0-based),
+	// the current message count in state, the estimated token count for the prompt,
+	// and the model's context window size. The token estimate is computed from the
+	// prepared message list (before any compaction). The agent does not await a
 	// result or handle errors from this callback; if the callback panics, the
 	// panic is caught and logged (the agent continues).
-	OnIteration func(iteration int, messages int)
+	OnIteration func(iteration int, messages int, tokenEstimate int, contextSize int)
 	// Optimizer is used to optimize conversation history across iterations.
 	Optimizer   *ConversationOptimizer
 	RetryConfig RetryConfig // retry behavior for transient errors; zero values use defaults
@@ -157,7 +158,7 @@ type Agent struct {
 	normalizer     *ToolCallNormalizer
 	validator      *ResponseValidator
 	optimizer      *ConversationOptimizer
-	onIteration    func(iteration int, messages int)
+	onIteration    func(iteration int, messages int, tokenEstimate int, contextSize int)
 	retryConfig    RetryConfig
 
 	// steerMu / steerMsgs hold externally-queued steering messages.

@@ -578,8 +578,10 @@ func TestAgent_SteerSystem_MixedWithSteer(t *testing.T) {
 
 func TestAgent_OnIteration_CallbackFired(t *testing.T) {
 	var calls []struct {
-		iter     int
-		messages int
+		iter          int
+		messages      int
+		tokenEstimate int
+		contextSize   int
 	}
 	provider := &mockProvider{
 		chatResp: &ChatResponse{
@@ -592,11 +594,13 @@ func TestAgent_OnIteration_CallbackFired(t *testing.T) {
 	a, err := NewAgent(Options{
 		Provider: provider,
 		Executor: &mockExecutor{},
-		OnIteration: func(iter int, messages int) {
+		OnIteration: func(iter int, messages int, tokenEstimate int, contextSize int) {
 			calls = append(calls, struct {
-				iter     int
-				messages int
-			}{iter, messages})
+				iter          int
+				messages      int
+				tokenEstimate int
+				contextSize   int
+			}{iter, messages, tokenEstimate, contextSize})
 		},
 	})
 	if err != nil {
@@ -617,6 +621,14 @@ func TestAgent_OnIteration_CallbackFired(t *testing.T) {
 	// After adding the user message, state has 1 message
 	if calls[0].messages != 1 {
 		t.Errorf("expected 1 message, got %d", calls[0].messages)
+	}
+	// tokenEstimate comes from provider.EstimateTokens (mock returns 50)
+	if calls[0].tokenEstimate != 50 {
+		t.Errorf("expected tokenEstimate 50, got %d", calls[0].tokenEstimate)
+	}
+	// contextSize comes from provider.Info().ContextSize (set to 10000)
+	if calls[0].contextSize != 10000 {
+		t.Errorf("expected contextSize 10000, got %d", calls[0].contextSize)
 	}
 }
 
@@ -645,7 +657,7 @@ func TestAgent_OnIteration_MultipleIterations(t *testing.T) {
 		Provider:      provider,
 		Executor:      executor,
 		MaxIterations: 3,
-		OnIteration: func(iter int, messages int) {
+		OnIteration: func(iter int, messages int, tokenEstimate int, contextSize int) {
 			calls = append(calls, iter)
 		},
 	})
@@ -703,7 +715,7 @@ func TestAgent_OnIteration_CallbackPanicRecovered(t *testing.T) {
 	a, err := NewAgent(Options{
 		Provider: provider,
 		Executor: &mockExecutor{},
-		OnIteration: func(iter int, messages int) {
+		OnIteration: func(iter int, messages int, tokenEstimate int, contextSize int) {
 			panic("telemetry error")
 		},
 	})
