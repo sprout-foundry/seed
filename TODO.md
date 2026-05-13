@@ -149,7 +149,7 @@
 [x] - REGISTRY: Create `ToolConfig` struct — Name, Description, Parameters ([]ParameterConfig), Handler (ToolHandler), HandlerImages (ToolHandlerWithImages), Aliases ([]string), Timeout (time.Duration), MaxResultSize (int), SafeForParallel (bool). `core/tool_registry.go` (new file)
 [] - REGISTRY: Create `ToolConfig` struct — Name, Description, Parameters ([]ParameterConfig), Handler (ToolHandler), HandlerImages (ToolHandlerWithImages), Aliases ([]string), Timeout (time.Duration), MaxResultSize (int), SafeForParallel (bool). `core/tool_registry.go` (new file)
 [x] - REGISTRY: Create `ParameterConfig` struct — Name, Type, Required, Alternatives, Description. `core/tool_registry.go`
-[] - REGISTRY: Create `ToolHandler` type — `func(ctx context.Context, args map[string]interface{}) (string, error)`. `core/tool_registry.go`
+[x] - REGISTRY: Create `ToolHandler` type — `func(ctx context.Context, args map[string]interface{}) (string, error)`. `core/tool_registry.go`
 [] - REGISTRY: Create `ToolHandlerWithImages` type — `func(ctx context.Context, args map[string]interface{}) ([]ImageData, string, error)`. `core/tool_registry.go`
 [] - REGISTRY: Create `ToolRegistry` struct — tools map, handlers map, defaultTimeout, maxResultSize, circuitBreaker, eventPublisher, PreExecuteHook, PostExecuteHook. `core/tool_registry.go`
 [] - REGISTRY: Implement `NewToolRegistry(opts ToolRegistryOptions)` — configure defaults (5min timeout, 50K max result). `core/tool_registry.go`
