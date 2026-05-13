@@ -168,13 +168,32 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 					"tokens_saved":        result.TokensSaved(),
 				})
 			}
+			// Re-estimate after compaction to get accurate prompt size.
+			tokenEstimate = ch.agent.provider.EstimateTokens(&ChatRequest{
+				Messages: messages,
+				Tools:    ch.agent.executor.GetTools(),
+			})
+		}
+
+		// Compute max_tokens for the completion.
+		// If the caller set an explicit MaxTokens, use it. Otherwise, derive it
+		// from the model's context window minus the current prompt tokens and a
+		// safety buffer. The buffer accounts for tokenizer estimation drift between
+		// our approximation and the provider's actual tokenizer.
+		maxTokens := ch.agent.maxTokens
+		if maxTokens <= 0 && contextSize > 0 && tokenEstimate > 0 {
+			const tokenBuffer = 256
+			maxTokens = contextSize - tokenEstimate - tokenBuffer
+			if maxTokens < 1 {
+				maxTokens = 1
+			}
 		}
 
 		// Send to LLM
 		resp, err := chatFn(ctx, &ChatRequest{
 			Messages:  messages,
 			Tools:     ch.agent.executor.GetTools(),
-			MaxTokens: ch.agent.maxTokens,
+			MaxTokens: maxTokens,
 		}, iter)
 		if err != nil {
 			ch.agent.debugLog("[!!] Chat error: %v\n", err)

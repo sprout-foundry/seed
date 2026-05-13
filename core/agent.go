@@ -23,6 +23,7 @@ package core
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -207,9 +208,10 @@ func NewAgent(opts Options) (*Agent, error) {
 	}
 
 	// Nil-guard: if no EventPublisher is provided, use a no-op so call sites
-	// never need to nil-check.
+	// never need to nil-check. Uses reflection to catch the Go nil-interface
+	// gotcha: a nil *T stored in an interface value is not == nil.
 	ep := opts.EventPublisher
-	if ep == nil {
+	if ep == nil || reflect.ValueOf(ep).IsNil() {
 		ep = noopEventPublisher{}
 	}
 
