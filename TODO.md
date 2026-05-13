@@ -190,7 +190,7 @@
 [x] - COMPACTION: Implement `truncateOldContentHeadTail` — truncate old non-recent messages using `truncateHeadTail` (600 head, 400 tail) instead of `truncateHead`. `core/compaction.go`
 [] - COMPACTION: Implement `truncateOldContentHeadTail` — truncate old non-recent messages using `truncateHeadTail` (600 head, 400 tail) instead of `truncateHead`. `core/compaction.go`
 [x] - COMPACTION: Implement `dropOldestTurns` — drop complete turns (user + assistant + tool chain) oldest first, with fallback to individual message dropping. `core/compaction.go`
-[] - COMPACTION: Update `compactMessages()` in `conversation.go` to call package-level `Compact()`. `core/conversation.go`
+[x] - COMPACTION: Update `compactMessages()` in `conversation.go` to call package-level `Compact()`. `core/conversation.go`
 [] - COMPACTION: Delete `checkpoint_shifting.go` — `ShiftCheckpointIndices` is dead code (never called, indices are stable on append-only state). `core/checkpoint_shifting.go`
 [] - COMPACTION: Increase truncation limits in `TurnSummaryBuilder` — user question 200→300, response 150→250, result 200→300, error 150→200. `core/turn_summary.go`
 [] - COMPACTION: Update `CompactionResult.Strategy` values — `"tool_trim"`, `"checkpoint_drop"`, `"truncation"`, `"emergency"`. `core/compaction.go`
