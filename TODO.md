@@ -202,7 +202,7 @@
 [x] - HOOK: Add `OnCheckpoint func(TurnCheckpoint)` to `Options` — fire-and-forget callback invoked after each completed turn. `core/agent.go`
 [] - HOOK: Add `OnCheckpoint func(TurnCheckpoint)` to `Options` — fire-and-forget callback invoked after each completed turn. `core/agent.go`
 [x] - HOOK: Store `onCheckpoint` on `Agent` and wire in `NewAgent`. `core/agent.go`
-[] - HOOK: Store `onCheckpoint` on `Agent` and wire in `NewAgent`. `core/agent.go`
+[x] - HOOK: Store `onCheckpoint` on `Agent` and wire in `NewAgent`. `core/agent.go`
 [x] - HOOK: Fire `OnCheckpoint` synchronously in `finalize()` with the built checkpoint, wrapped in panic recovery. `core/finalize.go`
 [] - HOOK: Fire `OnCheckpoint` synchronously in `finalize()` with the built checkpoint, wrapped in panic recovery. `core/finalize.go`
 [x] - HOOK: Add `Agent.Checkpoints()` convenience method — returns copy of all recorded checkpoints. `core/agent.go`
