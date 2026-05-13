@@ -147,7 +147,6 @@
 ## Tool Registry (SP-013)
 
 [x] - REGISTRY: Create `ToolConfig` struct — Name, Description, Parameters ([]ParameterConfig), Handler (ToolHandler), HandlerImages (ToolHandlerWithImages), Aliases ([]string), Timeout (time.Duration), MaxResultSize (int), SafeForParallel (bool). `core/tool_registry.go` (new file)
-[x] - REGISTRY: Create `ToolConfig` struct — Name, Description, Parameters ([]ParameterConfig), Handler (ToolHandler), HandlerImages (ToolHandlerWithImages), Aliases ([]string), Timeout (time.Duration), MaxResultSize (int), SafeForParallel (bool). `core/tool_registry.go` (new file)
 [x] - REGISTRY: Create `ParameterConfig` struct — Name, Type, Required, Alternatives, Description. `core/tool_registry.go`
 [x] - REGISTRY: Create `ToolHandler` type — `func(ctx context.Context, args map[string]interface{}) (string, error)`. `core/tool_registry.go`
 [x] - REGISTRY: Create `ToolHandlerWithImages` type — `func(ctx context.Context, args map[string]interface{}) ([]ImageData, string, error)`. `core/tool_registry.go`
@@ -193,32 +192,21 @@
 [x] - COMPACTION: Rewrite `compaction_test.go` — test new algorithm phases, protected boundary, checkpoint dropping, head+tail truncation, turn dropping with fallback. `core/compaction_test.go`
 [x] - COMPACTION: Remove `ShiftCheckpointIndices` tests from `turn_checkpoints_test.go`. `core/turn_checkpoints_test.go`
 [x] - COMPACTION: Add e2e test — long conversation (50+ turns) → recent turns intact, old turns summarized with actionable detail. `test/e2e_test.go`
-[] - COMPACTION: Add e2e test — long conversation (50+ turns) → recent turns intact, old turns summarized with actionable detail. `test/e2e_test.go`
 [x] - COMPACTION: Add e2e test — conversation exceeding context after checkpoint compaction → oldest summaries dropped, not replaced with metadata. `test/e2e_test.go`
 
 ## Checkpoint Hooks (SP-015)
 
 [x] - HOOK: Add `UserMessage` field to `TurnCheckpoint` — stores original user query truncated to 2000 chars. `core/turn_summary.go`
 [x] - HOOK: Add `OnCheckpoint func(TurnCheckpoint)` to `Options` — fire-and-forget callback invoked after each completed turn. `core/agent.go`
-[] - HOOK: Add `OnCheckpoint func(TurnCheckpoint)` to `Options` — fire-and-forget callback invoked after each completed turn. `core/agent.go`
-[x] - HOOK: Store `onCheckpoint` on `Agent` and wire in `NewAgent`. `core/agent.go`
 [x] - HOOK: Store `onCheckpoint` on `Agent` and wire in `NewAgent`. `core/agent.go`
 [x] - HOOK: Fire `OnCheckpoint` synchronously in `finalize()` with the built checkpoint, wrapped in panic recovery. `core/finalize.go`
-[] - HOOK: Fire `OnCheckpoint` synchronously in `finalize()` with the built checkpoint, wrapped in panic recovery. `core/finalize.go`
 [x] - HOOK: Add `Agent.Checkpoints()` convenience method — returns copy of all recorded checkpoints. `core/agent.go`
-[] - HOOK: Add `Agent.Checkpoints()` convenience method — returns copy of all recorded checkpoints. `core/agent.go`
 [x] - HOOK: Add `BuildCheckpointSummary` public convenience function (already exists) — used by finalize for synchronous build. `core/turn_summary.go`
-[] - HOOK: Add `BuildCheckpointSummary` public convenience function (already exists) — used by finalize for synchronous build. `core/turn_summary.go`
 [x] - HOOK: Add unit test — OnCheckpoint fires with correct checkpoint data after completed turn. `core/agent_test.go`
-[] - HOOK: Add unit test — OnCheckpoint fires with correct checkpoint data after completed turn. `core/agent_test.go`
 [x] - HOOK: Add unit test — OnCheckpoint nil is safe (no-op). `core/agent_test.go`
-[] - HOOK: Add unit test — OnCheckpoint nil is safe (no-op). `core/agent_test.go`
 [x] - HOOK: Add unit test — OnCheckpoint panic is caught, agent continues. `core/agent_test.go`
-[] - HOOK: Add unit test — OnCheckpoint panic is caught, agent continues. `core/agent_test.go`
 [x] - HOOK: Add unit test — Agent.Checkpoints() returns all recorded checkpoints. `core/state_test.go`
-[] - HOOK: Add unit test — Agent.Checkpoints() returns all recorded checkpoints. `core/state_test.go`
 [x] - HOOK: Add e2e test — multiple turns → OnCheckpoint fires for each completed turn with correct summaries. `internal/test/e2e_test.go`
-[] - HOOK: Add e2e test — multiple turns → OnCheckpoint fires for each completed turn with correct summaries. `internal/test/e2e_test.go`
 
 ## Streaming Bugs (SP-016)
 
