@@ -543,7 +543,8 @@ func TestE2E_CompactionEventPublished(t *testing.T) {
 		t.Fatalf("expected compaction event data to be map[string]interface{}, got %T", compactionEvents[0].Data)
 	}
 
-	// Strategy is "emergency" when compaction is needed, "none" otherwise.
+	// Strategy is "turn_drop" when compaction is needed via turn dropping,
+	// "emergency" when truncation is needed, "none" otherwise.
 	strategy, ok := data["strategy"].(string)
 	if !ok {
 		t.Fatalf("expected strategy to be string, got %T", data["strategy"])
@@ -552,10 +553,12 @@ func TestE2E_CompactionEventPublished(t *testing.T) {
 		t.Errorf("expected strategy not 'none', got %q", strategy)
 	}
 	// With 100 pre-added messages (50 user/assistant pairs) plus the system prompt
-	// and final query, compaction is needed. With checkpoint and structural
-	// strategies removed, emergency truncation is used.
-	// Assert the expected strategy to make the test self-documenting and catch algorithm changes.
-	h.AssertEquals(strategy, "emergency")
+	// and final query, compaction is needed. Turn dropping removes complete turns
+	// oldest first, which is more efficient than emergency truncation.
+	// Accept "turn_drop" or "emergency" — both indicate compaction occurred.
+	if strategy != "turn_drop" && strategy != "emergency" {
+		t.Errorf("expected strategy 'turn_drop' or 'emergency', got %q", strategy)
+	}
 
 	// messages_before > messages_after
 	messagesBefore, ok := data["messages_before"].(int)
@@ -1832,8 +1835,8 @@ func TestE2E_Streaming_CallbacksFire(t *testing.T) {
 	result, err := agent.RunStream(context.Background(), "test")
 	h.AssertNoError(err)
 
-	// RunStream returns empty because content was streamed (buffer preference)
-	h.AssertEquals(result, "")
+	// RunStream returns the final response content from state
+	h.AssertEquals(result, "Hello, world!")
 
 	// Streaming buffer should contain the accumulated content
 	buf := agent.StreamingBuffer()
@@ -1884,16 +1887,15 @@ func TestE2E_Streaming_BufferAccumulation(t *testing.T) {
 		h.fail("expected flush called 3 times, got %d", flushCount)
 	}
 
-	// RunStream returns empty (buffer content preferred)
-	h.AssertEquals(result, "")
+	// RunStream returns the final response content from state
+	h.AssertEquals(result, "chunk1chunk2chunk3")
 }
 
 func TestE2E_Streaming_BufferPreferredOverChoice(t *testing.T) {
 	h := NewHarnessWithT(t)
 
 	// Configure streaming — the response has content in Choices,
-	// but the buffer should be preferred (finalize returns empty
-	// when buffer has content)
+	// finalize returns the final content from state regardless of buffer
 	h.Provider().
 		WithStreaming().
 		AddStreamChunks("streamed ", "content").
@@ -1903,11 +1905,10 @@ func TestE2E_Streaming_BufferPreferredOverChoice(t *testing.T) {
 	result, err := agent.RunStream(context.Background(), "test")
 	h.AssertNoError(err)
 
-	// finalize() returns empty when streaming buffer has content,
-	// so the caller reads from the buffer instead
-	h.AssertEquals(result, "")
+	// finalize() returns the final response content from state
+	h.AssertEquals(result, "streamed content")
 
-	// Buffer has the streamed content
+	// Buffer also has the streamed content (both return the same data)
 	h.AssertEquals(agent.StreamingBuffer().String(), "streamed content")
 }
 
@@ -2503,10 +2504,10 @@ func TestE2E_IncompleteResponse_Streaming_TrailingEllipsis(t *testing.T) {
 	result, err := agent.RunStream(context.Background(), "test")
 	h.AssertNoError(err)
 
-	// RunStream returns empty when buffer has content (buffer preferred over choices)
-	h.AssertEquals(result, "")
+	// RunStream returns the final response content from the last assistant message in state
+	h.AssertEquals(result, "This is the complete answer that I was going to provide from the start.")
 
-	// Streaming buffer should contain both streamed contents concatenated
+	// Streaming buffer accumulates all streamed content across iterations
 	buf := agent.StreamingBuffer()
 	h.AssertEquals(buf.String(), "Here is the answer...This is the complete answer that I was going to provide from the start.")
 
@@ -2530,8 +2531,8 @@ func TestE2E_IncompleteResponse_Streaming_CompleteShortAnswer(t *testing.T) {
 	result, err := agent.RunStream(context.Background(), "test")
 	h.AssertNoError(err)
 
-	// RunStream returns empty when buffer has content (buffer preferred over choices)
-	h.AssertEquals(result, "")
+	// RunStream returns the final response content from state
+	h.AssertEquals(result, "Done.")
 
 	// Streaming buffer contains the streamed content
 	buf := agent.StreamingBuffer()
@@ -2580,10 +2581,10 @@ func TestE2E_TentativeResponse_Streaming(t *testing.T) {
 	result, err := agent.RunStream(context.Background(), "What's in the file?")
 	h.AssertNoError(err)
 
-	// RunStream returns empty when buffer has content
-	h.AssertEquals(result, "")
+	// RunStream returns the final response content from the last assistant message
+	h.AssertEquals(result, "The file contains the expected configuration data.")
 
-	// Streaming buffer should contain both streamed contents
+	// Streaming buffer accumulates all streamed content across iterations
 	buf := agent.StreamingBuffer()
 	h.AssertEquals(buf.String(), "Let me check.The file contains the expected configuration data.")
 

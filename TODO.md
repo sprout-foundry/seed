@@ -181,11 +181,15 @@
 [x] - COMPACTION: Add `Meta map[string]string` to `Message` struct (`json:"-"` tag) — enables reliable checkpoint summary identification without string matching. `core/types.go`
 [x] - COMPACTION: Update `BuildCheckpointCompactedMessages` to set `Meta["checkpoint"] = "true"` on inserted summary messages. `core/checkpoint_compaction.go`
 [x] - COMPACTION: Update `BuildCheckpointCompactedMessages` to use `ActionableSummary` with 500-char guard (fall back to `Summary` if over). `core/checkpoint_compaction.go`
+[x] - COMPACTION: Remove `structuralCompact`, `compactTurns`, `summarizeTurn`, `checkpointCompact` from Compactor — these create redundant or destructive summaries. `core/compaction.go`
 [] - COMPACTION: Remove `structuralCompact`, `compactTurns`, `summarizeTurn`, `checkpointCompact` from Compactor — these create redundant or destructive summaries. `core/compaction.go`
+[x] - COMPACTION: Remove `Compactor` struct and `NewCompactor` — convert to package-level `Compact()` function with constants. `core/compaction.go`
 [] - COMPACTION: Remove `Compactor` struct and `NewCompactor` — convert to package-level `Compact()` function with constants. `core/compaction.go`
+[x] - COMPACTION: Implement `dropOldestCheckpointSummaries` — drop oldest `Meta["checkpoint"] == "true"` messages one at a time, respecting `recentToKeep` boundary. `core/compaction.go`
 [] - COMPACTION: Implement `dropOldestCheckpointSummaries` — drop oldest `Meta["checkpoint"] == "true"` messages one at a time, respecting `recentToKeep` boundary. `core/compaction.go`
+[x] - COMPACTION: Implement `truncateOldContentHeadTail` — truncate old non-recent messages using `truncateHeadTail` (600 head, 400 tail) instead of `truncateHead`. `core/compaction.go`
 [] - COMPACTION: Implement `truncateOldContentHeadTail` — truncate old non-recent messages using `truncateHeadTail` (600 head, 400 tail) instead of `truncateHead`. `core/compaction.go`
-[] - COMPACTION: Implement `dropOldestTurns` — drop complete turns (user + assistant + tool chain) oldest first, with fallback to individual message dropping. `core/compaction.go`
+[x] - COMPACTION: Implement `dropOldestTurns` — drop complete turns (user + assistant + tool chain) oldest first, with fallback to individual message dropping. `core/compaction.go`
 [] - COMPACTION: Update `compactMessages()` in `conversation.go` to call package-level `Compact()`. `core/conversation.go`
 [] - COMPACTION: Delete `checkpoint_shifting.go` — `ShiftCheckpointIndices` is dead code (never called, indices are stable on append-only state). `core/checkpoint_shifting.go`
 [] - COMPACTION: Increase truncation limits in `TurnSummaryBuilder` — user question 200→300, response 150→250, result 200→300, error 150→200. `core/turn_summary.go`
@@ -208,3 +212,13 @@
 [] - HOOK: Add unit test — OnCheckpoint panic is caught, agent continues. `core/agent_test.go`
 [] - HOOK: Add unit test — Agent.Checkpoints() returns all recorded checkpoints. `core/state_test.go`
 [] - HOOK: Add e2e test — multiple turns → OnCheckpoint fires for each completed turn with correct summaries. `internal/test/e2e_test.go`
+
+## Streaming Bugs (SP-016)
+
+[x] - BUG: `finalize()` returns empty string for streaming — FIXED: Removed early `return "", nil` when `ContentBuffer().Len() > 0`. Now always returns `finalContent` from state. Updated doc comments in `RunStream()` and `ProcessQueryStream()`. `core/finalize.go`, `core/agent.go`, `core/conversation.go`
+
+[x] - BUG: `OnDone()` adds un-normalized message to state — FIXED: Removed `h.state.AddMessage(assistantMsg)` from `OnDone()` and from non-streaming `chatFn`. Message is now added by `runLoop` after `ToMessage()` extraction, with fallback parser and normalizer updating in-place before tool execution. `core/streaming.go`, `core/conversation.go`
+
+[x] - BUG: Latent duplicate event publishing — FIXED: `OnContent()` and `OnReasoning()` now delegate to `OutputManager.PublishOutput()` instead of publishing directly to `eventPublisher`. Eliminates the latent double-publishing risk. `core/streaming.go`
+
+[x] - BUG: `OnDone()` silently handles zero-choice responses — FIXED: Added `ErrZeroChoices` sentinel error. `OnDone()` publishes error event when zero choices. `runLoop` returns `ErrZeroChoices` before adding empty message to state. `core/errors.go`, `core/streaming.go`, `core/conversation.go`
