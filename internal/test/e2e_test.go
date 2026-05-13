@@ -3459,9 +3459,11 @@ func TestE2E_CheckpointCompaction_MultipleTurns(t *testing.T) {
 	}
 
 	// Verify all 3 checkpoint summaries appear in the request.
+	// Summaries use ActionableSummary format (bullet list with "- Question:" prefix)
+	// when ≤500 chars, falling back to Summary (narrative with "User asked:" prefix).
 	foundSummaries := 0
 	for _, msg := range lastReq.Messages {
-		if strings.Contains(msg.Content, "User asked: ") {
+		if strings.Contains(msg.Content, "- Question:") || strings.Contains(msg.Content, "User asked: ") {
 			foundSummaries++
 		}
 	}
@@ -3651,9 +3653,11 @@ func TestE2E_CheckpointIndexShifting_AfterCompaction(t *testing.T) {
 		t.Errorf("expected 6 messages after compaction, got %d", len(lastReq.Messages))
 	}
 	// Verify 4 summaries are present.
+	// Summaries use ActionableSummary format (bullet list with "- Question:" prefix)
+	// when ≤500 chars, falling back to Summary (narrative with "User asked:" prefix).
 	foundSummaries := 0
 	for _, msg := range lastReq.Messages {
-		if strings.Contains(msg.Content, "User asked: ") {
+		if strings.Contains(msg.Content, "- Question:") || strings.Contains(msg.Content, "User asked: ") {
 			foundSummaries++
 		}
 	}

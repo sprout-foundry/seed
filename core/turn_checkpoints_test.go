@@ -88,8 +88,8 @@ func TestBuildCheckpointCompactedMessages_SingleCheckpoint(t *testing.T) {
 	if outMsgs[1].Role != "user" {
 		t.Errorf("expected summary to be user role, got %s", outMsgs[1].Role)
 	}
-	if outMsgs[1].Content != "User asked about 2+2, assistant answered 4." {
-		t.Errorf("unexpected summary content: %s", outMsgs[1].Content)
+	if outMsgs[1].Content != "- Question: What is 2+2?\n- Result: 4" {
+		t.Errorf("expected actionable summary content, got: %s", outMsgs[1].Content)
 	}
 
 	// Consumed checkpoint is kept in the returned list so future calls
@@ -538,6 +538,90 @@ func TestBuildCheckpointCompactedMessages_ConsecutiveAssistantMerge(t *testing.T
 	// Consumed checkpoint is kept for future re-application.
 	if len(outCps) != 1 {
 		t.Errorf("expected 1 checkpoint (kept for future re-application), got %d", len(outCps))
+	}
+}
+
+// --- ActionableSummary selection tests ---
+
+func TestBuildCheckpointCompactedMessages_UseActionableSummaryWhenShort(t *testing.T) {
+	msgs := []Message{
+		{Role: "user", Content: "Do something"},
+		{Role: "assistant", Content: "Done."},
+	}
+	actionable := "- Modified: core/main.go\n- Command: go build ./..."
+	checkpoints := []TurnCheckpoint{
+		{StartIndex: 0, EndIndex: 1, Summary: "Brief summary.", ActionableSummary: actionable},
+	}
+
+	outMsgs, _ := BuildCheckpointCompactedMessages(msgs, checkpoints)
+
+	if len(outMsgs) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(outMsgs))
+	}
+	if outMsgs[0].Content != actionable {
+		t.Errorf("expected actionable summary, got: %s", outMsgs[0].Content)
+	}
+}
+
+func TestBuildCheckpointCompactedMessages_FallbackToSummaryWhenActionableTooLong(t *testing.T) {
+	msgs := []Message{
+		{Role: "user", Content: "Do something"},
+		{Role: "assistant", Content: "Done."},
+	}
+	// 501 characters — exceeds the 500-char guard.
+	longActionable := strings.Repeat("x", 501)
+	fallbackSummary := "Short summary."
+	checkpoints := []TurnCheckpoint{
+		{StartIndex: 0, EndIndex: 1, Summary: fallbackSummary, ActionableSummary: longActionable},
+	}
+
+	outMsgs, _ := BuildCheckpointCompactedMessages(msgs, checkpoints)
+
+	if len(outMsgs) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(outMsgs))
+	}
+	if outMsgs[0].Content != fallbackSummary {
+		t.Errorf("expected fallback to summary, got: %s", outMsgs[0].Content)
+	}
+}
+
+func TestBuildCheckpointCompactedMessages_UseActionableSummaryAtExactly500Chars(t *testing.T) {
+	msgs := []Message{
+		{Role: "user", Content: "Do something"},
+		{Role: "assistant", Content: "Done."},
+	}
+	// Exactly 500 characters — should be accepted.
+	exactly500 := strings.Repeat("y", 500)
+	checkpoints := []TurnCheckpoint{
+		{StartIndex: 0, EndIndex: 1, Summary: "Fallback.", ActionableSummary: exactly500},
+	}
+
+	outMsgs, _ := BuildCheckpointCompactedMessages(msgs, checkpoints)
+
+	if len(outMsgs) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(outMsgs))
+	}
+	if outMsgs[0].Content != exactly500 {
+		t.Errorf("expected actionable summary at exactly 500 chars, got len %d", len(outMsgs[0].Content))
+	}
+}
+
+func TestBuildCheckpointCompactedMessages_EmptyActionableFallsBackToSummary(t *testing.T) {
+	msgs := []Message{
+		{Role: "user", Content: "Do something"},
+		{Role: "assistant", Content: "Done."},
+	}
+	checkpoints := []TurnCheckpoint{
+		{StartIndex: 0, EndIndex: 1, Summary: "Fallback summary.", ActionableSummary: ""},
+	}
+
+	outMsgs, _ := BuildCheckpointCompactedMessages(msgs, checkpoints)
+
+	if len(outMsgs) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(outMsgs))
+	}
+	if outMsgs[0].Content != "Fallback summary." {
+		t.Errorf("expected fallback to summary when actionable is empty, got: %s", outMsgs[0].Content)
 	}
 }
 
