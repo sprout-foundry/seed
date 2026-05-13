@@ -116,7 +116,7 @@ func TestCompact_ResultMetadata_NoOp(t *testing.T) {
 	}
 }
 
-func TestCompact_ResultMetadata_Emergency(t *testing.T) {
+func TestCompact_ResultMetadata_Truncation(t *testing.T) {
 	messages := []Message{
 		{Role: "system", Content: "You are helpful."},
 	}
@@ -133,8 +133,8 @@ func TestCompact_ResultMetadata_Emergency(t *testing.T) {
 
 	result := Compact(messages, 100)
 
-	if result.Strategy != "emergency" {
-		t.Errorf("expected strategy 'emergency', got %q", result.Strategy)
+	if result.Strategy != "truncation" {
+		t.Errorf("expected strategy 'truncation' (content truncated, recent boundary protects all messages), got %q", result.Strategy)
 	}
 	if result.TokensSaved() <= 0 {
 		t.Errorf("expected positive tokens saved, got %d", result.TokensSaved())
@@ -402,7 +402,7 @@ func TestCompact_CheckpointDropStrategy(t *testing.T) {
 	}
 }
 
-func TestCompact_CheckpointDropFallsBackToEmergency(t *testing.T) {
+func TestCompact_CheckpointDropFallsBackToTruncation(t *testing.T) {
 	messages := []Message{
 		{Role: "system", Content: "You are helpful."},
 	}
@@ -426,9 +426,9 @@ func TestCompact_CheckpointDropFallsBackToEmergency(t *testing.T) {
 
 	result := Compact(messages, 100)
 
-	// Checkpoint drop alone won't be enough — should fall through to emergency
-	if result.Strategy != "emergency" {
-		t.Errorf("expected strategy 'emergency' (checkpoint drop insufficient), got %q", result.Strategy)
+	// Checkpoint drop alone won't be enough — should fall through to truncation
+	if result.Strategy != "truncation" {
+		t.Errorf("expected strategy 'truncation' (checkpoint drop insufficient), got %q", result.Strategy)
 	}
 	if len(result.Messages) >= len(messages) {
 		t.Errorf("expected message reduction, got %d (was %d)", len(result.Messages), len(messages))
@@ -561,7 +561,7 @@ func TestEmergencyTruncate_OldMessagesUseHeadTail(t *testing.T) {
 	afterPhase2Tokens := roughTokens(messages) - (numOld * 2 * 200 / charsPerToken) // rough savings from truncation
 	tokenLimit := afterPhase2Tokens + 500
 
-	result := emergencyTruncate(messages, tokenLimit)
+	result, _ := emergencyTruncate(messages, tokenLimit)
 
 	// Find old (non-recent) messages and verify head+tail truncation
 	recentStart := len(result) - defaultRecentToKeep
@@ -595,6 +595,41 @@ func TestEmergencyTruncate_OldMessagesUseHeadTail(t *testing.T) {
 	if len(result) != len(messages) {
 		t.Errorf("expected no messages dropped by Phase 3: had %d, got %d",
 			len(messages), len(result))
+	}
+}
+
+func TestEmergencyTruncate_Phase3DropsMessages(t *testing.T) {
+	// Build messages where truncation alone is insufficient, forcing Phase 3
+	// to actually drop messages. This exercises the "emergency" strategy path.
+	messages := []Message{
+		{Role: "system", Content: "You are helpful."},
+	}
+	// Add many messages with moderate content (under oldMsgMaxChars so Phase 2
+	// truncation won't help). Each is ~500 chars = ~125 tokens + 10 overhead.
+	for i := 0; i < 40; i++ {
+		messages = append(messages, Message{
+			Role:    "user",
+			Content: "User " + strings.Repeat("x", 500),
+		})
+		messages = append(messages, Message{
+			Role:    "assistant",
+			Content: "Assistant " + strings.Repeat("y", 500),
+		})
+	}
+
+	// Very low token limit forces Phase 3 to drop messages.
+	tokenLimit := 100
+	result, msgsDropped := emergencyTruncate(messages, tokenLimit)
+
+	if !msgsDropped {
+		t.Error("expected msgsDropped=true for very low token limit")
+	}
+	if len(result) >= len(messages) {
+		t.Errorf("expected message reduction via Phase 3, got %d (was %d)", len(result), len(messages))
+	}
+	// System message should be preserved
+	if len(result) == 0 || result[0].Role != "system" {
+		t.Error("system message should be preserved")
 	}
 }
 
@@ -1190,12 +1225,12 @@ func TestCompact_TurnDropStrategy(t *testing.T) {
 	// tokenLimit set so that:
 	// 1. total > tokenLimit (triggers compaction)
 	// 2. after checkpoint drop, still > target (0.85 * tokenLimit)
-	// 3. after 1 turn drop, < target → strategy is "turn_drop"
+	// 3. after 1 turn drop, < target → strategy is "tool_trim"
 	tokenLimit := int(float64(roughTokens(messages)) * 0.9)
 	result := Compact(messages, tokenLimit)
 
-	if result.Strategy != "turn_drop" {
-		t.Errorf("expected strategy 'turn_drop', got %q", result.Strategy)
+	if result.Strategy != "tool_trim" {
+		t.Errorf("expected strategy 'tool_trim', got %q", result.Strategy)
 	}
 
 	// Checkpoint messages should be dropped

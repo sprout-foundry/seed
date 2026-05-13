@@ -543,8 +543,8 @@ func TestE2E_CompactionEventPublished(t *testing.T) {
 		t.Fatalf("expected compaction event data to be map[string]interface{}, got %T", compactionEvents[0].Data)
 	}
 
-	// Strategy is "turn_drop" when compaction is needed via turn dropping,
-	// "emergency" when truncation is needed, "none" otherwise.
+	// Strategy is "tool_trim" when compaction is needed via turn dropping,
+	// "truncation" when content truncation suffices, "emergency" when messages must be dropped, "none" otherwise.
 	strategy, ok := data["strategy"].(string)
 	if !ok {
 		t.Fatalf("expected strategy to be string, got %T", data["strategy"])
@@ -555,9 +555,9 @@ func TestE2E_CompactionEventPublished(t *testing.T) {
 	// With 100 pre-added messages (50 user/assistant pairs) plus the system prompt
 	// and final query, compaction is needed. Turn dropping removes complete turns
 	// oldest first, which is more efficient than emergency truncation.
-	// Accept "turn_drop" or "emergency" — both indicate compaction occurred.
-	if strategy != "turn_drop" && strategy != "emergency" {
-		t.Errorf("expected strategy 'turn_drop' or 'emergency', got %q", strategy)
+	// Accept "tool_trim", "truncation", or "emergency" — all indicate compaction occurred.
+	if strategy != "tool_trim" && strategy != "truncation" && strategy != "emergency" {
+		t.Errorf("expected strategy 'tool_trim', 'truncation', or 'emergency', got %q", strategy)
 	}
 
 	// messages_before > messages_after

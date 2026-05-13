@@ -26,7 +26,7 @@ const (
 // metadata about what strategy was used and how much was saved.
 type CompactionResult struct {
 	Messages     []Message
-	Strategy     string // "none", "turn_drop", "checkpoint_drop", or "emergency"
+	Strategy     string // "none", "tool_trim", "checkpoint_drop", "truncation", or "emergency"
 	TokensBefore int
 	TokensAfter  int
 }
@@ -82,17 +82,21 @@ func Compact(messages []Message, tokenLimit int) CompactionResult {
 		// Dropping turns brought us under the threshold.
 		return CompactionResult{
 			Messages:     turnDropped,
-			Strategy:     "turn_drop",
+			Strategy:     "tool_trim",
 			TokensBefore: tokensBefore,
 			TokensAfter:  roughTokens(turnDropped),
 		}
 	}
 
 	// Phase 2: Emergency truncation on the already-dropped messages.
-	result := emergencyTruncate(turnDropped, tokenLimit)
+	result, droppedMsgs := emergencyTruncate(turnDropped, tokenLimit)
+	strategy := "truncation"
+	if droppedMsgs {
+		strategy = "emergency"
+	}
 	return CompactionResult{
 		Messages:     result,
-		Strategy:     "emergency",
+		Strategy:     strategy,
 		TokensBefore: tokensBefore,
 		TokensAfter:  roughTokens(result),
 	}
@@ -307,17 +311,21 @@ func dropOldestCheckpointSummaries(messages []Message, recentToKeep int, targetT
 }
 
 // emergencyTruncate aggressively trims message content to fit the limit.
-func emergencyTruncate(messages []Message, tokenLimit int) []Message {
+// Returns the trimmed messages and a boolean indicating whether messages
+// were dropped (true = "emergency", false = "truncation" only).
+func emergencyTruncate(messages []Message, tokenLimit int) ([]Message, bool) {
 	targetTokens := int(float64(tokenLimit) * emergencyTargetFraction)
 	currentTokens := roughTokens(messages)
 
 	if currentTokens <= targetTokens {
-		return messages
+		return messages, false
 	}
 
 	// Work on a copy
 	trimmed := make([]Message, len(messages))
 	copy(trimmed, messages)
+
+	msgsDropped := false
 
 	// Phase 1: Trim tool results to max 1500 chars each
 	for i := range trimmed {
@@ -328,7 +336,7 @@ func emergencyTruncate(messages []Message, tokenLimit int) []Message {
 
 	currentTokens = roughTokens(trimmed)
 	if currentTokens <= targetTokens {
-		return trimmed
+		return trimmed, false
 	}
 
 	// Phase 2: Trim older user/assistant messages
@@ -348,7 +356,7 @@ func emergencyTruncate(messages []Message, tokenLimit int) []Message {
 
 	currentTokens = roughTokens(trimmed)
 	if currentTokens <= targetTokens {
-		return trimmed
+		return trimmed, msgsDropped
 	}
 
 	// Phase 3: Drop oldest non-system, non-recent messages until under limit
@@ -361,9 +369,10 @@ func emergencyTruncate(messages []Message, tokenLimit int) []Message {
 		trimmed = append(trimmed[:dropIdx], trimmed[dropIdx+1:]...)
 		// Adjust recentStart
 		recentStart--
+		msgsDropped = true
 	}
 
-	return trimmed
+	return trimmed, msgsDropped
 }
 
 // roughTokens gives a rough token estimate (4 chars ≈ 1 token).
