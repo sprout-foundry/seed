@@ -200,7 +200,7 @@ func (b *TurnSummaryBuilder) extractTurnData(messages []Message) turnData {
 		switch msg.Role {
 		case "user":
 			if data.userQuestion == "" {
-				data.userQuestion = truncateString(msg.Content, 200)
+				data.userQuestion = truncateString(msg.Content, 300)
 			}
 
 		case "assistant":
@@ -270,7 +270,7 @@ func (b *TurnSummaryBuilder) extractTurnData(messages []Message) turnData {
 				}
 
 				if isError && data.toolCalls[lastIdx].result == "" {
-					data.errors = append(data.errors, truncateString(msg.Content, 150))
+					data.errors = append(data.errors, truncateString(msg.Content, 200))
 				}
 
 				data.toolCalls[lastIdx].result = content
@@ -384,7 +384,7 @@ func (b *TurnSummaryBuilder) buildSummary(data turnData) string {
 
 	// Final status
 	if data.finalResponse != "" {
-		responseSummary := truncateString(strings.TrimSpace(data.finalResponse), 150)
+		responseSummary := truncateString(strings.TrimSpace(data.finalResponse), 250)
 		parts = append(parts, fmt.Sprintf("Response: %s", responseSummary))
 		if data.status != statusCompleted {
 			parts = append(parts, fmt.Sprintf("Status: %s", data.status))
@@ -432,7 +432,7 @@ func (b *TurnSummaryBuilder) buildActionableSummary(data turnData) string {
 	}
 
 	if data.finalResponse != "" {
-		responseSummary := truncateString(strings.TrimSpace(data.finalResponse), 200)
+		responseSummary := truncateString(strings.TrimSpace(data.finalResponse), 300)
 		bullets = append(bullets, fmt.Sprintf("- Result: %s", responseSummary))
 	}
 
