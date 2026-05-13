@@ -1185,20 +1185,16 @@ func TestFinishReasonStop_TentativePostTool_Rejected(t *testing.T) {
 	}
 }
 
-func TestFinishReasonStop_TentativePostTool_FirstRejectionThenGenericTentative(t *testing.T) {
+func TestFinishReasonStop_TentativePostTool_FirstRejectionThenConcrete(t *testing.T) {
 	// After tool results, a tentative "stop" triggers post-tool rejection #1.
 	// On the next iteration, followsRecentToolResults() returns false (the
 	// rejected assistant message sits between the tool result and the current
-	// message, breaking the scan), so the generic tentative check via
-	// continuationCount catches it instead. A 4th call provides the concrete
-	// answer.
+	// message, breaking the scan). A concrete final answer is then accepted.
 	//
 	// Flow:
 	//  1. Tool call → result
-	//  2. "Let me review the results." → post-tool rejection #1 (tentativeRejectionCount=1) → continue
-	//  3. "I'll start by looking at the output." → followsRecentToolResults()=false
-	//     → generic tentative (continuationCount=1) → continue
-	//  4. "The answer is 42." → accepted (non-tentative)
+	//  2. "Let me check the results." → post-tool rejection #1 (tentativeRejectionCount=1) → continue
+	//  3. "The answer is 42." → accepted (non-tentative, no tool results immediately before)
 	provider := newFRProvider(
 		// 1. Model makes a tool call
 		&ChatResponse{
@@ -1220,10 +1216,8 @@ func TestFinishReasonStop_TentativePostTool_FirstRejectionThenGenericTentative(t
 			Usage: ChatUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15},
 		},
 		// 2. Tentative → post-tool rejection #1 (tentativeRejectionCount=1)
-		frTextResponse("Let me review the results.", "stop"),
-		// 3. Tentative → followsRecentToolResults()=false → generic tentative (continuationCount=1)
-		frTextResponse("I'll start by looking at the output.", "stop"),
-		// 4. Concrete final answer → accepted
+		frTextResponse("Let me check the results.", "stop"),
+		// 3. Concrete final answer → accepted
 		frTextResponse("The answer is 42.", "stop"),
 	)
 	executor := &mockExecutor{
@@ -1238,12 +1232,12 @@ func TestFinishReasonStop_TentativePostTool_FirstRejectionThenGenericTentative(t
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// Post-tool rejection #1 + generic tentative continuation → 4th call wins
+	// Post-tool rejection + concrete answer → 3rd call wins
 	if result != "The answer is 42." {
 		t.Errorf("expected %q, got %q", "The answer is 42.", result)
 	}
-	if provider.idx != 4 {
-		t.Errorf("expected 4 provider calls, got %d", provider.idx)
+	if provider.idx != 3 {
+		t.Errorf("expected 3 provider calls, got %d", provider.idx)
 	}
 }
 
@@ -1294,16 +1288,13 @@ func TestFinishReasonStop_TentativePostTool_ConcreteAnswer_Accepted(t *testing.T
 	}
 }
 
-func TestFinishReasonStop_TentativePostTool_NoToolResults_NotRejected(t *testing.T) {
+func TestFinishReasonStop_TentativePrefix_NoToolResults_AcceptedImmediately(t *testing.T) {
 	// Without tool results in the message history, the post-tool rejection path
-	// should NOT trigger (followsRecentToolResults returns false). The generic
-	// tentative check may still apply via continuationCount but the response
-	// should eventually complete normally.
+	// should NOT trigger (followsRecentToolResults returns false). The response
+	// is accepted immediately even if it starts with a planning prefix, because
+	// tentative detection only fires after tool results.
 	provider := newFRProvider(
-		// 1. Tentative content but NO tool results → post-tool rejection bypassed
-		// (generic tentative check may trigger instead via the fallback path)
 		frTextResponse("Let me think about this.", "stop"),
-		frTextResponse("The answer is 42.", "stop"),
 	)
 	agent, _ := NewAgent(Options{
 		Provider: provider,
@@ -1314,12 +1305,12 @@ func TestFinishReasonStop_TentativePostTool_NoToolResults_NotRejected(t *testing
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result != "The answer is 42." {
-		t.Errorf("expected %q, got %q", "The answer is 42.", result)
+	if result != "Let me think about this." {
+		t.Errorf("expected %q, got %q", "Let me think about this.", result)
 	}
-	// 2 provider calls: 1 tentative (rejected by generic tentative path), 1 final answer
-	if provider.idx != 2 {
-		t.Errorf("expected 2 provider calls, got %d", provider.idx)
+	// Only 1 provider call — no tentative rejection without tool results
+	if provider.idx != 1 {
+		t.Errorf("expected 1 provider call, got %d", provider.idx)
 	}
 }
 
@@ -1367,21 +1358,16 @@ func TestFinishReasonStop_TentativePostTool_Stream_Rejected(t *testing.T) {
 	}
 }
 
-func TestFinishReasonStop_TentativePostTool_MaxContinuations(t *testing.T) {
-	// Tests the interaction between post-tool rejections and the generic
-	// tentative continuation budget. After post-tool rejection #1, the next
-	// tentative response is caught by the generic tentative check (because
-	// followsRecentToolResults() returns false — the rejected assistant
-	// message sits between the tool result and the current message). The
-	// generic continuationCount budget (maxContinuations=3) is then consumed
-	// across iterations 3–5, force-finalizing at iteration 5.
+func TestFinishReasonStop_TentativePostTool_RejectionThenAccepted(t *testing.T) {
+	// After tool results, a tentative "stop" triggers post-tool rejection #1.
+	// The next response has followsRecentToolResults()=false (the rejected
+	// assistant message sits between the tool result and the current message),
+	// so it is accepted as the final answer.
 	//
 	// Flow:
 	//  1. Tool call → result
-	//  2. "Let me review." → post-tool rejection #1 (tentativeRejectionCount=1) → continue
-	//  3. "I'll check." → followsRecentToolResults()=false → generic tentative (continuationCount=1) → continue
-	//  4. "I'll look at the output." → generic tentative (continuationCount=2) → continue
-	//  5. "Hmm, let me process this." → generic tentative (continuationCount=3, NOT < 3) → force-finalize
+	//  2. "Let me check." → post-tool rejection #1 (tentativeRejectionCount=1) → continue
+	//  3. "The answer is 42." → accepted
 	provider := newFRProvider(
 		// 1. Tool call
 		&ChatResponse{
@@ -1403,13 +1389,9 @@ func TestFinishReasonStop_TentativePostTool_MaxContinuations(t *testing.T) {
 			Usage: ChatUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15},
 		},
 		// 2. Post-tool rejection #1
-		frTextResponse("Let me review.", "stop"),
-		// 3. Generic tentative #1 (followsRecentToolResults=false, rejected assistant blocks scan)
-		frTextResponse("I'll check.", "stop"),
-		// 4. Generic tentative #2
-		frTextResponse("I'll look at the output.", "stop"),
-		// 5. Generic tentative #3 — maxContinuations reached, force-finalize
-		frTextResponse("Hmm, let me process this.", "stop"),
+		frTextResponse("Let me check.", "stop"),
+		// 3. Concrete answer → accepted
+		frTextResponse("The answer is 42.", "stop"),
 	)
 	executor := &mockExecutor{
 		results: []Message{{Role: "tool", Content: "tool result", ToolCallID: "call_1"}},
@@ -1423,12 +1405,11 @@ func TestFinishReasonStop_TentativePostTool_MaxContinuations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// Force-finalized at the 5th provider call
-	if result != "Hmm, let me process this." {
-		t.Errorf("expected %q, got %q", "Hmm, let me process this.", result)
+	if result != "The answer is 42." {
+		t.Errorf("expected %q, got %q", "The answer is 42.", result)
 	}
-	if provider.idx != 5 {
-		t.Errorf("expected 5 provider calls, got %d", provider.idx)
+	if provider.idx != 3 {
+		t.Errorf("expected 3 provider calls, got %d", provider.idx)
 	}
 }
 
@@ -1472,7 +1453,7 @@ func TestFinishReasonStop_TentativePostTool_MultipleToolCycles(t *testing.T) {
 			Usage: ChatUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15},
 		},
 		// 2. Post-tool rejection #1 (tentativeRejectionCount=1)
-		frTextResponse("Let me review.", "stop"),
+		frTextResponse("Let me check.", "stop"),
 		// 3. Tool call B (counter resets to 0, new tool result baseline)
 		&ChatResponse{
 			Choices: []ChatChoice{{
@@ -1493,7 +1474,7 @@ func TestFinishReasonStop_TentativePostTool_MultipleToolCycles(t *testing.T) {
 			Usage: ChatUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15},
 		},
 		// 4. Post-tool rejection #1 again (tentativeRejectionCount=1, counter reset)
-		frTextResponse("I'll analyze it.", "stop"),
+		frTextResponse("Let me look at the data.", "stop"),
 		// 5. Concrete answer → accepted
 		frTextResponse("The answer is 42.", "stop"),
 	)

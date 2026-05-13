@@ -1059,29 +1059,30 @@ func TestE2E_TruncatedResponseContinuation_FullFlow(t *testing.T) {
 
 // --- Tentative Post-Tool Response Tests ---
 
-func TestE2E_TentativeResponse_PlanningStub(t *testing.T) {
+func TestE2E_TentativeResponse_NoToolResults_AcceptedImmediately(t *testing.T) {
 	// Provider returns a tentative planning stub ("Let me check...") with no
-	// tool calls. The validator should detect this and continue the loop
-	// instead of finalizing. The second response is the actual answer.
+	// tool calls and no prior tool execution. Without tool results in history,
+	// the tentative detection does not fire (it only activates after tool
+	// results). The response is accepted immediately as the final answer.
 	h := NewHarnessWithT(t)
 	h.Provider().AddTextResponse("Let me check the file contents.")
-	h.Provider().AddTextResponse("The file contains the expected configuration data that was requested.")
 
 	agent := h.NewAgent()
 	result, err := agent.Run(context.Background(), "What's in the file?")
 	h.AssertNoError(err)
-	h.AssertEquals(result, "The file contains the expected configuration data that was requested.")
+	h.AssertEquals(result, "Let me check the file contents.")
 
-	// Provider called twice: tentative stub + actual response
-	h.AssertProviderCalledN(2)
+	// Provider called once — no tentative rejection without tool results
+	h.AssertProviderCalledN(1)
 
-	// State: user + assistant(tentative) + assistant(final)
-	h.AssertStateHasNMessages(agent, 3)
+	// State: user + assistant
+	h.AssertStateHasNMessages(agent, 2)
 }
 
 func TestE2E_TentativeResponse_AfterToolExecution(t *testing.T) {
 	// Scenario: tool executes, then provider returns a tentative planning stub
-	// instead of using the tool result. The loop should continue and get a
+	// instead of using the tool result. The post-tool rejection fires because
+	// followsRecentToolResults() returns true. The loop continues and gets a
 	// real response.
 	h := NewHarnessWithT(t)
 	h.Provider().AddToolCallResponse(
@@ -1094,8 +1095,8 @@ func TestE2E_TentativeResponse_AfterToolExecution(t *testing.T) {
 			},
 		},
 	)
-	h.Provider().AddTextResponse("I'll analyze the results now.")
-	h.Provider().AddTextResponse("The configuration has three sections: database, cache, and logging. All are properly configured.")
+	h.Provider().AddTextResponseWithFinish("Let me check the results now.", "stop")
+	h.Provider().AddTextResponseWithFinish("The configuration has three sections: database, cache, and logging. All are properly configured.", "stop")
 
 	h.Executor().AddToolResult("call_1", "database:\n  host: localhost\n  port: 5432")
 
@@ -1112,47 +1113,10 @@ func TestE2E_TentativeResponse_AfterToolExecution(t *testing.T) {
 	h.AssertStateHasNMessages(agent, 5)
 }
 
-func TestE2E_TentativeResponse_MaxContinuations(t *testing.T) {
-	// Provider keeps returning tentative responses. After maxContinuations,
-	// the loop force-finalizes. These responses must NOT end with "..." or
-	// other truncation markers, otherwise the LooksTruncated check fires first
-	// and the test exercises the wrong code path.
+func TestE2E_TentativeResponse_AfterToolExecution_MaxRejections(t *testing.T) {
+	// After tool execution, the provider returns a tentative response.
+	// Post-tool rejection fires, then the next response is accepted.
 	h := NewHarnessWithT(t)
-	h.Provider().AddTextResponse("Let me check the file.")
-	h.Provider().AddTextResponse("I'll need to look at it.")
-	h.Provider().AddTextResponse("I'm going to find the answer.")
-	h.Provider().AddTextResponse("Let me think about this one.")
-
-	agent := h.NewAgent()
-	result, err := agent.Run(context.Background(), "test")
-	h.AssertNoError(err)
-	h.AssertEquals(result, "Let me think about this one.")
-
-	// Provider called 4 times: 1 initial + 3 continuations (4th force-finalized)
-	h.AssertProviderCalledN(4)
-
-	// State: user + 4 assistant messages
-	h.AssertStateHasNMessages(agent, 5)
-}
-
-func TestE2E_TentativeResponse_ContinuesToToolCall(t *testing.T) {
-	// Scenario: provider returns a tentative planning stub with no tool calls.
-	// The validator detects the tentative response and continues the loop.
-	// The next provider call returns actual tool calls, which execute.
-	// Finally, the provider returns a substantive answer.
-	//
-	// Flow:
-	// 1. Provider returns "Let me check the files." (tentative, no tool calls)
-	// 2. Validator detects tentative → loop continues with transient message
-	// 3. Provider returns tool call (read_file)
-	// 4. Tool executes, result recorded
-	// 5. Provider returns final answer
-	h := NewHarnessWithT(t)
-
-	// First call: tentative planning stub (no tool calls)
-	h.Provider().AddTextResponse("Let me check the files.")
-
-	// Second call: actual tool call after the loop continued
 	h.Provider().AddToolCallResponse(
 		"Reading the file",
 		core.ToolCall{
@@ -1163,90 +1127,124 @@ func TestE2E_TentativeResponse_ContinuesToToolCall(t *testing.T) {
 			},
 		},
 	)
+	// Tentative after tool results → post-tool rejection #1
+	h.Provider().AddTextResponseWithFinish("Let me check the output.", "stop")
+	// Second response (followsRecentToolResults=false) → accepted as final
+	h.Provider().AddTextResponseWithFinish("The configuration looks good.", "stop")
 
-	// Third call: final answer using the tool result
-	h.Provider().AddTextResponse("The configuration has database settings on port 5432 with localhost as the host.")
-
-	h.Executor().AddTool(core.Tool{Function: core.ToolFunction{Name: "read_file"}})
-	h.Executor().AddToolResult("call_1", "database:\n  host: localhost\n  port: 5432")
+	h.Executor().AddToolResult("call_1", "database:\n  host: localhost")
 
 	agent := h.NewAgent()
-	result, err := agent.Run(context.Background(), "What's in config.yaml?")
+	result, err := agent.Run(context.Background(), "test")
 	h.AssertNoError(err)
-	h.AssertEquals(result, "The configuration has database settings on port 5432 with localhost as the host.")
+	h.AssertEquals(result, "The configuration looks good.")
 
-	// Provider called 3 times: tentative stub → tool call → final answer
+	// Provider called 3 times: tool call -> tentative (rejected) -> accepted
 	h.AssertProviderCalledN(3)
-	h.AssertExecutorCalledN(1)
 
-	// State: user + assistant(tentative) + assistant(tool call) + tool result + assistant(final)
+	// State: user + assistant(tool call) + tool result + assistant(tentative) + assistant(final)
 	h.AssertStateHasNMessages(agent, 5)
+}
+
+func TestE2E_TentativeResponse_ContinuesToToolCall(t *testing.T) {
+	// Scenario: tool executes, provider returns tentative stub, post-tool
+	// rejection fires. The next provider call returns another tool call,
+	// which executes. Finally, a substantive answer.
+	//
+	// Flow:
+	// 1. Provider returns tool call (read_file A)
+	// 2. Tool executes, result recorded
+	// 3. Provider returns tentative "Let me check the files." → post-tool rejection → continue
+	// 4. Provider returns another tool call (read_file B)
+	// 5. Tool executes, result recorded
+	// 6. Provider returns final answer
+	h := NewHarnessWithT(t)
+
+	h.Executor().AddTool(core.Tool{Function: core.ToolFunction{Name: "read_file"}})
+	h.Executor().AddToolResult("call_1", "database:\n  host: localhost")
+	h.Executor().AddToolResult("call_2", "cache:\n  ttl: 300")
+
+	// First call: tool call A
+	h.Provider().AddToolCallResponse(
+		"Reading the first file",
+		core.ToolCall{
+			ID: "call_1",
+			Function: core.ToolCallFunction{
+				Name:      "read_file",
+				Arguments: `{"path":"config.yaml"}`,
+			},
+		},
+	)
+
+	// Second call: tentative planning stub (after tool results, triggers rejection)
+	h.Provider().AddTextResponseWithFinish("Let me check the files.", "stop")
+
+	// Third call: another tool call (model proceeds with work)
+	h.Provider().AddToolCallResponse(
+		"Reading the second file",
+		core.ToolCall{
+			ID: "call_2",
+			Function: core.ToolCallFunction{
+				Name:      "read_file",
+				Arguments: `{"path":"cache.yaml"}`,
+			},
+		},
+	)
+
+	// Fourth call: final answer using both tool results
+	h.Provider().AddTextResponse("The configuration has database settings on port 5432 with localhost as the host, and cache TTL of 300 seconds.")
+
+	agent := h.NewAgent()
+	result, err := agent.Run(context.Background(), "Read config files")
+	h.AssertNoError(err)
+	h.AssertEquals(result, "The configuration has database settings on port 5432 with localhost as the host, and cache TTL of 300 seconds.")
+
+	// Provider called 4 times: tool call A → tentative (rejected) → tool call B → final answer
+	h.AssertProviderCalledN(4)
+	h.AssertExecutorCalledN(2)
+
+	// State: user + assistant(tool call A) + tool result A + assistant(tentative) + assistant(tool call B) + tool result B + assistant(final)
+	h.AssertStateHasNMessages(agent, 7)
 
 	// Verify the tentative message is in state
 	messages := agent.State().Messages()
-	if messages[1].Role != "assistant" {
-		t.Errorf("expected message 2 to be assistant, got %q", messages[1].Role)
+	if messages[3].Role != "assistant" {
+		t.Errorf("expected message 4 to be assistant (tentative), got %q", messages[3].Role)
 	}
-	if messages[1].Content != "Let me check the files." {
-		t.Errorf("expected tentative content, got %q", messages[1].Content)
-	}
-
-	// Verify the tool call message follows the tentative one
-	if messages[2].Role != "assistant" {
-		t.Errorf("expected message 3 to be assistant (tool call), got %q", messages[2].Role)
-	}
-	if len(messages[2].ToolCalls) != 1 {
-		t.Errorf("expected message 3 to have 1 tool call, got %d", len(messages[2].ToolCalls))
-	}
-	if messages[2].ToolCalls[0].Function.Name != "read_file" {
-		t.Errorf("expected tool name 'read_file', got %q", messages[2].ToolCalls[0].Function.Name)
-	}
-	if messages[2].ToolCalls[0].ID != "call_1" {
-		t.Errorf("expected tool call ID 'call_1', got %q", messages[2].ToolCalls[0].ID)
+	if messages[3].Content != "Let me check the files." {
+		t.Errorf("expected tentative content, got %q", messages[3].Content)
 	}
 
-	// Verify the tool result
-	if messages[3].Role != "tool" {
-		t.Errorf("expected message 4 to be tool, got %q", messages[3].Role)
-	}
-
-	// Verify the final answer
+	// Verify the second tool call message follows the tentative one
 	if messages[4].Role != "assistant" {
-		t.Errorf("expected message 5 to be assistant, got %q", messages[4].Role)
+		t.Errorf("expected message 5 to be assistant (tool call), got %q", messages[4].Role)
+	}
+	if len(messages[4].ToolCalls) != 1 {
+		t.Errorf("expected message 5 to have 1 tool call, got %d", len(messages[4].ToolCalls))
 	}
 
-	// Verify the second provider request included the transient continuation message
-	// ("Please provide your actual response now.")
-	if len(h.Provider().Calls) < 2 {
-		t.Fatal("expected at least 2 provider calls")
+	// Verify the transient message was included in the third provider request
+	// (the one sent after the tentative rejection)
+	if len(h.Provider().Calls) < 3 {
+		t.Fatal("expected at least 3 provider calls")
 	}
 	foundTransient := false
-	for _, msg := range h.Provider().Calls[1].Messages {
-		if msg.Role == "user" && strings.Contains(msg.Content, "Please provide your actual response") {
+	for _, msg := range h.Provider().Calls[2].Messages {
+		if msg.Role == "user" && strings.Contains(msg.Content, "planning note") {
 			foundTransient = true
 			break
 		}
 	}
 	if !foundTransient {
-		t.Error("expected transient continuation message in second provider request")
+		t.Error("expected transient rejection message in third provider request")
 	}
 
 	// Verify the transient message is NOT in state
 	for _, msg := range messages {
-		if msg.Role == "user" && strings.Contains(msg.Content, "Please provide your actual response") {
-			t.Error("transient continuation message should not be in state")
+		if msg.Role == "user" && strings.Contains(msg.Content, "planning note") {
+			t.Error("transient rejection message should not be in state")
 		}
 	}
-
-	// Verify the first request did NOT include a transient continuation message
-	for _, msg := range h.Provider().Calls[0].Messages {
-		if strings.Contains(msg.Content, "Please provide your actual response") {
-			t.Error("transient continuation message should not be in first provider request")
-		}
-	}
-
-	// Verify accumulated token counts: 35 (tentative) + 80 (tool call) + 35 (final) = 150
-	h.AssertStateHasTokens(agent, 150)
 }
 
 func TestE2E_TentativeResponse_SubstantiveNotTentative(t *testing.T) {
@@ -2545,21 +2543,36 @@ func TestE2E_IncompleteResponse_Streaming_CompleteShortAnswer(t *testing.T) {
 }
 
 func TestE2E_TentativeResponse_Streaming(t *testing.T) {
-	// Provider streams a tentative planning stub ("Let me check.") with no
-	// tool calls. The validator should detect this and continue the loop.
-	// The second call streams a complete answer.
+	// Provider streams a tentative planning stub after tool execution.
+	// The post-tool rejection fires because followsRecentToolResults() returns true.
+	// The loop continues and the second call streams a complete answer.
 	h := NewHarnessWithT(t)
 
-	// First call: tentative streaming response
+	// Tool execution setup
+	h.Executor().AddToolResult("call_1", "file contents here")
+
+	// First call: tool call
+	h.Provider().AddToolCallResponse(
+		"Reading file",
+		core.ToolCall{
+			ID: "call_1",
+			Function: core.ToolCallFunction{
+				Name:      "read_file",
+				Arguments: `{"path":"test.txt"}`,
+			},
+		},
+	)
+
+	// Second call: tentative streaming response (after tool results)
 	h.Provider().
 		WithStreaming().
 		AddStreamChunks("Let me ", "check.").
-		AddTextResponse("Let me check.")
+		AddTextResponseWithFinish("Let me check.", "stop")
 
-	// Second call: complete streaming response
+	// Third call: complete streaming response
 	h.Provider().
 		AddStreamChunks("The file contains the expected configuration data.").
-		AddTextResponse("The file contains the expected configuration data.")
+		AddTextResponseWithFinish("The file contains the expected configuration data.", "stop")
 
 	agent := h.NewAgent()
 	result, err := agent.RunStream(context.Background(), "What's in the file?")
@@ -2572,11 +2585,11 @@ func TestE2E_TentativeResponse_Streaming(t *testing.T) {
 	buf := agent.StreamingBuffer()
 	h.AssertEquals(buf.String(), "Let me check.The file contains the expected configuration data.")
 
-	// Provider called twice: tentative stub + actual response
-	h.AssertProviderCalledN(2)
+	// Provider called 3 times: tool call -> tentative (rejected) -> actual response
+	h.AssertProviderCalledN(3)
 
-	// State: user + assistant(tentative) + assistant(final)
-	h.AssertStateHasNMessages(agent, 3)
+	// State: user + assistant(tool call) + tool result + assistant(tentative) + assistant(final)
+	h.AssertStateHasNMessages(agent, 5)
 }
 
 // --- Conversation Optimizer Integration Tests ---

@@ -172,8 +172,9 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 
 		// Send to LLM
 		resp, err := chatFn(ctx, &ChatRequest{
-			Messages: messages,
-			Tools:    ch.agent.executor.GetTools(),
+			Messages:  messages,
+			Tools:     ch.agent.executor.GetTools(),
+			MaxTokens: ch.agent.maxTokens,
 		}, iter)
 		if err != nil {
 			ch.agent.debugLog("[!!] Chat error: %v\n", err)
@@ -402,18 +403,6 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 					ch.enqueueTransientMessage(Message{
 						Role:    "user",
 						Content: "Please continue your response from where you left off.",
-					})
-					continue
-				}
-				ch.agent.debugLog("[validate] Max continuations (%d) reached, force-finalizing\n", maxContinuations)
-			} else if a.validator != nil && a.validator.LooksLikeTentativePostToolResponse(assistantMsg.Content) {
-				if ch.continuationCount < maxContinuations {
-					ch.continuationCount++
-					ch.agent.debugLog("[validate] Tentative response detected (continuation %d/%d), looping again\n",
-						ch.continuationCount, maxContinuations)
-					ch.enqueueTransientMessage(Message{
-						Role:    "user",
-						Content: "Please provide your actual response now.",
 					})
 					continue
 				}

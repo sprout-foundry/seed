@@ -501,26 +501,57 @@ func TestLooksLikeTentativePostToolResponse_AllPrefixes(t *testing.T) {
 		content string
 		want    bool
 	}{
-		// "let me" variants
-		{"lowercase let me", "let me check the file", true},
-		{"uppercase Let me", "Let me check the file", true},
-		{"titlecase Let Me", "Let Me check the file", true},
-		{"let me with ellipsis", "let me check the file...", true},
-		{"let me with trailing space", "let me check the file   ", true},
+		// "let me check" variant (specific planning verb)
+		{"lowercase let me check", "let me check the file", true},
+		{"uppercase Let me check", "Let me check the file", true},
 
-		// "i'll" variants
-		{"lowercase i'll", "i'll look into that", true},
-		{"uppercase I'll", "I'll look into that", true},
-		{"I'll with ellipsis", "I'll look into that...", true},
-		{"i'll with period", "I'll look into that.", true},
+		// "let me look" variant
+		{"lowercase let me look", "let me look into that", true},
+		{"uppercase Let me look", "Let me look into that", true},
 
-		// "i will" variant
-		{"lowercase i will", "i will do that", true},
-		{"uppercase I will", "I will do that", true},
+		// "let me search" variant
+		{"lowercase let me search", "let me search for it", true},
+		{"uppercase Let me search", "Let me search for it", true},
 
-		// "i need to" variant
-		{"lowercase i need to", "i need to run a test", true},
-		{"uppercase I need to", "I need to run a test", true},
+		// "let me read" variant
+		{"lowercase let me read", "let me read the config", true},
+		{"uppercase Let me read", "Let me read the config", true},
+
+		// "let me find" variant
+		{"lowercase let me find", "let me find the bug", true},
+		{"uppercase Let me find", "Let me find the bug", true},
+
+		// "let me investigate" variant
+		{"lowercase let me investigate", "let me investigate the issue", true},
+		{"uppercase Let me investigate", "Let me investigate the issue", true},
+
+		// "let me explore" variant
+		{"lowercase let me explore", "let me explore the options", true},
+		{"uppercase Let me explore", "Let me explore the options", true},
+
+		// "i'll check" variant
+		{"lowercase i'll check", "i'll check the file", true},
+		{"uppercase I'll check", "I'll check the file", true},
+
+		// "i'll look at" variant
+		{"lowercase i'll look at", "i'll look at this", true},
+		{"uppercase I'll look at", "I'll look at this", true},
+
+		// "i need to check" variant
+		{"lowercase i need to check", "i need to check the logs", true},
+		{"uppercase I need to check", "I need to check the logs", true},
+
+		// "i need to investigate" variant
+		{"lowercase i need to investigate", "i need to investigate this", true},
+		{"uppercase I need to investigate", "I need to investigate this", true},
+
+		// "i need to look" variant
+		{"lowercase i need to look", "i need to look at this", true},
+		{"uppercase I need to look", "I need to look at this", true},
+
+		// "i need to find" variant
+		{"lowercase i need to find", "i need to find the cause", true},
+		{"uppercase I need to find", "I need to find the cause", true},
 
 		// "i'm going to" variant
 		{"lowercase i'm going to", "i'm going to search for it", true},
@@ -561,6 +592,17 @@ func TestLooksLikeTentativePostToolResponse_AllPrefixes(t *testing.T) {
 		// "let me think" variant
 		{"lowercase let me think", "let me think about this", true},
 		{"uppercase Let me think", "Let me think about this", true},
+
+		// Substantive explanations that should NOT match (false positive prevention)
+		{"i'll explain", "I'll explain the approach", false},
+		{"i'll summarize", "I'll summarize the key findings", false},
+		{"i will clarify", "I will clarify the requirements", false},
+		{"let me explain", "Let me explain the architecture", false},
+		{"let me clarify", "Let me clarify the design", false},
+		{"i need to point out", "I need to point out the issue", false},
+		{"bare let me", "let me know what you think", false},
+		{"bare i'll", "I'll be here when you need me", false},
+		{"bare i will", "I will be available tomorrow", false},
 	}
 
 	for _, tt := range tests {
@@ -586,12 +628,12 @@ func TestLooksLikeTentativePostToolResponse_WordThreshold(t *testing.T) {
 	}{
 		{
 			name:    "39 words with prefix",
-			content: "let me " + strings.Repeat("word ", 36) + "end", // 2 + 36 + 1 = 39
+			content: "let me check " + strings.Repeat("word ", 35) + "end", // 3 + 35 + 1 = 39
 			want:    true,
 		},
 		{
 			name:    "40 words with prefix",
-			content: "let me " + strings.Repeat("word ", 37) + "end", // 2 + 37 + 1 = 40
+			content: "let me check " + strings.Repeat("word ", 36) + "end", // 3 + 36 + 1 = 40
 			want:    false,
 		},
 		// Short with prefix
