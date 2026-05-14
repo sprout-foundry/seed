@@ -242,8 +242,6 @@ func TestClassifyError_Transient_Default(t *testing.T) {
 	patterns := []string{
 		"something went wrong",
 		"unknown error",
-		"model not found",
-		"invalid parameter",
 	}
 
 	for _, pattern := range patterns {
@@ -426,10 +424,10 @@ func TestClassifyError_MultipleStatusCodes(t *testing.T) {
 		wantName string
 	}{
 		{
-			name:     "403 then 500 → transient",
+			name:     "403 then 500 → client error (403 classified before transient)",
 			err:      fmt.Errorf("HTTP 403: error 500 on upstream"),
-			wantType: IsTransient,
-			wantName: "IsTransient",
+			wantType: IsClientError,
+			wantName: "IsClientError",
 		},
 		{
 			name:     "429 and 500 → rate limit (rate limit checked before transient)",

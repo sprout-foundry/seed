@@ -14,7 +14,7 @@ func ClassifyError(err error, provider string) error {
 	}
 
 	// Return typed errors unchanged.
-	if IsTransient(err) || IsRateLimit(err) || IsContextOverflow(err) || IsAuthError(err) {
+	if IsTransient(err) || IsRateLimit(err) || IsContextOverflow(err) || IsAuthError(err) || IsClientError(err) {
 		return err
 	}
 
@@ -36,6 +36,23 @@ func ClassifyError(err error, provider string) error {
 		"permission denied") ||
 		containsStatusCode(msg, "401") {
 		return &AuthError{
+			Provider: provider,
+			Wrapped:  err,
+		}
+	}
+
+	// Client error patterns (4xx).
+	if containsAny(msg, "bad request", "invalid parameter", "invalid api parameter",
+		"not found", "unprocessable", "method not allowed", "conflict",
+		"payload too large", "uri too long", "unsupported media type",
+		"too many fields exceeded", "request entity too large") ||
+		containsStatusCode(msg, "400") || containsStatusCode(msg, "403") ||
+		containsStatusCode(msg, "404") || containsStatusCode(msg, "405") ||
+		containsStatusCode(msg, "409") || containsStatusCode(msg, "410") ||
+		containsStatusCode(msg, "413") || containsStatusCode(msg, "414") ||
+		containsStatusCode(msg, "415") || containsStatusCode(msg, "422") ||
+		containsStatusCode(msg, "431") {
+		return &ClientError{
 			Provider: provider,
 			Wrapped:  err,
 		}

@@ -153,6 +153,35 @@ func IsAuthError(err error) bool {
 	return errors.As(err, &a)
 }
 
+// ClientError indicates the request was invalid or cannot be fulfilled
+// (e.g., HTTP 400 Bad Request, 404 Not Found, 422 Unprocessable Entity).
+// These errors are permanent — retrying will not help.
+type ClientError struct {
+	// Provider is the provider that returned the error.
+	Provider string
+	// Wrapped is the underlying error.
+	Wrapped error
+}
+
+func (e *ClientError) Error() string {
+	base := "client error"
+	if e.Provider != "" {
+		base += " (" + e.Provider + ")"
+	}
+	if e.Wrapped != nil {
+		base += ": " + e.Wrapped.Error()
+	}
+	return base
+}
+
+func (e *ClientError) Unwrap() error { return e.Wrapped }
+
+// IsClientError reports whether err is a ClientError.
+func IsClientError(err error) bool {
+	var c *ClientError
+	return errors.As(err, &c)
+}
+
 // ContentFilteredError indicates the provider's content filter blocked the
 // response after a retry attempt was already made.
 type ContentFilteredError struct {

@@ -8,12 +8,12 @@ import (
 
 // doChatWithRetry performs a single LLM chat call with exponential backoff
 // retry for transient and rate-limit errors. It classifies errors to decide
-// whether to retry, fail fast (auth/context overflow), or continue retrying.
+// whether to retry, fail fast (auth/context overflow/client errors), or continue retrying.
 //
 // The retry loop is:
 //  1. Create an exponential backoff from agent config
 //  2. Loop: call provider.Chat(), record result on success
-//  3. On error: classify, fail-fast on auth/context overflow, retry on transient
+//  3. On error: classify, fail-fast on auth/context overflow/client errors, retry on transient
 //  4. Return last classified error when retries exhausted
 func (ch *ConversationHandler) doChatWithRetry(ctx context.Context, req *ChatRequest, iter int) (*ChatResponse, error) {
 	backoff := NewExponentialBackoff(
@@ -72,9 +72,15 @@ func (ch *ConversationHandler) doChatWithRetry(ctx context.Context, req *ChatReq
 			return nil, classifiedErr
 		}
 
+		// Fail fast on client errors — retry won't help
+		if IsClientError(classifiedErr) {
+			ch.agent.debugLog("[!!] Client error, failing fast: %v\n", classifiedErr)
+			return nil, classifiedErr
+		}
+
 		// Retry on transient/rate-limit errors.
 		// (ClassifyError defaults to TransientError for unknown errors, so this
-		// path always matches after auth/context-overflow are handled above.)
+		// path always matches after auth/context-overflow/client errors are handled above.)
 		if IsTransient(classifiedErr) || IsRateLimit(classifiedErr) {
 			ch.agent.debugLog("[retry] Retryable error: %v\n", classifiedErr)
 			// Publish error event for each retry attempt (observability).
