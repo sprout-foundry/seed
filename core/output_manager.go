@@ -133,27 +133,24 @@ func (om *defaultOutputManager) PublishOutput(event OutputEvent) {
 	om.mu.RUnlock()
 	event.Metadata = mergedMeta
 
-	// Hold read lock on closeMu while sending. Close() takes a write lock,
-	// so they can never run concurrently. Multiple publishes can proceed in
-	// parallel (RLock is shared).
+	// Publish to async channel (non-blocking; dropped if full or closed).
+	// The async channel is used by tests and optional consumers.
 	om.closeMu.RLock()
 	if om.closed {
 		om.closeMu.RUnlock()
-		return
+	} else {
+		select {
+		case om.asyncChan <- event:
+		default:
+			// Channel is full, silently drop
+		}
+		om.closeMu.RUnlock()
 	}
-	sent := false
-	select {
-	case om.asyncChan <- event:
-		sent = true
-	default:
-		// Channel is full, silently drop
-	}
-	om.closeMu.RUnlock()
 
-	// If eventPublisher is configured, publish a corresponding event.
-	// Only publish to eventPublisher if the async channel send succeeded,
-	// to keep the two delivery paths consistent.
-	if sent && om.eventPublisher != nil {
+	// Publish to eventPublisher independently of async channel state.
+	// The eventPublisher is the primary delivery path; asyncChan is secondary.
+	// Do not gate eventPublisher delivery on asyncChan capacity.
+	if om.eventPublisher != nil {
 		switch event.Type {
 		case "content":
 			om.eventPublisher.Publish(EventTypeStreamChunk,

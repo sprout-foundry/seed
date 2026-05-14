@@ -85,11 +85,12 @@ func (h *AgentStreamHandler) OnReasoning(reasoning string) {
 	h.agent.outputMgr.Flush()
 }
 
-// OnDone handles the end of streaming: records token usage and publishes
-// metrics. The assistant message is NOT added to state here; that is the
-// responsibility of runLoop, which adds the message after fallback parsing
-// and normalization to avoid a race window where observers could see the
-// un-normalized version.
+// OnDone handles the end of streaming: records token usage, publishes
+// metrics, and syncs the accumulated streaming buffer content back into the
+// ChatResponse so that finalize() (which reads resp.ToMessage()) returns the
+// same content the buffer accumulated. This eliminates the fragility where
+// provider.ChatStream builds a different response than what OnContent deltas
+// produced.
 func (h *AgentStreamHandler) OnDone(resp *ChatResponse) {
 	if resp == nil {
 		return
@@ -102,6 +103,25 @@ func (h *AgentStreamHandler) OnDone(resp *ChatResponse) {
 		}
 		return
 	}
+
+	// Sync accumulated buffer content to the response message.
+	// This ensures finalize() (which reads the last assistant message from
+	// state, populated from resp.ToMessage()) returns the same content that
+	// the streaming buffer accumulated via OnContent deltas.
+	if h.agent.outputMgr != nil {
+		bufContent := h.agent.outputMgr.ContentBuffer().String()
+		bufReasoning := h.agent.outputMgr.ReasoningBuffer().String()
+		if bufContent != "" || bufReasoning != "" {
+			choice := &resp.Choices[0]
+			if choice.Message.Content == "" && bufContent != "" {
+				choice.Message.Content = bufContent
+			}
+			if bufReasoning != "" {
+				choice.Message.Content = bufReasoning + "\n" + choice.Message.Content
+			}
+		}
+	}
+
 	if resp.Usage.TotalTokens > 0 {
 		h.state.AddTokens(resp.Usage.PromptTokens,
 			resp.Usage.CompletionTokens, resp.Usage.TotalTokens)
