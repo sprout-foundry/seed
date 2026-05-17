@@ -102,6 +102,6 @@ Transient message injection for one-shot guidance:
 
 ## Known Gaps
 
-- **`Interrupt()` method not implemented**: context cancellation is the only interruption mechanism. There is no `agent.Interrupt()` method to cancel from outside.
-- **`Agent.Checkpoints()` not implemented**: callers must use `agent.State().GetCheckpoints()` to access checkpoints. There is no direct `Checkpoints()` method on `Agent`.
 - **`query_completed` event published in `finalize()`**: this is implemented (found in `core/finalize.go`), publishing `EventTypeQueryCompleted` with query, response, tokens, cost, and duration.
+- **`Interrupt()` method is implemented**: external cancellation via `agent.Interrupt()` with independent `interruptCtx`. Automatically reset at each `Run()` call via `ResetInterrupt()`. Field access protected by `interruptMu`.
+- **`Agent.Checkpoints()` is implemented**: delegates to `State.GetCheckpoints()`, returning a copy of all recorded `TurnCheckpoint` structs.

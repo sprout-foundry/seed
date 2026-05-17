@@ -167,7 +167,7 @@ Defined in `core/conversation.go`. Strips ANSI escape sequences (CSI, OSC, set-c
 Defined in `core/finalize.go`. Called when the loop exits.
 
 1. **Extract final content** — Walk messages backward to find the last assistant message.
-2. **Record turn checkpoint** — If `turnCompleted` is true, build a `TurnCheckpoint` summary from the turn's message range. Fire `OnCheckpoint` callback (panic-safe).
+2. **Record turn checkpoint** — If `turnCompleted` is true, call `RecordTurnCheckpointAsync()` to build a `TurnCheckpoint` summary asynchronously (non-blocking). Fires `OnCheckpoint` callback in its own goroutine with panic recovery.
 3. **Publish `query_completed`** — Event with query, response, tokens, cost, duration.
 4. **Publish `agent_message`** — With final response content.
 5. **Return** final content string.

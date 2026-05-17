@@ -1,31 +1,26 @@
 # Roadmap
 
-Incomplete work for the seed project. Completed features are documented in [docs/](../docs/).
-
-## In Progress
-
-| Spec | Title | Remaining |
-|------|-------|-----------|
-| SP-005 | [Context Cancellation](./SP-005-context-cancellation.md) | `Interrupt()` method and `interruptCtx`/`interruptCancel` not implemented |
-| SP-010 | [Turn Checkpoints](./SP-010-turn-checkpoints.md) | `RecordTurnCheckpointAsync` not wired; checkpoints built synchronously |
-| SP-015 | [Checkpoint Hooks](./SP-015-checkpoint-hooks.md) | `Agent.Checkpoints()` convenience method not implemented |
+All roadmap specs are complete. Current features are documented in [docs/](../docs/).
 
 ## Completed
 
 | Spec | Title | Docs |
 |------|-------|------|
 | SP-001 | Event System | [architecture](../docs/architecture.md) |
-| SP-002 | [Error Handling & Retry](./SP-002-error-handling.md) | [extensibility](../docs/extensibility.md) |
+| SP-002 | Error Handling & Retry | [extensibility](../docs/extensibility.md) |
 | SP-003 | Streaming & Output | [conversation-flow](../docs/conversation-flow.md) |
 | SP-004 | Output Routing | [architecture](../docs/architecture.md) |
+| SP-005 | Context Cancellation | [extensibility](../docs/extensibility.md) |
 | SP-006 | Fallback Parsing | [conversation-flow](../docs/conversation-flow.md) |
 | SP-007 | Response Validation | [conversation-flow](../docs/conversation-flow.md) |
 | SP-008 | Conversation Optimizer | [compaction](../docs/compaction.md) |
 | SP-009 | Configuration, Steering & Extensibility | [extensibility](../docs/extensibility.md) |
+| SP-010 | Turn Checkpoints | [compaction](../docs/compaction.md) |
 | SP-011 | Response Processing Hardening | [conversation-flow](../docs/conversation-flow.md) |
 | SP-012 | Library Integrability | [extensibility](../docs/extensibility.md) |
 | SP-013 | Tool Registry | [tool-registry](../docs/tool-registry.md) |
 | SP-014 | Compaction Hardening | [compaction](../docs/compaction.md) |
+| SP-015 | Checkpoint Hooks | [compaction](../docs/compaction.md) |
 
 ## Out of Scope
 
