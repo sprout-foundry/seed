@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -140,9 +141,71 @@ func TestE2E_MaxIterations(t *testing.T) {
 		MaxIterations: 3,
 	})
 	_, err := agent.Run(context.Background(), "loop")
-	h.AssertNoError(err)
+	h.AssertError(err)
+	h.AssertErrorContains(err, "max iterations")
 	// Should stop after 3 iterations
 	h.AssertProviderCalledN(3)
+}
+
+func TestE2E_MaxIterations_ErrorsIs(t *testing.T) {
+	h := NewHarnessWithT(t)
+
+	// Provider always returns tool calls so the loop never completes.
+	// Add enough responses to cover the 2 iterations.
+	for i := 0; i < 3; i++ {
+		h.Provider().AddToolCallResponse(
+			"Looping...",
+			core.ToolCall{ID: "call_1", Function: core.ToolCallFunction{Name: "loop", Arguments: "{}"}},
+		)
+	}
+	h.Executor().AddToolResult("call_1", "still looping")
+
+	agent := h.NewAgentWithOptions(core.Options{
+		MaxIterations: 2,
+	})
+	_, err := agent.Run(context.Background(), "loop")
+	h.AssertError(err)
+
+	// Verify the error wraps ErrMaxIterations via errors.Is
+	if !errors.Is(err, core.ErrMaxIterations) {
+		t.Fatalf("expected errors.Is(err, core.ErrMaxIterations) to be true, got: %v", err)
+	}
+}
+
+func TestE2E_MaxIterations_NoCheckpointOnIncomplete(t *testing.T) {
+	var checkpoints []core.TurnCheckpoint
+	var mu sync.Mutex
+
+	h := NewHarnessWithT(t)
+
+	// Provider always returns tool calls so the loop never completes.
+	// Add enough responses to cover the 2 iterations.
+	for i := 0; i < 3; i++ {
+		h.Provider().AddToolCallResponse(
+			"Looping...",
+			core.ToolCall{ID: "call_1", Function: core.ToolCallFunction{Name: "loop", Arguments: "{}"}},
+		)
+	}
+	h.Executor().AddToolResult("call_1", "still looping")
+
+	agent := h.NewAgentWithOptions(core.Options{
+		MaxIterations: 2,
+		OnCheckpoint: func(cp core.TurnCheckpoint) {
+			mu.Lock()
+			defer mu.Unlock()
+			checkpoints = append(checkpoints, cp)
+		},
+	})
+	_, err := agent.Run(context.Background(), "loop")
+	h.AssertError(err)
+	h.AssertErrorContains(err, "max iterations")
+
+	// OnCheckpoint must not have been called for an incomplete turn.
+	mu.Lock()
+	defer mu.Unlock()
+	if len(checkpoints) != 0 {
+		t.Fatalf("expected 0 OnCheckpoint calls for incomplete turn, got %d", len(checkpoints))
+	}
 }
 
 func TestE2E_ProviderError(t *testing.T) {

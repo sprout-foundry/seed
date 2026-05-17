@@ -593,7 +593,14 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 	}
 
 	if !completed && ch.agent.maxIterations > 0 {
-		ch.agent.debugLog("[WARN] Max iterations reached\n")
+		ch.agent.debugLog("[WARN] Max iterations (%d) reached\n", ch.agent.maxIterations)
+		if ch.agent.eventPublisher != nil {
+			ch.agent.eventPublisher.Publish(EventTypeError, map[string]interface{}{
+				"message": "max iterations reached",
+				"error":   fmt.Sprintf("max iterations (%d) reached", ch.agent.maxIterations),
+			})
+		}
+		return "", fmt.Errorf("max iterations (%d) reached: %w", ch.agent.maxIterations, ErrMaxIterations)
 	}
 
 	// Finalize

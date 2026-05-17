@@ -251,8 +251,11 @@ func TestAgent_Run_WithToolCalls(t *testing.T) {
 	}
 
 	_, err = a.Run(context.Background(), "Search for something")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(err, ErrMaxIterations) {
+		t.Fatalf("expected ErrMaxIterations, got: %v", err)
 	}
 
 	st := a.State()
@@ -293,8 +296,11 @@ func TestAgent_Run_MaxIterations(t *testing.T) {
 	}
 
 	_, err = a.Run(context.Background(), "Loop")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(err, ErrMaxIterations) {
+		t.Fatalf("expected ErrMaxIterations, got: %v", err)
 	}
 	// Should stop after 3 iterations
 }
@@ -667,8 +673,11 @@ func TestAgent_OnIteration_MultipleIterations(t *testing.T) {
 	}
 
 	_, err = a.Run(context.Background(), "Loop")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(err, ErrMaxIterations) {
+		t.Fatalf("expected ErrMaxIterations, got: %v", err)
 	}
 
 	if len(calls) != 3 {
@@ -894,8 +903,11 @@ func TestAgent_OnCheckpoint_OnlyOnCompletedTurns(t *testing.T) {
 	}
 
 	_, err = a.Run(context.Background(), "Loop")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(err, ErrMaxIterations) {
+		t.Fatalf("expected ErrMaxIterations, got: %v", err)
 	}
 
 	// OnCheckpoint fires synchronously; with turnCompleted=false no callback
