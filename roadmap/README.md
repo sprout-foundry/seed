@@ -6,7 +6,6 @@ Incomplete work for the seed project. Completed features are documented in [docs
 
 | Spec | Title | Remaining |
 |------|-------|-----------|
-| SP-002 | [Error Handling & Retry](./SP-002-error-handling.md) | `ErrMaxIterations` not returned on max iteration exit |
 | SP-005 | [Context Cancellation](./SP-005-context-cancellation.md) | `Interrupt()` method and `interruptCtx`/`interruptCancel` not implemented |
 | SP-010 | [Turn Checkpoints](./SP-010-turn-checkpoints.md) | `RecordTurnCheckpointAsync` not wired; checkpoints built synchronously |
 | SP-015 | [Checkpoint Hooks](./SP-015-checkpoint-hooks.md) | `Agent.Checkpoints()` convenience method not implemented |
@@ -16,6 +15,7 @@ Incomplete work for the seed project. Completed features are documented in [docs
 | Spec | Title | Docs |
 |------|-------|------|
 | SP-001 | Event System | [architecture](../docs/architecture.md) |
+| SP-002 | [Error Handling & Retry](./SP-002-error-handling.md) | [extensibility](../docs/extensibility.md) |
 | SP-003 | Streaming & Output | [conversation-flow](../docs/conversation-flow.md) |
 | SP-004 | Output Routing | [architecture](../docs/architecture.md) |
 | SP-006 | Fallback Parsing | [conversation-flow](../docs/conversation-flow.md) |

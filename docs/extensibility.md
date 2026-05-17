@@ -33,7 +33,7 @@ Retry loop in `ProcessQuery()` / `doChatWithRetry()`:
 
 - `ErrNoProvider`, `ErrNoExecutor` — constructor validation
 - `ErrInterrupted` — context cancellation
-- `ErrMaxIterations` — max iteration count exceeded (declared but **not returned** on max iteration exit — the loop force-finalizes silently)
+- `ErrMaxIterations` — max iteration count exceeded, returned by `runLoop` and published as `EventTypeError`
 - `ErrPaused` — `Run()` called while agent is paused
 - `ErrZeroChoices` — provider returned zero choices
 
@@ -102,7 +102,6 @@ Transient message injection for one-shot guidance:
 
 ## Known Gaps
 
-- **`ErrMaxIterations` not returned**: when max iterations is reached, `runLoop` force-finalizes via `finalize()` without returning `ErrMaxIterations`. The debug log notes it, but the caller gets the final content string with no error.
 - **`Interrupt()` method not implemented**: context cancellation is the only interruption mechanism. There is no `agent.Interrupt()` method to cancel from outside.
 - **`Agent.Checkpoints()` not implemented**: callers must use `agent.State().GetCheckpoints()` to access checkpoints. There is no direct `Checkpoints()` method on `Agent`.
 - **`query_completed` event published in `finalize()`**: this is implemented (found in `core/finalize.go`), publishing `EventTypeQueryCompleted` with query, response, tokens, cost, and duration.
