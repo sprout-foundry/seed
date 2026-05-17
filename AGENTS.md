@@ -19,7 +19,7 @@
 | `OutputManager` | `core/output_manager.go` | Manages content/reasoning buffers, async output channel, flush callbacks, and event metadata. |
 | `AgentStreamHandler` | `core/streaming.go` | Concrete `StreamHandler` that writes chunks to buffers, publishes events, and flushes. |
 | `EventBus` | `events/events.go` | Thread-safe pub/sub for UI events (`query_started`, `tool_start`, `stream_chunk`, etc.). |
-| `Harness` | `test/harness.go` | E2E test harness wiring `MockProvider`, `MockExecutor`, `MockUI`, and `EventBus`. |
+| `Harness` | `internal/test/harness.go` | E2E test harness wiring `MockProvider`, `MockExecutor`, `MockUI`, and `EventBus`. |
 
 ---
 
@@ -27,12 +27,28 @@
 ```
 .
 ├── core/               # Agent engine, state, conversation loop, streaming, output manager
+├── docs/               # Documentation of current implemented state (see below)
 ├── events/             # EventBus and structured event types
-├── test/               # Mocks, test harness, e2e integration tests
+├── internal/test/      # Mocks, test harness, e2e integration tests
+├── example/minimal/    # Runnable example
 ├── go.mod / go.sum
 ├── Makefile            # Build, test, vet, format targets
 └── AGENTS.md           # This file
 ```
+
+## 📚 Documentation
+
+`docs/` documents the current implemented state of the project:
+
+| File | Covers |
+|------|--------|
+| [docs/architecture.md](./docs/architecture.md) | Core types, interfaces, EventBus, OutputManager, convenience types |
+| [docs/conversation-flow.md](./docs/conversation-flow.md) | Main loop, streaming, fallback parsing, validation, hardening |
+| [docs/compaction.md](./docs/compaction.md) | Checkpoints, compaction algorithm, conversation optimizer |
+| [docs/tool-registry.md](./docs/tool-registry.md) | Tool registry, circuit breaker, execution pipeline, hooks |
+| [docs/extensibility.md](./docs/extensibility.md) | Errors, retry, steering, hooks, library integrability, known gaps |
+
+`roadmap/` tracks **incomplete** work. Completed specs are removed or reduced to a brief description with a `docs/` reference. See [roadmap/README.md](./roadmap/README.md).
 
 ---
 
@@ -86,7 +102,7 @@ Convenience target: `make check` runs vet, format, build, and test.
 
 ## 🗺 Roadmap
 
-See [roadmap/README.md](./roadmap/README.md) for current spec status and open work.
+See [roadmap/README.md](./roadmap/README.md) for incomplete work. Completed features are documented in [docs/](./docs/).
 
 ---
 

@@ -1,41 +1,37 @@
 # Roadmap
 
-Roadmap specifications for the seed project. Each spec describes a major
-architectural area, its current state, and open work.
+Incomplete work for the seed project. Completed features are documented in [docs/](../docs/).
+
+## In Progress
+
+| Spec | Title | Remaining |
+|------|-------|-----------|
+| SP-002 | [Error Handling & Retry](./SP-002-error-handling.md) | `ErrMaxIterations` not returned on max iteration exit |
+| SP-005 | [Context Cancellation](./SP-005-context-cancellation.md) | `Interrupt()` method and `interruptCtx`/`interruptCancel` not implemented |
+| SP-010 | [Turn Checkpoints](./SP-010-turn-checkpoints.md) | `RecordTurnCheckpointAsync` not wired; checkpoints built synchronously |
+| SP-015 | [Checkpoint Hooks](./SP-015-checkpoint-hooks.md) | `Agent.Checkpoints()` convenience method not implemented |
 
 ## Completed
 
-| Spec | Title | Status |
-|------|-------|--------|
-| SP-001 | [Event System](./SP-001-event-system.md) | ✅ Complete |
-| SP-002 | [Error Handling & Retry](./SP-002-error-handling.md) | ✅ Complete |
-| SP-003 | [Streaming & Output](./SP-003-streaming-output.md) | ✅ Complete |
-| SP-004 | [Output Routing](./SP-004-output-routing.md) | ✅ Complete |
-| SP-005 | [Context Cancellation](./SP-005-context-cancellation.md) | ✅ Complete |
-| SP-006 | [Fallback Parsing](./SP-006-fallback-parsing.md) | ✅ Complete |
-| SP-007 | [Response Validation](./SP-007-response-validation.md) | ✅ Complete |
-| SP-008 | [Conversation Optimizer](./SP-008-conversation-optimizer.md) | ✅ Complete |
-| SP-009 | [Configuration, Steering & Extensibility](./SP-009-configuration-steering.md) | ✅ Complete |
-| SP-010 | [Turn Checkpoints](./SP-010-turn-checkpoints.md) | ✅ Complete |
-| SP-012 | [Library Integrability](./SP-012-library-integrability.md) | ✅ Complete |
-
-## Active
-
-| Spec | Title | Status |
-|------|-------|--------|
-| SP-011 | [Response Processing Hardening](./SP-011-response-processing-hardening.md) | ⚠️ Partial — `ToolCallNormalizer` exists but not wired; finish reason dispatch, blank/repetitive detection, and ANSI sanitization are absent |
-| SP-013 | [Tool Registry](./SP-013-tool-registry.md) | 📋 Spec |
-| SP-014 | [Context Compaction Hardening](./SP-014-compaction-hardening.md) | 📋 Spec |
-| SP-015 | [Checkpoint Hooks](./SP-015-checkpoint-hooks.md) | 📋 Spec |
+| Spec | Title | Docs |
+|------|-------|------|
+| SP-001 | Event System | [architecture](../docs/architecture.md) |
+| SP-003 | Streaming & Output | [conversation-flow](../docs/conversation-flow.md) |
+| SP-004 | Output Routing | [architecture](../docs/architecture.md) |
+| SP-006 | Fallback Parsing | [conversation-flow](../docs/conversation-flow.md) |
+| SP-007 | Response Validation | [conversation-flow](../docs/conversation-flow.md) |
+| SP-008 | Conversation Optimizer | [compaction](../docs/compaction.md) |
+| SP-009 | Configuration, Steering & Extensibility | [extensibility](../docs/extensibility.md) |
+| SP-011 | Response Processing Hardening | [conversation-flow](../docs/conversation-flow.md) |
+| SP-012 | Library Integrability | [extensibility](../docs/extensibility.md) |
+| SP-013 | Tool Registry | [tool-registry](../docs/tool-registry.md) |
+| SP-014 | Compaction Hardening | [compaction](../docs/compaction.md) |
 
 ## Out of Scope
 
-The following were initially considered but intentionally excluded — they are
-application-level or consumer-side concerns, not portable library features:
-
 | Area | Reason |
 |------|--------|
-| Persistence / Sessions | `State.ExportState()` / `ImportState()` are already exposed — the consumer handles file I/O, scoping, naming, retention |
+| Persistence / Sessions | `State.ExportState()` / `ImportState()` are exposed — the consumer handles file I/O, scoping, naming, retention |
 | Security & Approval | Consumer implements `ToolExecutor` — approval gates belong inside their `Execute()`, not around it |
 | Circuit Breaker | Same — consumer's executor controls repetition handling |
 | Scripted Client | Test utility, not library functionality; existing `MockProvider` suffices |
