@@ -100,8 +100,9 @@ Transient message injection for one-shot guidance:
 
 - `example/minimal/` — runnable example with no external dependencies beyond `core`
 
-## Known Gaps
+## Notes
 
-- **`query_completed` event published in `finalize()`**: this is implemented (found in `core/finalize.go`), publishing `EventTypeQueryCompleted` with query, response, tokens, cost, and duration.
-- **`Interrupt()` method is implemented**: external cancellation via `agent.Interrupt()` with independent `interruptCtx`. Automatically reset at each `Run()` call via `ResetInterrupt()`. Field access protected by `interruptMu`.
-- **`Agent.Checkpoints()` is implemented**: delegates to `State.GetCheckpoints()`, returning a copy of all recorded `TurnCheckpoint` structs.
+- **`query_completed` event**: published in `finalize()` with query, response, tokens, cost, and duration.
+- **`Interrupt()` / `ResetInterrupt()`**: external cancellation via independent `interruptCtx`, mutex-protected, auto-reset at each `Run()` call.
+- **`Agent.Checkpoints()`**: delegates to `State.GetCheckpoints()`, returning a copy of all recorded `TurnCheckpoint` structs.
+- **Async checkpoint recording**: `finalize()` calls `RecordTurnCheckpointAsync()` — non-blocking, with 5s timeout fallback and panic-safe `OnCheckpoint` callback.
