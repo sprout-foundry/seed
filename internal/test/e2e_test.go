@@ -1659,6 +1659,160 @@ func TestE2E_Cancellation_StopsLoop(t *testing.T) {
 	h.AssertErrorContains(err, "conversation interrupted")
 }
 
+// --- Interrupt Tests ---
+
+func TestE2E_Interrupt_StopsRunningQuery(t *testing.T) {
+	// The provider blocks on its first call. When we call agent.Interrupt(),
+	// the agent's interruptCtx is cancelled, which propagates through the
+	// runCtx bridge goroutine, causing the provider to see ctx.Done().
+	h := NewHarnessWithT(t)
+
+	blockCh := h.Provider().BlockUntil()
+	h.Provider().AddTextResponse("Should not reach this")
+
+	agent := h.NewAgent()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := agent.Run(context.Background(), "test query")
+		done <- err
+	}()
+
+	// Wait for the goroutine to enter the blocking Chat call
+	for i := 0; i < 100; i++ {
+		if h.Provider().CallCount() >= 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Interrupt the agent — this cancels interruptCtx, which the bridge
+	// goroutine propagates to runCtx. Add a brief delay so the goroutine
+	// has time to call runCancel() before we close blockCh.
+	agent.Interrupt()
+	time.Sleep(50 * time.Millisecond)
+
+	// Unblock the provider so it can observe the cancelled context
+	close(blockCh)
+
+	// Wait for Run to complete
+	err := <-done
+
+	h.AssertError(err)
+	h.AssertErrorContains(err, "conversation interrupted")
+
+	// Verify the error wraps ErrInterrupted
+	if !errors.Is(err, core.ErrInterrupted) {
+		t.Errorf("expected error to wrap ErrInterrupted, got: %v", err)
+	}
+}
+
+func TestE2E_Interrupt_ResetsAfterRun(t *testing.T) {
+	// Call Interrupt(), then start a fresh Run() that should work normally.
+	// This verifies that ResetInterrupt() is called at the start of Run(),
+	// so a stale interrupt doesn't poison the next query.
+	h := NewHarnessWithT(t)
+	h.Provider().AddTextResponse("Response after interrupt")
+
+	agent := h.NewAgent()
+
+	// Interrupt — but nothing is running, so it just cancels the idle context
+	agent.Interrupt()
+
+	// Next Run should work normally — ResetInterrupt() clears the stale cancel
+	result, err := agent.Run(context.Background(), "test query")
+	h.AssertNoError(err)
+	h.AssertEquals(result, "Response after interrupt")
+
+	// Verify the agent can continue with another query too
+	h.Provider().AddTextResponse("Second response")
+	result2, err := agent.Run(context.Background(), "second query")
+	h.AssertNoError(err)
+	h.AssertEquals(result2, "Second response")
+}
+
+func TestE2E_ResetInterrupt_Manual(t *testing.T) {
+	// Manually call ResetInterrupt() and verify the agent continues to work.
+	h := NewHarnessWithT(t)
+	h.Provider().AddTextResponse("After reset")
+
+	agent := h.NewAgent()
+
+	// Interrupt then manually reset
+	agent.Interrupt()
+	agent.ResetInterrupt()
+
+	// Run should work normally after manual reset
+	result, err := agent.Run(context.Background(), "test query")
+	h.AssertNoError(err)
+	h.AssertEquals(result, "After reset")
+}
+
+func TestE2E_Interrupt_MidConversation(t *testing.T) {
+	// Interrupt after a tool call completes but before the final response.
+	// This verifies that interrupt works mid-loop, not just on the first call.
+	h := NewHarnessWithT(t)
+
+	// First call: tool call that executes
+	h.Provider().AddToolCallResponse(
+		"Running tool...",
+		core.ToolCall{
+			ID: "call_1",
+			Function: core.ToolCallFunction{
+				Name:      "slow_tool",
+				Arguments: `{}`,
+			},
+		},
+	)
+	h.Executor().AddToolResult("call_1", "tool result")
+
+	// Second call: block so we can interrupt mid-conversation
+	blockCh := h.Provider().BlockOnCallN(2)
+	h.Provider().AddTextResponse("Should not reach this")
+
+	agent := h.NewAgent()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := agent.Run(context.Background(), "test query")
+		done <- err
+	}()
+
+	// Wait for the first iteration to complete (tool call + execution)
+	for i := 0; i < 100; i++ {
+		if h.Provider().CallCount() >= 1 && h.Executor().CallCount() >= 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Wait for the second iteration to start and hit the block
+	time.Sleep(50 * time.Millisecond)
+
+	// Interrupt the running conversation. Add a brief delay so the bridge
+	// goroutine has time to call runCancel() before we close blockCh.
+	agent.Interrupt()
+	time.Sleep(50 * time.Millisecond)
+
+	// Unblock the provider so it can observe the cancelled context
+	close(blockCh)
+
+	// Wait for Run to complete
+	err := <-done
+
+	h.AssertError(err)
+	h.AssertErrorContains(err, "conversation interrupted")
+
+	// Verify the error wraps ErrInterrupted
+	if !errors.Is(err, core.ErrInterrupted) {
+		t.Errorf("expected error to wrap ErrInterrupted, got: %v", err)
+	}
+
+	// Verify the tool call was executed before interrupt
+	h.AssertProviderCalledN(2)
+	h.AssertExecutorCalledN(1)
+}
+
 func TestE2E_Cancellation_ReturnsErrInterrupted(t *testing.T) {
 	h := NewHarnessWithT(t)
 

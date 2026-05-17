@@ -1,6 +1,6 @@
 # TODO
 
-Remaining incomplete items from roadmap specs. All other specs are complete — see [docs/](./docs/).
+All remaining incomplete items from roadmap specs have been resolved. See [docs/](./docs/) for current state and [roadmap/](./roadmap/) for in-progress work.
 
 ## Error Handling (SP-002)
 
@@ -8,13 +8,13 @@ Remaining incomplete items from roadmap specs. All other specs are complete — 
 
 ## Context Cancellation (SP-005)
 
-- [ ] Add `Interrupt()` method to `Agent` — expose `interruptCancel` for external cancellation. `core/agent.go`
-- [ ] Add `interruptCtx` / `interruptCancel` to `Agent` — internal interrupt context independent of caller's context. `core/agent.go`
+- [x] Add `Interrupt()` method to `Agent` — expose `interruptCancel` for external cancellation with mutex-protected access. `core/agent.go`
+- [x] Add `interruptCtx` / `interruptCancel` to `Agent` — internal interrupt context, atomically captured via `ResetInterrupt()` return value. `core/agent.go`
 
 ## Turn Checkpoints (SP-010)
 
-- [ ] Wire `RecordTurnCheckpointAsync` — function exists but is not called; checkpoints are built synchronously in `finalize()`. `core/conversation.go`, `core/finalize.go`
+- [x] Wire `RecordTurnCheckpointAsync` — `finalize()` now calls the async function instead of building synchronously; `onCheckpoint` callback fires in goroutine. `core/finalize.go`, `core/checkpoint_compaction.go`
 
 ## Checkpoint Hooks (SP-015)
 
-- [ ] Add `Agent.Checkpoints()` convenience method — callers must currently use `agent.State().GetCheckpoints()`. `core/agent.go`
+- [x] Add `Agent.Checkpoints()` convenience method — delegates to `State.GetCheckpoints()`. `core/agent.go`

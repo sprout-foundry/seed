@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // --- Mock implementations ---
@@ -775,11 +776,21 @@ func TestAgent_OnCheckpoint_CallbackFired(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// OnCheckpoint fires synchronously in finalize(), so the callback has
-	// already been invoked by the time Run() returns.
+	// OnCheckpoint fires asynchronously via RecordTurnCheckpointAsync.
+	// Poll until we have the expected checkpoint count (or timeout).
+	start := time.Now()
+	for time.Since(start) < 3*time.Second {
+		mu.Lock()
+		n := len(checkpoints)
+		mu.Unlock()
+		if n == 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
 	mu.Lock()
 	defer mu.Unlock()
-
 	if len(checkpoints) != 1 {
 		t.Fatalf("expected 1 OnCheckpoint call, got %d", len(checkpoints))
 	}
@@ -957,10 +968,20 @@ func TestAgent_OnCheckpoint_MultipleTurns(t *testing.T) {
 		t.Fatalf("run 2 failed: %v", err)
 	}
 
-	// OnCheckpoint fires synchronously; both callbacks have already run.
+	// OnCheckpoint fires asynchronously; poll until both callbacks arrive.
+	start := time.Now()
+	for time.Since(start) < 3*time.Second {
+		mu.Lock()
+		n := len(checkpoints)
+		mu.Unlock()
+		if n == 2 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
 	mu.Lock()
 	defer mu.Unlock()
-
 	if len(checkpoints) != 2 {
 		t.Fatalf("expected 2 OnCheckpoint calls, got %d", len(checkpoints))
 	}

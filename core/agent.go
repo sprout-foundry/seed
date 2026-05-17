@@ -174,6 +174,14 @@ type Agent struct {
 	// so the steer messages appear in the next API call and are consumed once.
 	steerMu   sync.Mutex
 	steerMsgs []Message
+
+	// interruptCtx / interruptCancel provide external cancellation.
+	// Interrupt() calls interruptCancel to stop a running query from outside.
+	// ResetInterrupt() recreates the context pair for the next Run() call.
+	// interruptMu protects concurrent access to interruptCtx and interruptCancel.
+	interruptMu     sync.Mutex
+	interruptCtx    context.Context
+	interruptCancel context.CancelFunc
 }
 
 // NewAgent creates a new Agent from the given options. Returns an error if
@@ -230,6 +238,8 @@ func NewAgent(opts Options) (*Agent, error) {
 		st.SetMessages(opts.InitialMessages)
 	}
 
+	interruptCtx, interruptCancel := context.WithCancel(context.Background())
+
 	return &Agent{
 		provider:           opts.Provider,
 		executor:           opts.Executor,
@@ -249,22 +259,109 @@ func NewAgent(opts Options) (*Agent, error) {
 		onIteration:        opts.OnIteration,
 		onCheckpoint:       opts.OnCheckpoint,
 		retryConfig:        opts.RetryConfig,
+		interruptCtx:       interruptCtx,
+		interruptCancel:    interruptCancel,
 	}, nil
 }
 
 // Run executes a single query through the conversation loop.
+//
+// The query can be cancelled in two ways:
+//  1. Cancelling the caller's context (standard Go pattern).
+//  2. Calling Interrupt() on this Agent (independent external cancellation).
+//
+// Interrupt() resets after each Run() call, so it only affects the current query.
 func (a *Agent) Run(ctx context.Context, query string) (string, error) {
+	if a.paused {
+		return "", ErrPaused
+	}
+
+	// Reset interrupt state so Interrupt() only affects this run.
+	// Capture the new interruptCtx atomically from ResetInterrupt().
+	intCtx := a.ResetInterrupt()
+
 	ch := newConversationHandler(a)
-	return ch.ProcessQuery(ctx, query)
+
+	// Derive a context that cancels when EITHER the caller cancels
+	// OR Interrupt() is called. This bridges both cancellation sources.
+	runCtx, runCancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-intCtx.Done():
+			runCancel()
+		case <-done:
+		}
+	}()
+	defer runCancel()
+
+	return ch.ProcessQuery(runCtx, query)
 }
 
 // RunStream executes a single query through the streaming conversation loop.
 // It uses provider.ChatStream() instead of provider.Chat(), so content is
 // delivered incrementally via the StreamHandler callbacks. The return value
 // is the final response content extracted from conversation state.
+//
+// Like Run, this respects both the caller's context cancellation and Interrupt().
 func (a *Agent) RunStream(ctx context.Context, query string) (string, error) {
+	if a.paused {
+		return "", ErrPaused
+	}
+
+	// Reset interrupt state so Interrupt() only affects this run.
+	// Capture the new interruptCtx atomically from ResetInterrupt().
+	intCtx := a.ResetInterrupt()
+
 	ch := newConversationHandler(a)
-	return ch.ProcessQueryStream(ctx, query)
+
+	// Derive a context that cancels when EITHER the caller cancels
+	// OR Interrupt() is called. This bridges both cancellation sources.
+	runCtx, runCancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-intCtx.Done():
+			runCancel()
+		case <-done:
+		}
+	}()
+	defer runCancel()
+
+	return ch.ProcessQueryStream(runCtx, query)
+}
+
+// Interrupt cancels the currently running query, if any.
+// This provides a way to stop the agent independently of the caller's context.
+//
+// Interrupt() has no effect if no query is running. After a Run() call
+// completes (whether normally or due to interruption), the interrupt is
+// automatically reset for the next call.
+//
+// If Run() returns ErrInterrupted, the caller can retry by calling Run() again
+// — the interrupt has already been reset.
+func (a *Agent) Interrupt() {
+	a.interruptMu.Lock()
+	defer a.interruptMu.Unlock()
+	a.interruptCancel()
+}
+
+// ResetInterrupt recreates the interrupt context. This is called automatically
+// at the start of each Run() call, but can be called manually if needed.
+// Returns the new interruptCtx so the caller can capture it atomically.
+func (a *Agent) ResetInterrupt() context.Context {
+	a.interruptMu.Lock()
+	defer a.interruptMu.Unlock()
+	a.interruptCancel()
+	a.interruptCtx, a.interruptCancel = context.WithCancel(context.Background())
+	return a.interruptCtx
+}
+
+// Checkpoints returns a copy of all recorded turn checkpoints.
+func (a *Agent) Checkpoints() []TurnCheckpoint {
+	return a.state.GetCheckpoints()
 }
 
 // State returns the agent's conversation state.
