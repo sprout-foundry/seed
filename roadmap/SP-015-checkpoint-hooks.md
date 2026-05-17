@@ -1,12 +1,10 @@
 # SP-015: Checkpoint Hooks
 
-**Status:** ⚠️ Partial — One remaining item  
-**See also:** [docs/extensibility.md](../docs/extensibility.md)
+**Status:** ✅ Complete  
+**See also:** [docs/compaction.md](../docs/compaction.md)
 
-## Remaining
+## What's Implemented
 
-- **`Agent.Checkpoints()` method** — No convenience accessor on `Agent`. Callers must use `agent.State().GetCheckpoints()` instead.
-
-## What Exists
-
-`OnCheckpoint` callback in `Options`, fired synchronously in `finalize()` with panic recovery, checkpoint built and stored in state — all implemented. See [docs/extensibility.md](../docs/extensibility.md).
+- `OnCheckpoint` callback in `Options` — fired asynchronously via `RecordTurnCheckpointAsync` with panic recovery
+- Checkpoint built and stored in state
+- `Agent.Checkpoints()` — convenience accessor delegating to `State.GetCheckpoints()`

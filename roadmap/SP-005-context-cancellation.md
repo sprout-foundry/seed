@@ -1,13 +1,11 @@
 # SP-005: Context Cancellation
 
-**Status:** ⚠️ Partial — Two remaining items  
+**Status:** ✅ Complete  
 **See also:** [docs/extensibility.md](../docs/extensibility.md)
 
-## Remaining
+## What's Implemented
 
-- **`Interrupt()` method** — No public method on `Agent` to programmatically cancel the current conversation. The only way to stop is to cancel the `context.Context` passed to `Run()`.
-- **`interruptCtx` / `interruptCancel`** — No internal interrupt context on `Agent`. Adding these would enable `Interrupt()` to work independently of the caller's context.
-
-## What Exists
-
-`ctx.Done()` checked in main loop, `ErrInterrupted` returned on cancellation, `InjectInput()` for mid-conversation input injection — all implemented. See [docs/extensibility.md](../docs/extensibility.md).
+- `ctx.Done()` checked in main loop — returns `ErrInterrupted` on cancellation
+- `Interrupt()` method — public method on `Agent` to programmatically cancel the current conversation via independent `interruptCtx`
+- `ResetInterrupt()` — auto-resets at start of each `Run()`/`RunStream()` call, mutex-protected
+- `InjectInput()` — mid-conversation input injection

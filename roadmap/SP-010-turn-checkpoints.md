@@ -1,12 +1,13 @@
 # SP-010: Turn Checkpoints
 
-**Status:** ⚠️ Partial — One remaining item  
+**Status:** ✅ Complete  
 **See also:** [docs/compaction.md](../docs/compaction.md)
 
-## Remaining
+## What's Implemented
 
-- **`RecordTurnCheckpointAsync` not wired** — The async recording function exists in `checkpoint_compaction.go` but is never called. Checkpoints are built synchronously in `finalize()`. The spec calls for async recording with a message snapshot to avoid blocking the response.
-
-## What Exists
-
-`TurnCheckpoint` struct, checkpoint storage in `State`, Go-only `TurnSummaryBuilder`, `BuildCheckpointCompactedMessages` with actionable summary (500-char guard), `Meta["checkpoint"]="true"` marker, checkpoint compaction wired into `prepareMessages()` — all implemented. See [docs/compaction.md](../docs/compaction.md).
+- `TurnCheckpoint` struct with `StartIndex`/`EndIndex`/`Summary`/`ActionableSummary`
+- Checkpoint storage in `State` (mutex-protected)
+- Go-only `TurnSummaryBuilder` — no LLM calls
+- `BuildCheckpointCompactedMessages` — actionable summary (500-char guard), `Meta["checkpoint"]="true"` marker
+- Checkpoint compaction wired into `prepareMessages()`
+- `RecordTurnCheckpointAsync` wired in `finalize()` — non-blocking with 5s timeout and `onCheckpoint` callback
