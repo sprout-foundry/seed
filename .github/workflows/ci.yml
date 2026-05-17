@@ -62,21 +62,8 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: stable
-          cache: true
-
-      - name: Build binaries
-        run: |
-          mkdir -p dist
-          GOOS=linux GOARCH=amd64 go build -o dist/seed-linux-amd64 ./example/minimal/
-          GOOS=linux GOARCH=arm64 go build -o dist/seed-linux-arm64 ./example/minimal/
-          GOOS=darwin GOARCH=amd64 go build -o dist/seed-darwin-amd64 ./example/minimal/
-          GOOS=darwin GOARCH=arm64 go build -o dist/seed-darwin-arm64 ./example/minimal/
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
         with:
-          files: 'dist/*'
           generate_release_notes: true
