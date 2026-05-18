@@ -100,7 +100,7 @@ Transient message injection for one-shot guidance:
 
 - `example/minimal/` — runnable example with no external dependencies beyond `core`
 
-## Notes
+## Recent Additions
 
 - **`query_completed` event**: published in `finalize()` with query, response, tokens, cost, and duration.
 - **`Interrupt()` / `ResetInterrupt()`**: external cancellation via independent `interruptCtx`, mutex-protected, auto-reset at each `Run()` call.

@@ -1,6 +1,6 @@
 # Roadmap
 
-All roadmap specs are complete. Current features are documented in [docs/](../docs/).
+All 15 specs are complete. See [docs/](../docs/) for current implementation details.
 
 ## Completed
 
@@ -26,8 +26,8 @@ All roadmap specs are complete. Current features are documented in [docs/](../do
 
 | Area | Reason |
 |------|--------|
-| Persistence / Sessions | `State.ExportState()` / `ImportState()` are exposed — the consumer handles file I/O, scoping, naming, retention |
-| Security & Approval | Consumer implements `ToolExecutor` — approval gates belong inside their `Execute()`, not around it |
-| Circuit Breaker | Same — consumer's executor controls repetition handling |
-| Scripted Client | Test utility, not library functionality; existing `MockProvider` suffices |
-| Agent Lifecycle / Debug Logger | Seed has no long-lived goroutines; logging is an integration concern (consumer wires `UI`) |
+| Persistence / Sessions | `State.ExportState()` / `ImportState()` are exposed — the consumer handles file I/O |
+| Security & Approval | Consumer implements `ToolExecutor` — approval gates belong inside their `Execute()` |
+| Circuit Breaker | Consumer's executor controls repetition handling |
+| Scripted Client | Test utility, not library functionality |
+| Agent Lifecycle / Debug Logger | Logging is an integration concern (consumer wires `UI`) |
