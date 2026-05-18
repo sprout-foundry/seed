@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -985,6 +986,11 @@ func TestAgent_OnCheckpoint_MultipleTurns(t *testing.T) {
 	if len(checkpoints) != 2 {
 		t.Fatalf("expected 2 OnCheckpoint calls, got %d", len(checkpoints))
 	}
+
+	// Async checkpoints can arrive in any order; sort by StartIndex for deterministic assertions.
+	sort.Slice(checkpoints, func(i, j int) bool {
+		return checkpoints[i].StartIndex < checkpoints[j].StartIndex
+	})
 
 	if checkpoints[0].UserMessage != "first query" {
 		t.Errorf("expected checkpoint[0].UserMessage 'first query', got %q", checkpoints[0].UserMessage)
