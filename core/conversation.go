@@ -155,19 +155,79 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 
 		ch.agent.debugLog("[~] Iteration %d - Messages: %d, Tokens: %d\n", iter, ch.agent.state.Len(), tokenEstimate)
 
-		// Context management
-		if contextSize > 0 && tokenEstimate > contextSize {
+		// Context management.
+		//
+		// The trigger fires when the estimated prompt size crosses a configurable
+		// share of the model's context window (default 0.85). Token estimation is
+		// approximate (4 chars/token) and a single tool result can dump tens of
+		// thousands of tokens into history in one iteration — so the threshold
+		// must sit below 1.0 to give the loop room to react before the provider
+		// rejects the request as oversized.
+		//
+		// When the trigger fires, the loop cascades through compaction options
+		// in this order of capability:
+		//   1. Pruner — if Options.Pruner was provided, its configured strategy
+		//      (adaptive by default) handles everything end-to-end.
+		//   2. LLM summary — if Options.LLMSummarizer was provided, compress
+		//      older middle history into a single durable summary; fall back to
+		//      rule-based Compact if still over the trigger.
+		//   3. Compact — seed's built-in rule-based pipeline (checkpoint drop /
+		//      turn drop / emergency truncate).
+		triggerLimit := int(float64(contextSize) * ch.agent.triggerFractionOrDefault())
+		if contextSize > 0 && tokenEstimate > triggerLimit {
 			beforeCount := len(messages)
-			result := ch.compactMessages(messages, contextSize)
-			messages = result.Messages
-			// Publish compaction event
-			if ch.agent.eventPublisher != nil && result.Strategy != "none" {
+			tokensBefore := tokenEstimate
+			strategy := "none"
+
+			switch {
+			case ch.agent.pruner != nil:
+				messages = ch.agent.pruner.Prune(ctx, messages, tokenEstimate, contextSize, PruneCallOptions{
+					Optimizer:     ch.agent.optimizer,
+					Summarizer:    ch.agent.llmSummarizer,
+					Provider:      ch.agent.provider.Info().Model,
+					IsAgenticFlow: true,
+				})
+				strategy = "pruner_" + string(ch.agent.pruner.Strategy())
+
+			case ch.agent.llmSummarizer != nil:
+				r := CompactWithLLMSummary(ctx, messages, ch.agent.llmSummarizer)
+				if r.Strategy != "none" {
+					messages = r.Messages
+					strategy = r.Strategy
+				}
+				// If LLM summary didn't trigger or didn't reduce enough, fall
+				// back to the rule-based pipeline.
+				if roughTokens(messages) > triggerLimit {
+					cr := Compact(messages, contextSize)
+					messages = cr.Messages
+					if cr.Strategy != "none" {
+						if strategy == "none" {
+							strategy = cr.Strategy
+						} else {
+							strategy = strategy + "+" + cr.Strategy
+						}
+					}
+				}
+
+			default:
+				cr := Compact(messages, contextSize)
+				messages = cr.Messages
+				strategy = cr.Strategy
+			}
+
+			// Publish a compaction event whenever we actually changed something.
+			if ch.agent.eventPublisher != nil && strategy != "none" {
+				tokensAfter := roughTokens(messages)
+				tokensSaved := 0
+				if tokensBefore > tokensAfter {
+					tokensSaved = tokensBefore - tokensAfter
+				}
 				ch.agent.eventPublisher.Publish(EventTypeCompaction, map[string]interface{}{
-					"strategy":            result.Strategy,
+					"strategy":            strategy,
 					"messages_before":     beforeCount,
-					"messages_after":      len(result.Messages),
-					"message_count_delta": beforeCount - len(result.Messages),
-					"tokens_saved":        result.TokensSaved(),
+					"messages_after":      len(messages),
+					"message_count_delta": beforeCount - len(messages),
+					"tokens_saved":        tokensSaved,
 				})
 			}
 			// Re-estimate after compaction to get accurate prompt size.
@@ -721,6 +781,49 @@ func (ch *ConversationHandler) ProcessQueryStream(ctx context.Context, query str
 // compactMessages reduces the message list to fit within the context window.
 func (ch *ConversationHandler) compactMessages(messages []Message, limit int) CompactionResult {
 	return Compact(messages, limit)
+}
+
+// tryContextOverflowRecovery runs an aggressive recovery compaction pass on
+// req.Messages and returns true if the message list shrunk. Called from the
+// retry loop after a ContextOverflowError to give the next attempt a chance
+// to fit inside the model's context window.
+//
+// The recovery target is tighter than the proactive trigger
+// (recoveryCompactionTargetFraction, default 0.70) so the retried request has
+// clear headroom for both the response budget and the difference between our
+// rough token estimator and the provider's actual tokenizer.
+func (ch *ConversationHandler) tryContextOverflowRecovery(req *ChatRequest) bool {
+	if req == nil || len(req.Messages) == 0 {
+		return false
+	}
+	contextSize := ch.agent.provider.Info().ContextSize
+	if contextSize <= 0 {
+		return false
+	}
+
+	// Compact passes its tokenLimit through emergencyTargetFraction internally,
+	// so passing contextSize * recoveryCompactionTargetFraction as the limit
+	// yields a final target of roughly 0.7 * 0.85 * contextSize estimated tokens.
+	recoveryLimit := int(float64(contextSize) * recoveryCompactionTargetFraction)
+	before := len(req.Messages)
+	result := Compact(req.Messages, recoveryLimit)
+	if result.Strategy == "none" || len(result.Messages) >= before {
+		// Nothing was actually dropped — compaction has bottomed out.
+		return false
+	}
+	req.Messages = result.Messages
+
+	if ch.agent.eventPublisher != nil {
+		ch.agent.eventPublisher.Publish(EventTypeCompaction, map[string]interface{}{
+			"strategy":            result.Strategy,
+			"messages_before":     before,
+			"messages_after":      len(result.Messages),
+			"message_count_delta": before - len(result.Messages),
+			"tokens_saved":        result.TokensSaved(),
+			"trigger":             "context_overflow_recovery",
+		})
+	}
+	return true
 }
 
 // enqueueTransientMessage adds a message that will be sent once then discarded.

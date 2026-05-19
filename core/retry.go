@@ -8,12 +8,13 @@ import (
 
 // doChatWithRetry performs a single LLM chat call with exponential backoff
 // retry for transient and rate-limit errors. It classifies errors to decide
-// whether to retry, fail fast (auth/context overflow/client errors), or continue retrying.
+// whether to retry, recover via compaction, fail fast, or continue retrying.
 //
 // The retry loop is:
 //  1. Create an exponential backoff from agent config
 //  2. Loop: call provider.Chat(), record result on success
-//  3. On error: classify, fail-fast on auth/context overflow/client errors, retry on transient
+//  3. On error: classify, recover-via-compaction on context overflow (once),
+//     fail-fast on auth/client errors, retry on transient
 //  4. Return last classified error when retries exhausted
 func (ch *ConversationHandler) doChatWithRetry(ctx context.Context, req *ChatRequest, iter int) (*ChatResponse, error) {
 	backoff := NewExponentialBackoff(
@@ -23,6 +24,11 @@ func (ch *ConversationHandler) doChatWithRetry(ctx context.Context, req *ChatReq
 		ch.agent.retryConfig.MaxAttemptsOrDefault(),
 		ch.agent.retryConfig.JitterOrDefault(),
 	)
+	// contextOverflowRecovered tracks whether we have already run the
+	// compact-and-retry recovery path for this call. Recovery runs at most once
+	// per chat invocation: if the provider rejects the request a second time
+	// for the same reason after compaction, we fail fast rather than thrash.
+	contextOverflowRecovered := false
 	var lastErr error
 	for backoff.NextAttempt() {
 		if backoff.attempt > 1 {
@@ -66,10 +72,22 @@ func (ch *ConversationHandler) doChatWithRetry(ctx context.Context, req *ChatReq
 			return nil, classifiedErr
 		}
 
-		// Fail fast on context overflow — retry won't help
+		// Context overflow — try one round of aggressive recovery compaction
+		// then retry. If we have already recovered once, or compaction had
+		// nothing left to drop, fail fast: thrashing on the same error helps
+		// nobody.
 		if IsContextOverflow(classifiedErr) {
-			ch.agent.debugLog("[!!] Context overflow, failing fast: %v\n", classifiedErr)
-			return nil, classifiedErr
+			if contextOverflowRecovered {
+				ch.agent.debugLog("[!!] Context overflow persisted after recovery compaction, failing fast: %v\n", classifiedErr)
+				return nil, classifiedErr
+			}
+			if !ch.tryContextOverflowRecovery(req) {
+				ch.agent.debugLog("[!!] Context overflow — compaction could not reduce further, failing fast: %v\n", classifiedErr)
+				return nil, classifiedErr
+			}
+			contextOverflowRecovered = true
+			ch.agent.debugLog("[retry] Context overflow — compacted prompt, retrying\n")
+			continue
 		}
 
 		// Fail fast on client errors — retry won't help

@@ -9,6 +9,19 @@ const (
 	defaultRecentToKeep = 24
 	defaultMinMessages  = 5
 
+	// defaultCompactionTriggerFraction is the share of the context window above
+	// which the chat loop runs proactive compaction before sending the next
+	// request. Because token estimation is approximate (4 chars/token) and a
+	// single tool result can dump tens of thousands of tokens into history,
+	// the trigger must sit below 1.0 to give the loop room to react.
+	defaultCompactionTriggerFraction = 0.85
+
+	// recoveryCompactionTargetFraction is the more aggressive target used when
+	// the provider has already returned a ContextOverflowError. Compaction
+	// during a recovery retry trims further so the retried request has clear
+	// headroom for the same response budget.
+	recoveryCompactionTargetFraction = 0.70
+
 	emergencyTargetFraction = 0.85
 	toolResultMaxChars      = 1500
 	toolResultHeadChars     = 750

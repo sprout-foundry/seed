@@ -28,6 +28,16 @@ const maxFileReadRecords = 5
 // could otherwise grow the dedup map without bound.
 const maxShellCmdRecords = 10
 
+// observationMaskMaxChars is the smallest tool-result body that observation
+// masking will replace with a placeholder. Smaller results are kept verbatim;
+// the masking overhead isn't worth their savings.
+const observationMaskMaxChars = 3000
+
+// observationMaskKeepLast is the number of most-recent tool results that stay
+// unmasked regardless of size. The model needs fresh context to reason about
+// the current step.
+const observationMaskKeepLast = 5
+
 // ConversationOptimizerOptions configures the optimizer.
 type ConversationOptimizerOptions struct {
 	// Enabled enables optimization. When false, OptimizeConversation is a no-op.
@@ -57,18 +67,23 @@ func NewConversationOptimizer(opts ConversationOptimizerOptions) *ConversationOp
 }
 
 // OptimizeConversation processes the message list, replacing redundant file reads
-// and shell command outputs with compact placeholders. Returns the (possibly
-// modified) message slice.
+// and shell command outputs with compact placeholders, then masking large
+// consumed tool results to bound context bloat from chatty tools. Returns the
+// (possibly modified) message slice.
 func (opt *ConversationOptimizer) OptimizeConversation(messages []Message) []Message {
 	if !opt.enabled || opt.knownToolFn == nil {
 		return messages
 	}
 
 	// Build a map of tool-call ID → metadata extracted from the assistant message.
+	// Used by both the dedup pass below and the observation-masking pass at the
+	// end, so the tool name shown in the placeholder is the real function name
+	// rather than a generic "unknown".
 	type meta struct {
 		category ToolCategory
 		filePath string
 		command  string
+		toolName string
 	}
 	callMeta := make(map[string]meta)
 	for _, msg := range messages {
@@ -77,7 +92,7 @@ func (opt *ConversationOptimizer) OptimizeConversation(messages []Message) []Mes
 		}
 		for _, tc := range msg.ToolCalls {
 			cat := opt.knownToolFn(tc.Function.Name)
-			m := meta{category: cat}
+			m := meta{category: cat, toolName: tc.Function.Name}
 			switch cat {
 			case ToolCategoryFileRead:
 				m.filePath = extractStringArg(tc.Function.Arguments, "path")
@@ -186,7 +201,127 @@ func (opt *ConversationOptimizer) OptimizeConversation(messages []Message) []Mes
 		}
 	}
 
+	// Observation masking: replace large consumed tool results with compact
+	// placeholders so chatty tools (web fetch, large file reads, verbose MCP
+	// responses) don't accumulate in the prompt forever. A tool result is
+	// "consumed" once the model has produced a subsequent assistant message
+	// after seeing it. The last observationMaskKeepLast results stay unmasked
+	// so recent context survives.
+	messages = maskConsumedToolResults(messages, func(callID string) string {
+		if m, ok := callMeta[callID]; ok && m.toolName != "" {
+			return m.toolName
+		}
+		if callID != "" {
+			return callID
+		}
+		return "tool"
+	})
+
 	return messages
+}
+
+// maskConsumedToolResults walks the message list and replaces the content of
+// large tool-result messages with compact placeholders. A result is eligible
+// when (a) its content exceeds observationMaskMaxChars and (b) it sits before
+// the last assistant message AND outside the last observationMaskKeepLast
+// tool results. nameFn maps a tool-call ID to a human-readable tool name for
+// the placeholder text.
+func maskConsumedToolResults(messages []Message, nameFn func(callID string) string) []Message {
+	if len(messages) < 3 {
+		return messages
+	}
+
+	// Find the last assistant message; tool results past this point are still
+	// being reasoned about and must not be masked.
+	lastAssistantIndex := 0
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == "assistant" {
+			lastAssistantIndex = i
+			break
+		}
+	}
+	if lastAssistantIndex == 0 {
+		return messages
+	}
+
+	// Collect tool-result indices before the last assistant message.
+	var consumed []int
+	for i := 0; i < lastAssistantIndex; i++ {
+		if messages[i].Role == "tool" {
+			consumed = append(consumed, i)
+		}
+	}
+
+	maskCount := len(consumed) - observationMaskKeepLast
+	if maskCount <= 0 {
+		return messages
+	}
+
+	// Copy-on-write: only allocate a new slice if we'll actually mask.
+	result := make([]Message, len(messages))
+	copy(result, messages)
+
+	for _, idx := range consumed[:maskCount] {
+		content := messages[idx].Content
+		if len(content) <= observationMaskMaxChars {
+			continue
+		}
+		toolName := "tool"
+		if nameFn != nil {
+			toolName = nameFn(messages[idx].ToolCallID)
+		}
+		lineCount := countLines(content)
+		rewritten := messages[idx]
+		rewritten.Content = formatObservationPlaceholder(toolName, len(content), lineCount)
+		result[idx] = rewritten
+	}
+
+	return result
+}
+
+// formatObservationPlaceholder builds the standard "previous result" marker.
+// Kept short so it costs nearly nothing in tokens while still telling the
+// model what was there.
+func formatObservationPlaceholder(toolName string, chars, lines int) string {
+	return "[PREVIOUS RESULT: " + toolName + ", " + itoa(chars) + " chars, " + itoa(lines) + " lines]"
+}
+
+func countLines(s string) int {
+	if s == "" {
+		return 0
+	}
+	n := 1
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\n' {
+			n++
+		}
+	}
+	return n
+}
+
+// itoa is a tiny strconv-free int-to-string for the placeholder builder. Used
+// to avoid pulling strconv into this file just for two numbers per placeholder.
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	neg := false
+	if n < 0 {
+		neg = true
+		n = -n
+	}
+	var buf [20]byte
+	i := len(buf)
+	for n > 0 {
+		i--
+		buf[i] = byte('0' + n%10)
+		n /= 10
+	}
+	if neg {
+		i--
+		buf[i] = '-'
+	}
+	return string(buf[i:])
 }
 
 // extractStringArg parses the JSON arguments and returns the string value for

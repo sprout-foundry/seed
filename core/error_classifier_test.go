@@ -161,6 +161,48 @@ func TestClassifyError_ContextOverflow(t *testing.T) {
 	}
 }
 
+// TestClassifyError_ContextOverflowBeats400 pins the ordering invariant fixed
+// in the bug where the classifier saw "HTTP 400: This model's maximum context
+// length is 200000 tokens. …" and routed it to ClientError (because the bare
+// "400" matched first) instead of ContextOverflowError. ClientError is on the
+// fail-fast list, so the agent died instead of triggering compaction recovery.
+//
+// The fix moved the context-overflow check above the 4xx check in
+// ClassifyError. This test pins that ordering: errors containing both a "400"
+// status code and a context-overflow phrase must classify as ContextOverflow.
+func TestClassifyError_ContextOverflowBeats400(t *testing.T) {
+	cases := []struct {
+		name string
+		msg  string
+	}{
+		{
+			name: "openai-style HTTP 400 with maximum context length",
+			msg:  "client error (qwen3.6-27b): HTTP 400: This model's maximum context length is 200000 tokens. However, you requested 512 output tokens and your prompt contains at least 199489 input tokens, for a total of at least 200001 tokens.",
+		},
+		{
+			name: "HTTP 400 with available context size",
+			msg:  "HTTP 400: request (131306 tokens) exceeds the available context size (131072 tokens)",
+		},
+		{
+			name: "HTTP 400 with context_length_exceeded",
+			msg:  "HTTP 400: context_length_exceeded",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := errors.New(tc.msg)
+			wrapped := classify(err, "openai")
+			if !IsContextOverflow(wrapped) {
+				t.Fatalf("expected ContextOverflowError, got %T: %v", wrapped, wrapped)
+			}
+			if IsClientError(wrapped) {
+				t.Errorf("error was classified as both ContextOverflow and ClientError; the context check must take precedence")
+			}
+		})
+	}
+}
+
 // --- TransientError patterns ---
 
 func TestClassifyError_Transient_Timeout(t *testing.T) {

@@ -94,6 +94,15 @@ func (rc RetryConfig) MultiplierOrDefault() float64 {
 // Jitter 0.0 means "no jitter" (deterministic retries), so it is not
 // replaced by a default. Negative values are not expected and are
 // returned as-is.
+// triggerFractionOrDefault returns the configured compaction trigger fraction
+// (clamped to (0, 1]) or the default if unset / out of range.
+func (a *Agent) triggerFractionOrDefault() float64 {
+	if a.compactionTriggerFraction > 0 && a.compactionTriggerFraction <= 1.0 {
+		return a.compactionTriggerFraction
+	}
+	return defaultCompactionTriggerFraction
+}
+
 func (rc RetryConfig) JitterOrDefault() float64 {
 	return rc.Jitter
 }
@@ -119,6 +128,23 @@ type Options struct {
 	// Optimizer is used to optimize conversation history across iterations.
 	Optimizer   *ConversationOptimizer
 	RetryConfig RetryConfig // retry behavior for transient errors; zero values use defaults
+	// CompactionTriggerFraction is the share of the model's context window
+	// above which the chat loop runs proactive compaction before sending the
+	// next request. Valid range is (0, 1]; zero (the default) uses
+	// defaultCompactionTriggerFraction (0.85). Set to 1.0 to keep the legacy
+	// "only compact when the estimate already exceeds the window" behavior.
+	CompactionTriggerFraction float64
+	// LLMSummarizer, if non-nil, enables LLM-based structural compaction. The
+	// compaction pipeline calls it to compress a window of older middle history
+	// into a single summary message, preserving intent better than the
+	// rule-based drop/truncate fallback. See the LLMSummarizer doc for the
+	// contract. When nil, seed uses its rule-based compaction only.
+	LLMSummarizer LLMSummarizer
+	// Pruner, if non-nil, replaces the default rule-based compaction with the
+	// configured pruning strategy (sliding-window / importance / hybrid /
+	// adaptive). The pruner runs alongside the optimizer and LLMSummarizer.
+	// When nil, seed uses its built-in Compact() pipeline.
+	Pruner *ConversationPruner
 	// InitialMessages seeds the agent's conversation state with pre-existing
 	// messages (e.g., from a previous query in the same session). When empty,
 	// the agent starts with a blank slate.
@@ -168,6 +194,18 @@ type Agent struct {
 	onIteration    func(iteration int, messages int, tokenEstimate int, contextSize int)
 	onCheckpoint   func(TurnCheckpoint)
 	retryConfig    RetryConfig
+
+	// compactionTriggerFraction is the share of the model's context window
+	// above which the chat loop runs proactive compaction. See
+	// Options.CompactionTriggerFraction.
+	compactionTriggerFraction float64
+
+	// llmSummarizer is the consumer-supplied LLM-summary callback used by
+	// structural compaction. Nil = disabled, fall back to rule-based compaction.
+	llmSummarizer LLMSummarizer
+
+	// pruner replaces rule-based compaction when non-nil.
+	pruner *ConversationPruner
 
 	// steerMu / steerMsgs hold externally-queued steering messages.
 	// They are drained into the ConversationHandler when Run is called,
@@ -255,10 +293,13 @@ func NewAgent(opts Options) (*Agent, error) {
 		fallbackParser:     fallbackParser,
 		normalizer:         normalizer,
 		validator:          validator,
-		optimizer:          opts.Optimizer,
-		onIteration:        opts.OnIteration,
-		onCheckpoint:       opts.OnCheckpoint,
-		retryConfig:        opts.RetryConfig,
+		optimizer:                 opts.Optimizer,
+		onIteration:               opts.OnIteration,
+		onCheckpoint:              opts.OnCheckpoint,
+		retryConfig:               opts.RetryConfig,
+		compactionTriggerFraction: opts.CompactionTriggerFraction,
+		llmSummarizer:             opts.LLMSummarizer,
+		pruner:                    opts.Pruner,
 		interruptCtx:       interruptCtx,
 		interruptCancel:    interruptCancel,
 	}, nil

@@ -41,6 +41,20 @@ func ClassifyError(err error, provider string) error {
 		}
 	}
 
+	// Context overflow patterns. Must come BEFORE the generic 4xx client-error
+	// check below: providers like OpenAI return context-length errors as
+	// "HTTP 400: This model's maximum context length is …", which contains a
+	// standalone "400" and would otherwise be classified as a generic
+	// non-retryable ClientError. The text patterns here are more specific than
+	// the bare status code, so they take precedence.
+	if containsAny(msg, "context window", "maximum context", "max_tokens", "max context", "exceed_context_size",
+		"available context size", "maximum context length", "context_length_exceeded",
+		"input is too long", "prompt is too long") {
+		return &ContextOverflowError{
+			Wrapped: err,
+		}
+	}
+
 	// Client error patterns (4xx).
 	if containsAny(msg, "bad request", "invalid parameter", "invalid api parameter",
 		"not found", "unprocessable", "method not allowed", "conflict",
@@ -55,15 +69,6 @@ func ClassifyError(err error, provider string) error {
 		return &ClientError{
 			Provider: provider,
 			Wrapped:  err,
-		}
-	}
-
-	// Context overflow patterns.
-	if containsAny(msg, "context window", "maximum context", "max_tokens", "max context", "exceed_context_size",
-		"available context size", "maximum context length", "context_length_exceeded",
-		"input is too long", "prompt is too long") {
-		return &ContextOverflowError{
-			Wrapped: err,
 		}
 	}
 
