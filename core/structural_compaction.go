@@ -40,8 +40,8 @@ const (
 // StructuralCompactionResult reports what happened in a structural compaction
 // pass. Strategy is one of "none", "single_summary", "layered_summary".
 type StructuralCompactionResult struct {
-	Messages []Message
-	Strategy string
+	Messages   []Message
+	Strategy   string
 	Summarized int // count of messages that were compressed into the summary
 }
 

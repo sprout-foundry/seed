@@ -34,21 +34,21 @@ const (
 // PruningConfig; seed exposes them as constants so callers can tune via the
 // PrunerOptions struct rather than rewriting global state.
 const (
-	defaultPruningStandardPercent    = 0.87 // start pruning above 87% of context
-	defaultPruningAggressivePercent  = 0.95 // aggressive mode above 95%
-	defaultPruningTargetPercent      = 0.85 // post-prune target as fraction of max
-	defaultPruningMinMessages        = 5
-	defaultPruningRecentMessages     = 24
-	defaultPruningSlidingWindow      = 30
-	defaultAgenticRequiredAvailable  = 12000
-	largeFileReadCharThreshold       = 5000
-	importanceKeepThreshold          = 0.5
-	importanceRecentKeepGroupCount   = 5
-	importanceCorpusLongHistory      = 50
-	importanceCorpusManyToolCalls    = 20
-	hybridAdaptiveTriggerFraction    = 0.80
+	defaultPruningStandardPercent     = 0.87 // start pruning above 87% of context
+	defaultPruningAggressivePercent   = 0.95 // aggressive mode above 95%
+	defaultPruningTargetPercent       = 0.85 // post-prune target as fraction of max
+	defaultPruningMinMessages         = 5
+	defaultPruningRecentMessages      = 24
+	defaultPruningSlidingWindow       = 30
+	defaultAgenticRequiredAvailable   = 12000
+	largeFileReadCharThreshold        = 5000
+	importanceKeepThreshold           = 0.5
+	importanceRecentKeepGroupCount    = 5
+	importanceCorpusLongHistory       = 50
+	importanceCorpusManyToolCalls     = 20
+	hybridAdaptiveTriggerFraction     = 0.80
 	pruneTokensFloorPerInvocationFrac = 0.25
-	pruneTokensFloorAbsoluteMin      = 1000
+	pruneTokensFloorAbsoluteMin       = 1000
 )
 
 // PrunerOptions configures a ConversationPruner. Zero values use seed
