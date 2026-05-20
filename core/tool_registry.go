@@ -286,20 +286,21 @@ func (r *ToolRegistry) executeSingle(ctx context.Context, call ToolCall, callIdx
 	// Executor implementation, not just ToolRegistry.
 	_ = callIdx
 	if parseErr != nil {
-		r.recordEnd(name, call.ID, "error", fmt.Sprintf("Failed to parse arguments: %s", parseErr), start)
-		return ToolResultMessage(call.ID, name, fmt.Sprintf("Failed to parse arguments: %s", parseErr))
+		result := fmt.Sprintf("Failed to parse arguments: %s", parseErr)
+		r.recordEnd(name, call.ID, "error", result, start)
+		return ToolErrorMessage(call.ID, name, result)
 	}
 	cb := r.getCircuitBreaker(name)
 	if cb != nil && !cb.Allow() {
 		result := "Circuit breaker is open — temporarily rejecting requests"
 		r.recordEnd(name, call.ID, "error", result, start)
-		return ToolResultMessage(call.ID, name, result)
+		return ToolErrorMessage(call.ID, name, result)
 	}
 	if r.PreExecuteHook != nil {
 		if err := r.PreExecuteHook(name, args); err != nil {
 			result := fmt.Sprintf("Pre-execute hook rejected: %s", err)
 			r.recordEnd(name, call.ID, "error", result, start)
-			return ToolResultMessage(call.ID, name, result)
+			return ToolErrorMessage(call.ID, name, result)
 		}
 	}
 	result, handlerErr := r.runWithTimeout(ctx, name, args)
@@ -315,7 +316,7 @@ func (r *ToolRegistry) executeSingle(ctx context.Context, call ToolCall, callIdx
 			cb.RecordFailure()
 		}
 		r.recordEnd(name, call.ID, "error", result, start)
-		return ToolResultMessage(call.ID, name, result)
+		return ToolErrorMessage(call.ID, name, result)
 	}
 	if cb != nil {
 		cb.RecordSuccess()

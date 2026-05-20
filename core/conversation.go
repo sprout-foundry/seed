@@ -610,10 +610,18 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 				if ok {
 					toolName = tc.Function.Name
 				}
+				// Status comes from the Executor via Message.Status (set by
+				// ToolRegistry's ToolResultMessage / ToolErrorMessage helpers).
+				// Executors that don't tag results default to "completed" so
+				// the historical behavior is preserved.
+				status := r.Status
+				if status == "" {
+					status = ToolStatusCompleted
+				}
 				data := map[string]interface{}{
 					"tool_call_id": r.ToolCallID,
 					"tool_name":    toolName,
-					"status":       "completed",
+					"status":       status,
 					"duration_ms":  execDuration.Milliseconds(),
 				}
 				if r.Content != "" {
@@ -637,7 +645,7 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 					data := map[string]interface{}{
 						"tool_call_id": tc.ID,
 						"tool_name":    tc.Function.Name,
-						"status":       "failed",
+						"status":       ToolStatusError,
 						"duration_ms":  execDuration.Milliseconds(),
 						"error":        "executor returned no result for this tool call",
 					}

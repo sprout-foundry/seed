@@ -4,6 +4,26 @@ package core
 // compaction so they can be identified without string matching.
 const MetaKeyCheckpoint = "checkpoint"
 
+// Tool status values for the Message.Status field. Set by an Executor on
+// the Message returned for a tool call; read by the chat loop when it
+// publishes the EventTypeToolEnd event so consumers (CLI tool log, WebUI
+// status badges) can distinguish successful executions from failures.
+//
+// An empty Status (zero value) is treated as ToolStatusCompleted by the
+// chat loop — Executors that don't tag results keep the historical
+// "always completed" behavior.
+const (
+	// ToolStatusCompleted indicates the tool ran and returned a normal
+	// result. This is the default published when Status is unset.
+	ToolStatusCompleted = "completed"
+
+	// ToolStatusError indicates the tool failed before or during execution.
+	// Reasons include: argument parse errors, circuit-breaker rejections,
+	// pre-execute hook rejections, handler errors, and execution timeouts.
+	// The error detail is in Message.Content.
+	ToolStatusError = "error"
+)
+
 // Message represents a single message in a conversation.
 type Message struct {
 	Role             string            `json:"role"`
@@ -13,6 +33,13 @@ type Message struct {
 	ToolCalls        []ToolCall        `json:"tool_calls,omitempty"`
 	Images           []ImageData       `json:"images,omitempty"`
 	Meta             map[string]string `json:"-"`
+
+	// Status, when set on a Message returned from a ToolExecutor, indicates
+	// how a tool call resolved. Use the ToolStatus* constants. The chat loop
+	// reads this when publishing EventTypeToolEnd so consumers can render
+	// success vs error indicators. Empty defaults to ToolStatusCompleted —
+	// keeps the field opt-in for Executors that don't tag results.
+	Status string `json:"status,omitempty"`
 }
 
 // SetMeta sets a key-value pair in the Meta map, initializing it if nil.

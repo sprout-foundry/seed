@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -394,6 +395,77 @@ func TestRegistry_ErrorPathDoesNotPublishToolEvents(t *testing.T) {
 	reg.Execute(context.Background(), []ToolCall{{ID: "c1", Type: "function", Function: ToolCallFunction{Name: "err_evt", Arguments: "{}"}}})
 	if events := ep.GetEvents(); len(events) != 0 {
 		t.Fatalf("expected 0 events on error path, got %d: %v", len(events), events)
+	}
+}
+
+// --- Message.Status round-trip from Executor through to the chat loop ---
+//
+// These tests pin the contract that ToolRegistry sets Message.Status on the
+// returned Message so the chat loop can publish the correct status field on
+// tool_end events. ToolStatusCompleted on success, ToolStatusError on every
+// failure mode (parse, circuit breaker, pre-execute hook, handler error,
+// execution timeout).
+
+func TestRegistry_Status_SuccessIsCompleted(t *testing.T) {
+	reg := NewToolRegistry(ToolRegistryOptions{})
+	reg.Register(ToolConfig{Name: "ok", Handler: dummyHandler})
+	out := reg.Execute(context.Background(), []ToolCall{
+		{ID: "c1", Type: "function", Function: ToolCallFunction{Name: "ok", Arguments: "{}"}},
+	})
+	if len(out) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(out))
+	}
+	if out[0].Status != ToolStatusCompleted {
+		t.Errorf("expected Status=%q on success, got %q", ToolStatusCompleted, out[0].Status)
+	}
+}
+
+func TestRegistry_Status_HandlerErrorIsError(t *testing.T) {
+	reg := NewToolRegistry(ToolRegistryOptions{})
+	reg.Register(ToolConfig{
+		Name: "boom",
+		Handler: func(ctx context.Context, args map[string]interface{}) (string, error) {
+			return "", errors.New("boom")
+		},
+	})
+	out := reg.Execute(context.Background(), []ToolCall{
+		{ID: "c1", Type: "function", Function: ToolCallFunction{Name: "boom", Arguments: "{}"}},
+	})
+	if out[0].Status != ToolStatusError {
+		t.Errorf("expected Status=%q on handler error, got %q", ToolStatusError, out[0].Status)
+	}
+}
+
+func TestRegistry_Status_ParseErrorIsError(t *testing.T) {
+	reg := NewToolRegistry(ToolRegistryOptions{})
+	reg.Register(ToolConfig{
+		Name:    "needs_args",
+		Handler: dummyHandler,
+		Parameters: []ParameterConfig{
+			{Name: "required_field", Type: "string", Required: true},
+		},
+	})
+	out := reg.Execute(context.Background(), []ToolCall{
+		// Arguments deliberately missing the required field.
+		{ID: "c1", Type: "function", Function: ToolCallFunction{Name: "needs_args", Arguments: "{}"}},
+	})
+	if out[0].Status != ToolStatusError {
+		t.Errorf("expected Status=%q on parse/validation error, got %q (content=%q)", ToolStatusError, out[0].Status, out[0].Content)
+	}
+}
+
+func TestRegistry_Status_PreExecuteHookRejectIsError(t *testing.T) {
+	reg := NewToolRegistry(ToolRegistryOptions{
+		PreExecuteHook: func(name string, args map[string]interface{}) error {
+			return errors.New("blocked by policy")
+		},
+	})
+	reg.Register(ToolConfig{Name: "blocked", Handler: dummyHandler})
+	out := reg.Execute(context.Background(), []ToolCall{
+		{ID: "c1", Type: "function", Function: ToolCallFunction{Name: "blocked", Arguments: "{}"}},
+	})
+	if out[0].Status != ToolStatusError {
+		t.Errorf("expected Status=%q on pre-execute hook reject, got %q", ToolStatusError, out[0].Status)
 	}
 }
 

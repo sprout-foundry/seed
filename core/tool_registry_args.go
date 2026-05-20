@@ -231,12 +231,30 @@ func truncateResult(result string, maxSize int) string {
 	return result[:maxSize] + fmt.Sprintf("\n... (truncated, %d chars total)", len(result))
 }
 
-// ToolResultMessage creates a Message for a tool result.
+// ToolResultMessage creates a Message for a successful tool result.
+// The returned Message has Status set to ToolStatusCompleted so the chat
+// loop's tool_end event carries the right status without callers having
+// to remember to tag it.
 func ToolResultMessage(toolCallID, toolName string, content string) Message {
 	return Message{
 		Role:       "tool",
 		Content:    content,
 		ToolCallID: toolCallID,
+		Status:     ToolStatusCompleted,
+	}
+}
+
+// ToolErrorMessage creates a Message for a failed tool result. Status is
+// set to ToolStatusError so the chat loop's tool_end event publishes the
+// "error" status and consumers (CLI, WebUI) can render error indicators.
+// errMsg becomes the Message Content — keep it concise and human-readable;
+// the LLM sees it as the tool's output.
+func ToolErrorMessage(toolCallID, toolName string, errMsg string) Message {
+	return Message{
+		Role:       "tool",
+		Content:    errMsg,
+		ToolCallID: toolCallID,
+		Status:     ToolStatusError,
 	}
 }
 

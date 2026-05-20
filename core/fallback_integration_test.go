@@ -221,3 +221,92 @@ func TestFallback_FunctionNamePattern(t *testing.T) {
 		t.Error("expected tool_start event from name:pattern fallback")
 	}
 }
+
+// TestChatLoop_ToolEndStatusFromMessage pins the contract that the chat loop
+// reads Message.Status when publishing tool_end events. Executors set Status
+// on the returned Message (ToolRegistry does this via the
+// ToolResultMessage / ToolErrorMessage helpers); the loop forwards that
+// value to consumers so CLI / WebUI status badges render correctly.
+//
+// An empty Status defaults to "completed" — preserves historical behavior
+// for executors that don't tag results.
+func TestChatLoop_ToolEndStatusFromMessage(t *testing.T) {
+	tests := []struct {
+		name         string
+		execResult   Message
+		wantPublished string
+	}{
+		{
+			name:          "explicit success → completed",
+			execResult:    Message{Role: "tool", Content: "ok", Status: ToolStatusCompleted},
+			wantPublished: ToolStatusCompleted,
+		},
+		{
+			name:          "explicit error → error",
+			execResult:    Message{Role: "tool", Content: "boom", Status: ToolStatusError},
+			wantPublished: ToolStatusError,
+		},
+		{
+			name:          "unset status defaults to completed",
+			execResult:    Message{Role: "tool", Content: "ok"},
+			wantPublished: ToolStatusCompleted,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			content := "name: t\narguments: {}"
+			p := &testMP{
+				responses: []*ChatResponse{
+					{Choices: []ChatChoice{{Message: Message{Role: "assistant", Content: content}}}, Usage: ChatUsage{TotalTokens: 5}},
+					{Choices: []ChatChoice{{Message: Message{Role: "assistant", Content: "Done."}}}, Usage: ChatUsage{TotalTokens: 5}},
+				},
+			}
+			result := tc.execResult
+			result.ToolCallID = "" // chat loop assigns IDs; mock doesn't
+			e := &mockExecutor{
+				tools:   []Tool{{Function: ToolFunction{Name: "t", Description: "t", Parameters: ToolParameters{Type: "object"}}}},
+				results: []Message{result},
+			}
+			bus := events.NewEventBus()
+			ch := bus.Subscribe(tc.name)
+			a, _ := NewAgent(Options{Provider: p, Executor: e, EventPublisher: bus})
+			if _, err := a.Run(context.Background(), "go"); err != nil {
+				t.Fatal(err)
+			}
+
+			// Find the tool_end event and pull out its status field.
+			evts := drainEvents(ch)
+			var gotStatus string
+			var found bool
+			for _, ev := range evts {
+				if ev.Type != events.EventTypeToolEnd {
+					continue
+				}
+				payload, ok := ev.Data.(map[string]interface{})
+				if !ok {
+					continue
+				}
+				s, _ := payload["status"].(string)
+				gotStatus = s
+				found = true
+				break
+			}
+			if !found {
+				t.Fatalf("expected at least one tool_end event, got none in %v", eventTypeNames(evts))
+			}
+			if gotStatus != tc.wantPublished {
+				t.Errorf("tool_end status = %q, want %q", gotStatus, tc.wantPublished)
+			}
+		})
+	}
+}
+
+// eventTypeNames is a tiny diagnostic helper for tool_end search failures.
+func eventTypeNames(evts []events.UIEvent) []string {
+	out := make([]string, 0, len(evts))
+	for _, e := range evts {
+		out = append(out, e.Type)
+	}
+	return out
+}
