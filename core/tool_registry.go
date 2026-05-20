@@ -279,12 +279,12 @@ func (r *ToolRegistry) executeSingle(ctx context.Context, call ToolCall, callIdx
 	start := time.Now()
 	name := r.resolveName(stripChannelSuffix(call.Function.Name))
 	args, parseErr := parseAndValidateArgs(r, name, call.Function.Name, call.Function.Arguments)
-	r.eventPublisher.Publish(EventTypeToolStart, map[string]any{
-		"tool_name":    name,
-		"tool_call_id": call.ID,
-		"arguments":    call.Function.Arguments,
-		"tool_index":   callIdx,
-	})
+	// Note: tool_start and tool_end events are published by the chat loop
+	// (see conversation.go around executor.Execute), not here. Publishing
+	// in both places produced duplicate render events in consumers. The
+	// chat-loop publish is the API-level contract — it fires for any
+	// Executor implementation, not just ToolRegistry.
+	_ = callIdx
 	if parseErr != nil {
 		r.recordEnd(name, call.ID, "error", fmt.Sprintf("Failed to parse arguments: %s", parseErr), start)
 		return ToolResultMessage(call.ID, name, fmt.Sprintf("Failed to parse arguments: %s", parseErr))
@@ -359,16 +359,21 @@ func (r *ToolRegistry) runWithTimeout(ctx context.Context, name string, args map
 	}
 }
 
-// recordEnd publishes a tool_end event with timing info.
+// recordEnd is retained for internal bookkeeping but no longer publishes a
+// tool_end event — the chat loop (see conversation.go around executor.Execute)
+// publishes a single tool_end per call after the executor returns, which is
+// the API-level contract that fires for any Executor implementation. Keeping
+// the publish here too would produce duplicate render events in consumers.
+//
+// Status/result info that this function captured is now represented in the
+// returned Message's Content (see executeSingle), which the chat loop's
+// tool_end event includes as the "result" field.
 func (r *ToolRegistry) recordEnd(name, callID, status, result string, start time.Time) {
-	duration := time.Since(start).Milliseconds()
-	r.eventPublisher.Publish(EventTypeToolEnd, map[string]any{
-		"tool_call_id": callID,
-		"tool_name":    name,
-		"status":       status,
-		"result":       result,
-		"duration_ms":  duration,
-	})
+	_ = name
+	_ = callID
+	_ = status
+	_ = result
+	_ = start
 }
 
 // getCircuitBreaker returns the circuit breaker for a given tool, or nil

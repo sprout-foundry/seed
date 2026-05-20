@@ -365,33 +365,24 @@ func TestHooks(t *testing.T) {
 
 // --- Events ---
 
-func TestEvents(t *testing.T) {
+// ToolRegistry no longer publishes tool_start / tool_end events directly —
+// those are published by the chat loop (see conversation.go around
+// executor.Execute) so the API contract holds for any Executor
+// implementation, not just ToolRegistry. The integration tests under
+// TestFallback_* exercise the end-to-end event path through Agent.Run.
+
+func TestRegistry_DoesNotPublishToolEvents(t *testing.T) {
 	ep := &mockEventPublisher{}
 	reg := NewToolRegistry(ToolRegistryOptions{EventPublisher: ep})
 	reg.Register(ToolConfig{Name: "evt_test", Handler: dummyHandler})
 	calls := []ToolCall{{ID: "c1", Type: "function", Function: ToolCallFunction{Name: "evt_test", Arguments: "{}"}}}
 	reg.Execute(context.Background(), calls)
-	events := ep.GetEvents()
-	if len(events) != 2 {
-		t.Fatalf("expected 2 events, got %d", len(events))
-	}
-	if events[0].eventType != EventTypeToolStart {
-		t.Errorf("expected start, got %s", events[0].eventType)
-	}
-	if events[1].eventType != EventTypeToolEnd {
-		t.Errorf("expected end, got %s", events[1].eventType)
-	}
-	sd := events[0].data.(map[string]any)
-	if sd["tool_name"] != "evt_test" || sd["tool_call_id"] != "c1" {
-		t.Errorf("unexpected start data: %v", sd)
-	}
-	ed := events[1].data.(map[string]any)
-	if ed["status"] != "success" {
-		t.Errorf("expected success, got %v", ed["status"])
+	if events := ep.GetEvents(); len(events) != 0 {
+		t.Fatalf("expected 0 events (registry should not publish tool_start/tool_end), got %d: %v", len(events), events)
 	}
 }
 
-func TestEventErrorStatus(t *testing.T) {
+func TestRegistry_ErrorPathDoesNotPublishToolEvents(t *testing.T) {
 	ep := &mockEventPublisher{}
 	reg := NewToolRegistry(ToolRegistryOptions{EventPublisher: ep})
 	reg.Register(ToolConfig{
@@ -401,9 +392,8 @@ func TestEventErrorStatus(t *testing.T) {
 		},
 	})
 	reg.Execute(context.Background(), []ToolCall{{ID: "c1", Type: "function", Function: ToolCallFunction{Name: "err_evt", Arguments: "{}"}}})
-	ed := ep.GetEvents()[1].data.(map[string]any)
-	if ed["status"] != "error" {
-		t.Errorf("expected error status, got %v", ed["status"])
+	if events := ep.GetEvents(); len(events) != 0 {
+		t.Fatalf("expected 0 events on error path, got %d: %v", len(events), events)
 	}
 }
 
