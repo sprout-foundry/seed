@@ -149,6 +149,12 @@ type Options struct {
 	// messages (e.g., from a previous query in the same session). When empty,
 	// the agent starts with a blank slate.
 	InitialMessages []Message
+
+	// InitialCheckpoints seeds the agent's checkpoint state with pre-existing
+	// turn checkpoints (e.g., from a previous session restore). When non-empty,
+	// these checkpoints are used by BuildCheckpointCompactedMessages in
+	// prepareMessages to compact the conversation before sending to the provider.
+	InitialCheckpoints []TurnCheckpoint
 	// DisableFallbackParser disables the fallback tool-call parser. When
 	// disabled, malformed tool calls in model responses will not be recovered.
 	// Default (false): fallback parser is enabled when tools are configured.
@@ -274,6 +280,9 @@ func NewAgent(opts Options) (*Agent, error) {
 	st := NewState()
 	if len(opts.InitialMessages) > 0 {
 		st.SetMessages(opts.InitialMessages)
+	}
+	if len(opts.InitialCheckpoints) > 0 {
+		st.SetCheckpoints(opts.InitialCheckpoints)
 	}
 
 	interruptCtx, interruptCancel := context.WithCancel(context.Background())
