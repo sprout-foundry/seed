@@ -1196,3 +1196,272 @@ func TestSanitizeANSI(t *testing.T) {
 		})
 	}
 }
+
+// --- prepareMessages pressure-gate tests ---
+//
+// These exercise the SP-059-followup behavior added to message_pipeline.go:
+// below CompactionStartFraction × ContextSize, prepareMessages keeps the raw
+// conversation intact; above it, the gentle transformations
+// (BuildCheckpointCompactedMessages + observation masking) apply.
+
+// pressureGateFixture wires up an Agent with a controllable token estimate.
+// tokenCount drives EstimateTokens (mocked to return a fixed value), so the
+// gate can be exercised deterministically by adjusting the (ctxSize,
+// tokenCount) pair relative to startFraction.
+func pressureGateFixture(t *testing.T, ctxSize, tokenCount int, startFraction float64) (*Agent, *ConversationHandler) {
+	t.Helper()
+	provider := &mockProvider{
+		info:       ProviderInfo{ContextSize: ctxSize},
+		tokenCount: tokenCount,
+	}
+	a, err := NewAgent(Options{
+		Provider:                provider,
+		Executor:                &mockExecutor{},
+		SystemPrompt:            "sys",
+		CompactionStartFraction: startFraction,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return a, newConversationHandler(a)
+}
+
+// TestPrepareMessages_BelowPressure_KeepsCheckpointedTurnsRaw confirms that
+// when raw history sits comfortably below the start-gate fraction, the
+// checkpoint substitution pass is skipped — the raw assistant/tool messages
+// stream through to the provider so the model can refer back to its prior
+// tool outputs.
+func TestPrepareMessages_BelowPressure_KeepsCheckpointedTurnsRaw(t *testing.T) {
+	// ContextSize=10000, tokenCount=100 → ~1% pressure, well below 0.5 gate.
+	a, ch := pressureGateFixture(t, 10000, 100, 0.5)
+
+	a.State().SetMessages([]Message{
+		{Role: "user", Content: "look at f.go"},
+		{Role: "assistant", ToolCalls: []ToolCall{
+			{ID: "c1", Function: ToolCallFunction{Name: "read_file", Arguments: `{"path":"f.go"}`}},
+		}},
+		{Role: "tool", ToolCallID: "c1", Content: "package main\nfunc Foo() {}\n"},
+		{Role: "assistant", Content: "I see Foo"},
+	})
+	a.State().SetCheckpoints([]TurnCheckpoint{{
+		StartIndex: 0,
+		EndIndex:   3,
+		Summary:    "saw Foo",
+	}})
+
+	got := ch.prepareMessages()
+
+	// System prompt + 4 raw history messages = 5 (no substitution).
+	if len(got) != 5 {
+		t.Fatalf("expected 5 messages (raw history kept), got %d: %v", len(got), debugMessages(got))
+	}
+	// The original tool-result body must still be present verbatim.
+	foundFooContent := false
+	for _, m := range got {
+		if m.Role == "tool" && strings.Contains(m.Content, "func Foo()") {
+			foundFooContent = true
+			break
+		}
+	}
+	if !foundFooContent {
+		t.Errorf("expected raw tool-result body in prepared messages, got: %v", debugMessages(got))
+	}
+	// The summary text must NOT have replaced anything.
+	for _, m := range got {
+		if m.Content == "saw Foo" {
+			t.Errorf("checkpoint summary should not appear when below pressure: %v", debugMessages(got))
+		}
+	}
+}
+
+// TestPrepareMessages_AbovePressure_SubstitutesCheckpoints confirms the
+// gentle path fires when raw history exceeds the start-gate fraction. The
+// checkpointed turn collapses to its summary; the system prompt and any
+// post-checkpoint messages survive.
+func TestPrepareMessages_AbovePressure_SubstitutesCheckpoints(t *testing.T) {
+	// ContextSize=1000, tokenCount=900 → 90% pressure, above 0.5 gate.
+	a, ch := pressureGateFixture(t, 1000, 900, 0.5)
+
+	a.State().SetMessages([]Message{
+		{Role: "user", Content: "look at f.go"},
+		{Role: "assistant", ToolCalls: []ToolCall{
+			{ID: "c1", Function: ToolCallFunction{Name: "read_file", Arguments: `{"path":"f.go"}`}},
+		}},
+		{Role: "tool", ToolCallID: "c1", Content: "package main\nfunc Foo() {}\n"},
+		{Role: "assistant", Content: "I see Foo"},
+	})
+	a.State().SetCheckpoints([]TurnCheckpoint{{
+		StartIndex: 0,
+		EndIndex:   3,
+		Summary:    "saw Foo",
+	}})
+
+	got := ch.prepareMessages()
+
+	// Summary should have replaced the four-message turn; system + summary = 2.
+	if len(got) != 2 {
+		t.Fatalf("expected 2 messages (system + 1 summary), got %d: %v", len(got), debugMessages(got))
+	}
+	if got[1].Content != "saw Foo" {
+		t.Errorf("expected checkpoint summary as second message, got %q", got[1].Content)
+	}
+}
+
+// TestPrepareMessages_ContextSizeZero_KeepsRaw guards the edge case where
+// the provider doesn't report a context size: the gate must collapse to
+// "no pressure" rather than guessing — guessing wrong would silently
+// recreate the regression.
+func TestPrepareMessages_ContextSizeZero_KeepsRaw(t *testing.T) {
+	// ContextSize=0 → pressure undefined; tokenCount irrelevant.
+	a, ch := pressureGateFixture(t, 0, 99999, 0.5)
+
+	a.State().SetMessages([]Message{
+		{Role: "user", Content: "hi"},
+		{Role: "assistant", Content: "hello"},
+	})
+	a.State().SetCheckpoints([]TurnCheckpoint{{
+		StartIndex: 0,
+		EndIndex:   1,
+		Summary:    "summary",
+	}})
+
+	got := ch.prepareMessages()
+
+	// system + 2 raw — checkpoint not consumed.
+	if len(got) != 3 {
+		t.Errorf("expected 3 messages with ContextSize=0 (no pressure), got %d", len(got))
+	}
+}
+
+// TestPrepareMessages_CustomStartFractionRespected confirms the option is
+// plumbed all the way through — setting a high start fraction means even
+// very compressed history doesn't trip the gate, and a low one trips it
+// easily.
+func TestPrepareMessages_CustomStartFractionRespected(t *testing.T) {
+	t.Run("high start fraction keeps raw", func(t *testing.T) {
+		// 90% pressure, start gate at 0.95 → not under pressure.
+		a, ch := pressureGateFixture(t, 1000, 900, 0.95)
+		a.State().SetMessages([]Message{
+			{Role: "user", Content: "u"},
+			{Role: "assistant", Content: "a"},
+		})
+		a.State().SetCheckpoints([]TurnCheckpoint{{StartIndex: 0, EndIndex: 1, Summary: "s"}})
+		got := ch.prepareMessages()
+		if len(got) != 3 {
+			t.Errorf("expected raw (3 msgs) with start fraction 0.95 at 90%% pressure, got %d", len(got))
+		}
+	})
+
+	t.Run("low start fraction substitutes", func(t *testing.T) {
+		// 10% pressure, start gate at 0.05 → above pressure.
+		a, ch := pressureGateFixture(t, 1000, 100, 0.05)
+		a.State().SetMessages([]Message{
+			{Role: "user", Content: "u"},
+			{Role: "assistant", Content: "a"},
+		})
+		a.State().SetCheckpoints([]TurnCheckpoint{{StartIndex: 0, EndIndex: 1, Summary: "s"}})
+		got := ch.prepareMessages()
+		if len(got) != 2 {
+			t.Errorf("expected substitution (2 msgs) with start fraction 0.05 at 10%% pressure, got %d", len(got))
+		}
+		if got[1].Content != "s" {
+			t.Errorf("expected summary in slot 1, got %q", got[1].Content)
+		}
+	})
+}
+
+// TestPrepareMessages_BelowPressure_DoesNotMaskBigToolResults checks the
+// parallel gate for the optimizer's observation-masking pass: a large
+// consumed tool result must pass through when pressure is low.
+func TestPrepareMessages_BelowPressure_DoesNotMaskBigToolResults(t *testing.T) {
+	a, ch := pressureGateFixture(t, 10000, 100, 0.5)
+	// Plug in an optimizer so the mask path is reachable.
+	a.optimizer = NewConversationOptimizer(ConversationOptimizerOptions{
+		Enabled:     true,
+		KnownToolFn: func(name string) ToolCategory { return ToolCategoryFileRead },
+	})
+
+	bigBody := strings.Repeat("y", observationMaskMaxChars*2)
+	// Eight tool-call/result pairs followed by an assistant message — the
+	// first three would normally be masked (keepLast=5).
+	msgs := []Message{{Role: "user", Content: "u"}}
+	for i := 0; i < 8; i++ {
+		id := fmt.Sprintf("c%d", i)
+		msgs = append(msgs,
+			Message{Role: "assistant", ToolCalls: []ToolCall{
+				{ID: id, Function: ToolCallFunction{Name: "read_file", Arguments: fmt.Sprintf(`{"path":"f%d"}`, i)}},
+			}},
+			Message{Role: "tool", ToolCallID: id, Content: bigBody},
+		)
+	}
+	msgs = append(msgs, Message{Role: "assistant", Content: "done"})
+	a.State().SetMessages(msgs)
+
+	got := ch.prepareMessages()
+
+	// Every tool result should still be its full original size — no
+	// "[tool result …]" placeholders.
+	for _, m := range got {
+		if m.Role != "tool" {
+			continue
+		}
+		if strings.Contains(m.Content, "[PREVIOUS RESULT:") {
+			t.Errorf("tool result was masked below pressure: %q", truncateForLog(m.Content))
+		}
+		if len(m.Content) != len(bigBody) {
+			t.Errorf("tool result was truncated below pressure: got %d chars, want %d", len(m.Content), len(bigBody))
+		}
+	}
+}
+
+// TestPrepareMessages_AbovePressure_MasksBigToolResults confirms the mask
+// pass still fires when pressure justifies it.
+func TestPrepareMessages_AbovePressure_MasksBigToolResults(t *testing.T) {
+	a, ch := pressureGateFixture(t, 1000, 900, 0.5)
+	a.optimizer = NewConversationOptimizer(ConversationOptimizerOptions{
+		Enabled:     true,
+		KnownToolFn: func(name string) ToolCategory { return ToolCategoryFileRead },
+	})
+
+	bigBody := strings.Repeat("z", observationMaskMaxChars*2)
+	msgs := []Message{{Role: "user", Content: "u"}}
+	for i := 0; i < 8; i++ {
+		id := fmt.Sprintf("c%d", i)
+		msgs = append(msgs,
+			Message{Role: "assistant", ToolCalls: []ToolCall{
+				{ID: id, Function: ToolCallFunction{Name: "read_file", Arguments: fmt.Sprintf(`{"path":"f%d"}`, i)}},
+			}},
+			Message{Role: "tool", ToolCallID: id, Content: bigBody},
+		)
+	}
+	msgs = append(msgs, Message{Role: "assistant", Content: "done"})
+	a.State().SetMessages(msgs)
+
+	got := ch.prepareMessages()
+
+	// At least some tool results should be masked (the oldest 3 outside the
+	// observationMaskKeepLast=5 window).
+	masked := 0
+	for _, m := range got {
+		if m.Role == "tool" && strings.Contains(m.Content, "[PREVIOUS RESULT:") {
+			masked++
+		}
+	}
+	if masked == 0 {
+		t.Errorf("expected at least one masked tool result under pressure; got 0. Prepared: %v", debugMessages(got))
+	}
+}
+
+// debugMessages returns a compact representation of a message slice for
+// failure messages without dumping multi-kilobyte tool bodies.
+func debugMessages(ms []Message) []string {
+	out := make([]string, 0, len(ms))
+	for _, m := range ms {
+		c := m.Content
+		if len(c) > 40 {
+			c = c[:37] + "..."
+		}
+		out = append(out, fmt.Sprintf("{%s:%q}", m.Role, c))
+	}
+	return out
+}

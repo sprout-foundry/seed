@@ -767,3 +767,135 @@ func TestConversationOptimizer_FileReadCap(t *testing.T) {
 		t.Errorf("expected %d replaced reads, got %d", maxFileReadRecords+2, replaced)
 	}
 }
+
+// --- OptimizeConversationWithOptions: gate on observation masking ---
+
+// optimizerMaskFixture builds a message list with N+1 large consumed tool
+// results: N old results that the masking pass would replace, plus a final
+// result inside observationMaskKeepLast that should always survive. Returns
+// the list and the index of the first old result for assertion convenience.
+func optimizerMaskFixture(t *testing.T) ([]Message, int) {
+	t.Helper()
+
+	bigBody := strings.Repeat("x", observationMaskMaxChars*2)
+	msgs := []Message{
+		{Role: "user", Content: "do many things"},
+	}
+	// Eight tool-call/tool-result pairs followed by a "consuming" assistant
+	// message at the end. With observationMaskKeepLast=5, the first three
+	// tool results are eligible to be masked when the mask pass runs.
+	const pairs = 8
+	for i := 0; i < pairs; i++ {
+		callID := fmt.Sprintf("c%d", i)
+		msgs = append(msgs,
+			Message{Role: "assistant", ToolCalls: []ToolCall{
+				{ID: callID, Function: ToolCallFunction{Name: "read_file", Arguments: fmt.Sprintf(`{"path":"f%d.txt"}`, i)}},
+			}},
+			Message{Role: "tool", ToolCallID: callID, Content: bigBody},
+		)
+	}
+	// Trailing assistant message marks the prior results as "consumed".
+	msgs = append(msgs, Message{Role: "assistant", Content: "ok"})
+
+	// First tool-result index after the user prompt is 2 (0=user, 1=assistant).
+	return msgs, 2
+}
+
+// TestOptimizeConversationWithOptions_MaskOff_KeepsBigConsumedResults verifies
+// that calling the new entry point with MaskConsumedToolResults=false leaves
+// the raw tool-result bodies in place. This is the "below pressure" path —
+// without it the gate in prepareMessages would do nothing.
+func TestOptimizeConversationWithOptions_MaskOff_KeepsBigConsumedResults(t *testing.T) {
+	opt := NewConversationOptimizer(ConversationOptimizerOptions{
+		Enabled:     true,
+		KnownToolFn: func(name string) ToolCategory { return ToolCategoryFileRead },
+	})
+
+	msgs, firstToolIdx := optimizerMaskFixture(t)
+	originalLen := len(msgs[firstToolIdx].Content)
+
+	result := opt.OptimizeConversationWithOptions(msgs, OptimizeOptions{MaskConsumedToolResults: false})
+
+	// Every tool-result content should be unchanged (no placeholder).
+	for i, m := range result {
+		if m.Role != "tool" {
+			continue
+		}
+		if strings.Contains(m.Content, "[PREVIOUS RESULT:") || strings.Contains(m.Content, "consumed") {
+			t.Errorf("message[%d] looks masked when MaskConsumedToolResults=false: %q", i, m.Content)
+		}
+		if len(m.Content) != originalLen {
+			t.Errorf("message[%d] content was modified: got %d chars, want %d", i, len(m.Content), originalLen)
+		}
+	}
+}
+
+// TestOptimizeConversationWithOptions_MaskOn_ReplacesOldConsumedResults verifies
+// that the new entry point with MaskConsumedToolResults=true preserves the
+// historical behavior (old big consumed tool results get placeholders). The
+// last observationMaskKeepLast results must survive even with the mask on.
+func TestOptimizeConversationWithOptions_MaskOn_ReplacesOldConsumedResults(t *testing.T) {
+	opt := NewConversationOptimizer(ConversationOptimizerOptions{
+		Enabled:     true,
+		KnownToolFn: func(name string) ToolCategory { return ToolCategoryFileRead },
+	})
+
+	msgs, _ := optimizerMaskFixture(t)
+
+	result := opt.OptimizeConversationWithOptions(msgs, OptimizeOptions{MaskConsumedToolResults: true})
+
+	// Collect tool-result indices and bodies, in order.
+	var bodies []string
+	for _, m := range result {
+		if m.Role == "tool" {
+			bodies = append(bodies, m.Content)
+		}
+	}
+	if len(bodies) != 8 {
+		t.Fatalf("expected 8 tool results, got %d", len(bodies))
+	}
+
+	// First 3 (8 - observationMaskKeepLast=5) should be placeholders;
+	// last 5 should keep their original size.
+	for i := 0; i < 3; i++ {
+		if !strings.Contains(bodies[i], "[PREVIOUS RESULT:") {
+			t.Errorf("tool result %d expected to be masked, got: %q", i, truncateForLog(bodies[i]))
+		}
+	}
+	for i := 3; i < 8; i++ {
+		if strings.Contains(bodies[i], "[PREVIOUS RESULT:") {
+			t.Errorf("tool result %d (in keep-last window) should not be masked: %q", i, truncateForLog(bodies[i]))
+		}
+	}
+}
+
+// TestOptimizeConversation_LegacyEntryPointMasksByDefault confirms the
+// backward-compatible alias still applies observation masking — important
+// for callers that haven't migrated to OptimizeConversationWithOptions.
+func TestOptimizeConversation_LegacyEntryPointMasksByDefault(t *testing.T) {
+	opt := NewConversationOptimizer(ConversationOptimizerOptions{
+		Enabled:     true,
+		KnownToolFn: func(name string) ToolCategory { return ToolCategoryFileRead },
+	})
+
+	msgs, _ := optimizerMaskFixture(t)
+
+	result := opt.OptimizeConversation(msgs)
+
+	masked := 0
+	for _, m := range result {
+		if m.Role == "tool" && strings.Contains(m.Content, "[PREVIOUS RESULT:") {
+			masked++
+		}
+	}
+	if masked == 0 {
+		t.Errorf("legacy OptimizeConversation should mask consumed tool results; none were masked")
+	}
+}
+
+func truncateForLog(s string) string {
+	if len(s) > 80 {
+		return s[:77] + "..."
+	}
+	return s
+}

@@ -658,6 +658,18 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 			ch.agent.state.AddMessage(r)
 		}
 		ch.agent.debugLog("[ok] Added %d tool results\n", len(results))
+
+		// Check for injected user input after tool execution. Without this
+		// check, a steer message sits in inputInjectionChan until the model
+		// eventually returns a response with no tool calls — which may never
+		// happen during long agentic runs. Injecting here ensures the user's
+		// message is picked up at the next loop iteration boundary.
+		select {
+		case injectedInput := <-ch.agent.inputInjectionChan:
+			ch.agent.state.AddMessage(Message{Role: "user", Content: injectedInput})
+			ch.agent.debugLog("[inject] Received injected input after tool execution: %s\n", injectedInput)
+		default:
+		}
 	}
 
 	if !completed && ch.agent.maxIterations > 0 {

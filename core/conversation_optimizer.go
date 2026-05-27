@@ -66,11 +66,37 @@ func NewConversationOptimizer(opts ConversationOptimizerOptions) *ConversationOp
 	}
 }
 
+// OptimizeOptions controls which optimization passes
+// OptimizeConversationWithOptions performs. The zero value disables the
+// "mask consumed tool results" pass — callers that need the legacy behavior
+// (mask always on) should use OptimizeConversation instead.
+type OptimizeOptions struct {
+	// MaskConsumedToolResults, when true, replaces large already-consumed
+	// tool results with compact placeholders. When false, large tool
+	// results pass through verbatim — useful below context-pressure
+	// thresholds where the model benefits from seeing the full output it
+	// previously read instead of having to re-read.
+	MaskConsumedToolResults bool
+}
+
 // OptimizeConversation processes the message list, replacing redundant file reads
 // and shell command outputs with compact placeholders, then masking large
 // consumed tool results to bound context bloat from chatty tools. Returns the
 // (possibly modified) message slice.
+//
+// Equivalent to OptimizeConversationWithOptions(messages,
+// OptimizeOptions{MaskConsumedToolResults: true}); kept for backward
+// compatibility with callers that haven't migrated.
 func (opt *ConversationOptimizer) OptimizeConversation(messages []Message) []Message {
+	return opt.OptimizeConversationWithOptions(messages, OptimizeOptions{MaskConsumedToolResults: true})
+}
+
+// OptimizeConversationWithOptions is OptimizeConversation with explicit per-pass
+// gates. The deduplication pass (redundant file reads / shell command outputs)
+// always runs; only the observation-masking pass is gated, because dedup is
+// always strictly beneficial while masking trades information density for
+// token savings.
+func (opt *ConversationOptimizer) OptimizeConversationWithOptions(messages []Message, opts OptimizeOptions) []Message {
 	if !opt.enabled || opt.knownToolFn == nil {
 		return messages
 	}
@@ -207,15 +233,21 @@ func (opt *ConversationOptimizer) OptimizeConversation(messages []Message) []Mes
 	// "consumed" once the model has produced a subsequent assistant message
 	// after seeing it. The last observationMaskKeepLast results stay unmasked
 	// so recent context survives.
-	messages = maskConsumedToolResults(messages, func(callID string) string {
-		if m, ok := callMeta[callID]; ok && m.toolName != "" {
-			return m.toolName
-		}
-		if callID != "" {
-			return callID
-		}
-		return "tool"
-	})
+	//
+	// Gated on opts.MaskConsumedToolResults: below the caller's context
+	// pressure threshold, raw tool outputs flow through so the model can
+	// refer back to them instead of re-reading.
+	if opts.MaskConsumedToolResults {
+		messages = maskConsumedToolResults(messages, func(callID string) string {
+			if m, ok := callMeta[callID]; ok && m.toolName != "" {
+				return m.toolName
+			}
+			if callID != "" {
+				return callID
+			}
+			return "tool"
+		})
+	}
 
 	return messages
 }

@@ -202,9 +202,9 @@ func TestE2E_ToolEndEvent_MissingResult_DefensivePublish(t *testing.T) {
 		t.Errorf("expected call_1 status='completed', got %v", endByID["call_1"]["status"])
 	}
 
-	// call_2 should be failed with error message (defensive publish)
-	if endByID["call_2"]["status"] != "failed" {
-		t.Errorf("expected call_2 status='failed', got %v", endByID["call_2"]["status"])
+	// call_2 should have error status (defensive publish for missing result)
+	if endByID["call_2"]["status"] != core.ToolStatusError {
+		t.Errorf("expected call_2 status=%q, got %v", core.ToolStatusError, endByID["call_2"]["status"])
 	}
 	if endByID["call_2"]["error"] == nil || endByID["call_2"]["error"] == "" {
 		t.Error("expected call_2 to have an error message")

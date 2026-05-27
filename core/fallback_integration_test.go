@@ -232,8 +232,8 @@ func TestFallback_FunctionNamePattern(t *testing.T) {
 // for executors that don't tag results.
 func TestChatLoop_ToolEndStatusFromMessage(t *testing.T) {
 	tests := []struct {
-		name         string
-		execResult   Message
+		name          string
+		execResult    Message
 		wantPublished string
 	}{
 		{

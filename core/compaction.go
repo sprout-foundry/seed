@@ -16,6 +16,16 @@ const (
 	// the trigger must sit below 1.0 to give the loop room to react.
 	defaultCompactionTriggerFraction = 0.85
 
+	// defaultCompactionStartFraction is the share of the context window below
+	// which prepareMessages keeps the conversation raw — no checkpoint
+	// substitution, no observation masking. Above this fraction but below
+	// defaultCompactionTriggerFraction, the gentle transformations apply so
+	// the loop has room before secondary compaction (drops + truncation) has
+	// to kick in. The 0.60 default leaves ~40% headroom for fresh tool
+	// outputs while still relieving pressure earlier than the 0.85 hard
+	// trigger.
+	defaultCompactionStartFraction = 0.60
+
 	// recoveryCompactionTargetFraction is the more aggressive target used when
 	// the provider has already returned a ContextOverflowError. Compaction
 	// during a recovery retry trims further so the retried request has clear
