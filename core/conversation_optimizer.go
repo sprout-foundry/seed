@@ -311,6 +311,115 @@ func maskConsumedToolResults(messages []Message, nameFn func(callID string) stri
 	return result
 }
 
+// IterativelyMaskOldestConsumedToolResults masks already-consumed big tool
+// results one at a time, oldest first, until the estimateFn reports we're at
+// or below target. Returns the new message list, the number of results
+// actually masked, and whether we reached the target.
+//
+// This is the Phase 0b primitive — used after checkpoint
+// substitution (Phase 0a) couldn't relieve enough pressure on its own.
+// Like Phase 0a, the property is *minimum information loss*: we never blank
+// a result we don't have to. The "keep last N" window
+// (observationMaskKeepLast) is honored — the model's most-recent tool
+// outputs are never touched, even under pressure.
+//
+// callMeta should map tool-call IDs to (toolName, ...) so the placeholder
+// includes the real tool name (read_file, web_search, etc.); pass nil to
+// fall back to a generic "tool" label.
+//
+// Returns:
+//   - newMessages: copy of input with eligible results masked (returned even
+//     when applied == 0 to keep the call sites uniform)
+//   - applied: number of results actually masked
+//   - under: true if applied masks brought estimate to or below target
+func IterativelyMaskOldestConsumedToolResults(
+	messages []Message,
+	nameFn func(callID string) string,
+	target int,
+	estimateFn func([]Message) int,
+) ([]Message, int, bool) {
+	if len(messages) < 3 || target <= 0 {
+		return messages, 0, estimateFn(messages) <= target
+	}
+	if nameFn == nil {
+		nameFn = func(_ string) string { return "tool" }
+	}
+
+	// Identify the eligible-for-masking indices once, oldest first.
+	// Same rule as maskConsumedToolResults but doesn't mask — just lists.
+	eligible := eligibleConsumedToolResultIndices(messages)
+	if len(eligible) == 0 {
+		return messages, 0, estimateFn(messages) <= target
+	}
+
+	// Early exit if already under target.
+	if estimateFn(messages) <= target {
+		return messages, 0, true
+	}
+
+	// Copy-on-write: allocate once, mutate in place per step.
+	result := make([]Message, len(messages))
+	copy(result, messages)
+
+	for i, idx := range eligible {
+		content := result[idx].Content
+		if len(content) <= observationMaskMaxChars {
+			// Eligible by position but too small to bother — skip.
+			continue
+		}
+		lineCount := countLines(content)
+		rewritten := result[idx]
+		rewritten.Content = formatObservationPlaceholder(nameFn(rewritten.ToolCallID), len(content), lineCount)
+		result[idx] = rewritten
+
+		if estimateFn(result) <= target {
+			return result, i + 1, true
+		}
+	}
+
+	return result, len(eligible), false
+}
+
+// eligibleConsumedToolResultIndices returns the indices of tool-result
+// messages that observation masking is *allowed* to touch — those that sit
+// before the last assistant message AND outside the most-recent
+// observationMaskKeepLast tool-result window. Returned oldest-first so
+// callers can mask in stable progression.
+//
+// This is the shared eligibility computation used by both the bulk
+// "mask everything eligible" path (maskConsumedToolResults) and the
+// iterative path. Keeping it in one place ensures both paths agree on
+// which results are sacrosanct.
+func eligibleConsumedToolResultIndices(messages []Message) []int {
+	if len(messages) < 3 {
+		return nil
+	}
+
+	lastAssistantIndex := 0
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == "assistant" {
+			lastAssistantIndex = i
+			break
+		}
+	}
+	if lastAssistantIndex == 0 {
+		return nil
+	}
+
+	var consumed []int
+	for i := 0; i < lastAssistantIndex; i++ {
+		if messages[i].Role == "tool" {
+			consumed = append(consumed, i)
+		}
+	}
+
+	maskCount := len(consumed) - observationMaskKeepLast
+	if maskCount <= 0 {
+		return nil
+	}
+	return consumed[:maskCount]
+}
+
 // formatObservationPlaceholder builds the standard "previous result" marker.
 // Kept short so it costs nearly nothing in tokens while still telling the
 // model what was there.

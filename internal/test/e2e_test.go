@@ -3622,10 +3622,10 @@ func TestE2E_CheckpointCompaction_MultipleTurns(t *testing.T) {
 	h.Provider().AddTextResponse("Second answer to your question.")
 	h.Provider().AddTextResponse("Third answer to your question.")
 
-	// SP-059-followup: checkpoint substitution is now pressure-gated.
-	// Force the gate to trigger with a tiny ContextSize + non-trivial
-	// token estimate so this test continues to exercise its real intent
-	// (do summaries replace the right ranges?) under the new behavior.
+	// Checkpoint substitution is pressure-gated. Force the gate to trigger
+	// with a tiny ContextSize + non-trivial token estimate so this test
+	// exercises the substitution path (do summaries replace the right
+	// ranges?).
 	h.Provider().WithInfo(core.ProviderInfo{Model: "mock", ContextSize: 200})
 	h.Provider().WithTokenEstimate(200)
 	agent := h.NewAgent()
@@ -3743,9 +3743,9 @@ func TestE2E_CheckpointIndexShifting_AfterCompaction(t *testing.T) {
 	h.Provider().AddTextResponse("Fourth answer to your question.")
 	h.Provider().AddTextResponse("Fifth answer to your question.")
 
-	// SP-059-followup: checkpoint substitution is now pressure-gated.
-	// Force pressure so this test continues to exercise its real intent
-	// (do checkpoint indices remain valid across substitution passes?).
+	// Checkpoint substitution is pressure-gated. Force pressure so this
+	// test exercises its real intent (do checkpoint indices remain valid
+	// across substitution passes?).
 	h.Provider().WithInfo(core.ProviderInfo{Model: "mock", ContextSize: 200})
 	h.Provider().WithTokenEstimate(200)
 	agent := h.NewAgent()

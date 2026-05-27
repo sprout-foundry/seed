@@ -48,6 +48,13 @@ type ProviderInfo struct {
 	Model       string `json:"model"`
 	ContextSize int    `json:"context_size"`
 	HasVision   bool   `json:"has_vision"`
+	// MaxOutputTokens, when > 0, is the model's hard cap on output tokens
+	// per response. Used by the conversation loop to bound the derived
+	// max_tokens request parameter — without it, on large-context models
+	// we'd ask for ~ContextSize-input tokens of output, which providers
+	// often reject as oversized. Zero means "no hint; cap derived value
+	// at defaultMaxOutputCap instead.
+	MaxOutputTokens int `json:"max_output_tokens,omitempty"`
 }
 
 // Provider represents an LLM provider that can be used for chat completions.

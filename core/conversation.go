@@ -196,9 +196,9 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 					strategy = r.Strategy
 				}
 				// If LLM summary didn't trigger or didn't reduce enough, fall
-				// back to the rule-based pipeline.
+				// back to the progressive rule-based pipeline.
 				if roughTokens(messages) > triggerLimit {
-					cr := Compact(messages, contextSize)
+					cr := CompactWith(ch.buildCompactInputs(messages, contextSize))
 					messages = cr.Messages
 					if cr.Strategy != "none" {
 						if strategy == "none" {
@@ -210,7 +210,9 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 				}
 
 			default:
-				cr := Compact(messages, contextSize)
+				// Progressive pipeline — substitute then mask before drops.
+				// See docs/compaction.md.
+				cr := CompactWith(ch.buildCompactInputs(messages, contextSize))
 				messages = cr.Messages
 				strategy = cr.Strategy
 			}
@@ -238,17 +240,50 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 		}
 
 		// Compute max_tokens for the completion.
-		// If the caller set an explicit MaxTokens, use it. Otherwise, derive it
-		// from the model's context window minus the current prompt tokens and a
-		// safety buffer. The buffer accounts for tokenizer estimation drift between
-		// our approximation and the provider's actual tokenizer.
+		//
+		// Math:
+		//   1. If caller set an explicit MaxTokens, honor it.
+		//   2. Otherwise derive from `ContextSize - estimate - safetyBuffer`
+		//      where safetyBuffer = max(estimate * estimateErrorFraction,
+		//      minSafetyBuffer). This scales with prompt size so larger
+		//      prompts get larger absolute headroom (where they need it,
+		//      because the 4-chars-per-token estimator's error band is
+		//      proportional to prompt size).
+		//   3. Cap the derived value at MaxOutputTokens (provider-reported)
+		//      or defaultMaxOutputCap when the provider didn't report one.
+		//      Avoids "asked for 190k tokens on a 200k context with a tiny
+		//      prompt" requests that some providers reject as malformed.
+		//   4. Floor at 1 so we never send max_tokens=0 (which means
+		//      "unlimited" on some providers — wrong direction).
 		maxTokens := ch.agent.maxTokens
 		if maxTokens <= 0 && contextSize > 0 && tokenEstimate > 0 {
-			const tokenBuffer = 256
-			maxTokens = contextSize - tokenEstimate - tokenBuffer
-			if maxTokens < 1 {
-				maxTokens = 1
+			const (
+				estimateErrorFraction = 0.10 // assume tokenizer estimate may be off by up to 10%
+				minSafetyBuffer       = 1024 // never reserve less than this, even for tiny prompts
+				defaultMaxOutputCap   = 16384
+			)
+			buffer := int(float64(tokenEstimate) * estimateErrorFraction)
+			if buffer < minSafetyBuffer {
+				buffer = minSafetyBuffer
 			}
+			derived := contextSize - tokenEstimate - buffer
+
+			// Cap at the model's stated max output (or a sensible default
+			// when unreported). Without this, on a 200k-context model with
+			// 5k of prompt we'd request 194k of output — most providers
+			// don't accept that.
+			cap := ch.agent.provider.Info().MaxOutputTokens
+			if cap <= 0 {
+				cap = defaultMaxOutputCap
+			}
+			if derived > cap {
+				derived = cap
+			}
+
+			if derived < 1 {
+				derived = 1
+			}
+			maxTokens = derived
 		}
 
 		// Send to LLM
@@ -803,6 +838,37 @@ func (ch *ConversationHandler) compactMessages(messages []Message, limit int) Co
 	return Compact(messages, limit)
 }
 
+// buildCompactInputs assembles the CompactInputs struct for the loop's
+// drop-phase fallback (Phase 1+). The pipeline splits across two sites:
+//
+//   - Phase 0a/0b (iterative checkpoint substitution + observation masking)
+//     run inside prepareMessages on the RAW state.Messages() slice where
+//     checkpoint indices remain valid.
+//   - Phase 1+ (drop checkpoint summaries / drop turns / emergency truncate)
+//     run here, on the post-prepareMessages slice where indices have been
+//     shifted by the system-prompt prepend.
+//
+// We deliberately DO NOT pass Checkpoints to CompactWith here — they
+// reference state.Messages indices that no longer match the prepared slice.
+// Phase 0 already ran on that raw slice; if it couldn't get under target,
+// Phase 1+ drops the resulting summary messages (which DO live in the
+// prepared slice) directly.
+func (ch *ConversationHandler) buildCompactInputs(messages []Message, tokenLimit int) CompactInputs {
+	provider := ch.agent.provider
+	tools := ch.agent.executor.GetTools()
+	return CompactInputs{
+		Messages:   messages,
+		TokenLimit: tokenLimit,
+		// Use the provider's tokenizer so the trigger decision and the
+		// drop pipeline agree on when we're under target.
+		EstimateFn: func(msgs []Message) int {
+			return provider.EstimateTokens(&ChatRequest{Messages: msgs, Tools: tools})
+		},
+		// Checkpoints / MaskNameFn intentionally omitted — Phase 0 ran
+		// in prepareMessages on the raw slice.
+	}
+}
+
 // tryContextOverflowRecovery runs an aggressive recovery compaction pass on
 // req.Messages and returns true if the message list shrunk. Called from the
 // retry loop after a ContextOverflowError to give the next attempt a chance
@@ -826,7 +892,10 @@ func (ch *ConversationHandler) tryContextOverflowRecovery(req *ChatRequest) bool
 	// yields a final target of roughly 0.7 * 0.85 * contextSize estimated tokens.
 	recoveryLimit := int(float64(contextSize) * recoveryCompactionTargetFraction)
 	before := len(req.Messages)
-	result := Compact(req.Messages, recoveryLimit)
+	// Even the recovery path benefits from substituting summaries before
+	// dropping content — it's less destructive than dropping turns
+	// outright, and we already paid the cost of building the summaries.
+	result := CompactWith(ch.buildCompactInputs(req.Messages, recoveryLimit))
 	if result.Strategy == "none" || len(result.Messages) >= before {
 		// Nothing was actually dropped — compaction has bottomed out.
 		return false

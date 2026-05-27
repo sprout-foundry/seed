@@ -27,6 +27,35 @@ type TurnCheckpoint struct {
 	// ActionableSummary is a bullet-list of accomplishments with file paths,
 	// commands run, and other concrete details useful for continued context.
 	ActionableSummary string `json:"actionable_summary"`
+
+	// FileChanges is the structured manifest of files this turn modified,
+	// suitable for git-style display (M / A / D / R). Populated by the
+	// consumer via the OnCheckpoint hook or by building checkpoints directly
+	// rather than seed's built-in TurnSummaryBuilder. Optional — empty when
+	// the consumer doesn't track changes.
+	FileChanges []FileChange `json:"file_changes,omitempty"`
+
+	// RevisionID is the consumer's pointer to the persisted change set for
+	// this turn (e.g., a change-tracker revision ID). When set, the summary
+	// text can include it so the model knows it can call the history-viewing
+	// tool to recover the exact diff. Optional.
+	RevisionID string `json:"revision_id,omitempty"`
+
+	// ArchiveLine is a single-line, commit-title-style condensation of this
+	// checkpoint, used when meta-compaction has rolled this turn up into the
+	// session archive (typically when the session accumulates >100
+	// checkpoints). When non-empty, BuildCheckpointCompactedMessages
+	// prefers this over Summary/ActionableSummary — it's the tightest form.
+	ArchiveLine string `json:"archive_line,omitempty"`
+}
+
+// FileChange is the git-style change record for a single file touched in a
+// turn. Op uses one of "A" (added), "M" (modified), "D" (deleted), "R"
+// (renamed) to mirror git's status codes — anything else is "?" (other).
+// Path is workspace-relative.
+type FileChange struct {
+	Path string `json:"path"`
+	Op   string `json:"op"`
 }
 
 // TurnSummaryBuilder builds a TurnCheckpoint from a slice of messages

@@ -152,9 +152,18 @@ func BuildCheckpointCompactedMessages(messages []Message, checkpoints []TurnChec
 			continue
 		}
 
+		// ArchiveLine takes priority when meta-compaction has already folded
+		// this checkpoint into the session archive — the model gets a
+		// 1-line breadcrumb instead of a paragraph summary.
+		summaryText := cp.Summary
+		actionableText := cp.ActionableSummary
+		if cp.ArchiveLine != "" {
+			summaryText = cp.ArchiveLine
+			actionableText = ""
+		}
 		ri := rangeInfo{
-			summary:           cp.Summary,
-			actionableSummary: cp.ActionableSummary,
+			summary:           summaryText,
+			actionableSummary: actionableText,
 			origStart:         cp.StartIndex,
 			origEnd:           cp.EndIndex,
 		}
@@ -222,6 +231,75 @@ func BuildCheckpointCompactedMessages(messages []Message, checkpoints []TurnChec
 	copy(outCps, checkpoints)
 
 	return newMsgs, outCps
+}
+
+// IterativelySubstituteCheckpoints replaces checkpointed turns with their
+// summaries *one at a time*, oldest first, until either:
+//   - the resulting message list's estimated token count is at or below the
+//     supplied target (success), or
+//   - every available checkpoint has been substituted and the result is still
+//     above target (caller falls through to Phase 1+ in the compaction
+//     cascade).
+//
+// This is the Phase 0a primitive. The key property is
+// *minimum information loss*: we never collapse a turn into its summary
+// unless that's the smallest step that can relieve context pressure.
+// Short-and-medium conversations get to keep their raw history.
+//
+// Returns:
+//   - newMessages: the compacted message list (or the original if applied == 0)
+//   - applied: how many checkpoints were substituted (0 = none, len(sorted) = all)
+//   - under: true if applied substitutions brought estimate to or below target
+//
+// The estimateFn is supplied by the caller so it can use the live provider's
+// tokenizer (which costs a function call per iteration but stays accurate).
+// For very-large checkpoint lists this is O(applied × len(messages)) work;
+// in practice applied is small because each substitution typically saves
+// thousands of tokens.
+func IterativelySubstituteCheckpoints(
+	messages []Message,
+	checkpoints []TurnCheckpoint,
+	target int,
+	estimateFn func([]Message) int,
+) ([]Message, int, bool) {
+	if len(messages) == 0 || len(checkpoints) == 0 || target <= 0 {
+		return messages, 0, estimateFn(messages) <= target
+	}
+
+	// Sort a copy of checkpoints by StartIndex so oldest is first. We must
+	// not mutate the caller's slice — state.GetCheckpoints already returns
+	// a copy, but defensive copy is cheap.
+	sorted := make([]TurnCheckpoint, len(checkpoints))
+	copy(sorted, checkpoints)
+	sort.Slice(sorted, func(i, j int) bool {
+		return sorted[i].StartIndex < sorted[j].StartIndex
+	})
+
+	// Early exit: already under target without doing anything.
+	if estimateFn(messages) <= target {
+		return messages, 0, true
+	}
+
+	// Apply checkpoints incrementally: n=1 (oldest only), then n=2 (oldest two), etc.
+	// Each iteration rebuilds the compacted message list from the raw input
+	// using the prefix of `sorted` of length n. This is conceptually clean
+	// (BuildCheckpointCompactedMessages is the one source of truth for the
+	// substitution mechanics — index shifting, role smoothing, etc.) at the
+	// cost of re-applying earlier substitutions on each step. For a
+	// 30-checkpoint session that's ~30 small passes; cheap.
+	var lastResult []Message = messages
+	for n := 1; n <= len(sorted); n++ {
+		active := sorted[:n]
+		candidate, _ := BuildCheckpointCompactedMessages(messages, active)
+		lastResult = candidate
+		if estimateFn(candidate) <= target {
+			return candidate, n, true
+		}
+	}
+
+	// Exhausted: every checkpoint applied, still over target. Caller proceeds
+	// to Phase 1+ (drop summaries, drop turns, emergency truncate).
+	return lastResult, len(sorted), false
 }
 
 // resolveConsecutiveAssistantMessages fixes consecutive assistant messages in the

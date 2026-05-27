@@ -103,25 +103,6 @@ func (a *Agent) triggerFractionOrDefault() float64 {
 	return defaultCompactionTriggerFraction
 }
 
-// compactionStartFractionOrDefault returns the configured "start gentle
-// compactions" fraction (clamped to (0, 1]) or the default if unset / out
-// of range. Below this fraction of context-window usage, prepareMessages
-// keeps the raw conversation: no checkpoint substitution, no observation
-// masking. Between this fraction and triggerFractionOrDefault, the gentle
-// transformations are applied. Above triggerFractionOrDefault, the loop's
-// secondary pipeline (pruner/summarizer/Compact) takes over.
-//
-// Default is defaultCompactionStartFraction (0.60). Setting it >= the trigger
-// fraction effectively disables the gentle gate — checkpoint substitution
-// and observation masking only fire when the loop's hard compaction would
-// also fire, i.e. they become "additional things tried under pressure"
-// instead of the default per-call behavior.
-func (a *Agent) compactionStartFractionOrDefault() float64 {
-	if a.compactionStartFraction > 0 && a.compactionStartFraction <= 1.0 {
-		return a.compactionStartFraction
-	}
-	return defaultCompactionStartFraction
-}
 
 func (rc RetryConfig) JitterOrDefault() float64 {
 	return rc.Jitter
@@ -154,24 +135,6 @@ type Options struct {
 	// defaultCompactionTriggerFraction (0.85). Set to 1.0 to keep the legacy
 	// "only compact when the estimate already exceeds the window" behavior.
 	CompactionTriggerFraction float64
-	// CompactionStartFraction is the share of the model's context window
-	// below which prepareMessages keeps the raw conversation intact — no
-	// checkpoint substitution, no observation masking on big consumed tool
-	// results. The intent: short and medium chats see their full history
-	// (recent file reads, tool outputs) so the model doesn't need to re-read.
-	//
-	// Between CompactionStartFraction and CompactionTriggerFraction, the
-	// gentle transformations kick in (oldest checkpointed turns get replaced
-	// by their summaries; large consumed tool results get masked). Above
-	// CompactionTriggerFraction, the loop's secondary pipeline runs.
-	//
-	// Valid range is (0, 1]; zero (the default) uses
-	// defaultCompactionStartFraction (0.60). Set to 1.0 to keep the legacy
-	// "always substitute" behavior (gentle transformations applied on every
-	// call regardless of pressure). Set to a value >= CompactionTriggerFraction
-	// to disable the gentle gate entirely (the secondary pipeline takes over
-	// directly when pressure is felt).
-	CompactionStartFraction float64
 	// LLMSummarizer, if non-nil, enables LLM-based structural compaction. The
 	// compaction pipeline calls it to compress a window of older middle history
 	// into a single summary message, preserving intent better than the
@@ -243,11 +206,6 @@ type Agent struct {
 	// above which the chat loop runs proactive compaction. See
 	// Options.CompactionTriggerFraction.
 	compactionTriggerFraction float64
-
-	// compactionStartFraction is the share of the model's context window
-	// below which prepareMessages keeps raw history. See
-	// Options.CompactionStartFraction.
-	compactionStartFraction float64
 
 	// llmSummarizer is the consumer-supplied LLM-summary callback used by
 	// structural compaction. Nil = disabled, fall back to rule-based compaction.
@@ -350,7 +308,6 @@ func NewAgent(opts Options) (*Agent, error) {
 		onCheckpoint:              opts.OnCheckpoint,
 		retryConfig:               opts.RetryConfig,
 		compactionTriggerFraction: opts.CompactionTriggerFraction,
-		compactionStartFraction:   opts.CompactionStartFraction,
 		llmSummarizer:             opts.LLMSummarizer,
 		pruner:                    opts.Pruner,
 		interruptCtx:              interruptCtx,

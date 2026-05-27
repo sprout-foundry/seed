@@ -16,16 +16,6 @@ const (
 	// the trigger must sit below 1.0 to give the loop room to react.
 	defaultCompactionTriggerFraction = 0.85
 
-	// defaultCompactionStartFraction is the share of the context window below
-	// which prepareMessages keeps the conversation raw — no checkpoint
-	// substitution, no observation masking. Above this fraction but below
-	// defaultCompactionTriggerFraction, the gentle transformations apply so
-	// the loop has room before secondary compaction (drops + truncation) has
-	// to kick in. The 0.60 default leaves ~40% headroom for fresh tool
-	// outputs while still relieving pressure earlier than the 0.85 hard
-	// trigger.
-	defaultCompactionStartFraction = 0.60
-
 	// recoveryCompactionTargetFraction is the more aggressive target used when
 	// the provider has already returned a ContextOverflowError. Compaction
 	// during a recovery retry trims further so the retried request has clear
@@ -67,14 +57,89 @@ func (r CompactionResult) MessageCountDelta(before int) int {
 	return before - len(r.Messages)
 }
 
-// Compact reduces messages to fit within the token limit.
-// If under the limit or too few messages, returns as-is.
-// Otherwise tries dropping checkpoint summaries, then turns, then
-// falls back to emergency truncation.
-func Compact(messages []Message, tokenLimit int) CompactionResult {
-	tokensBefore := roughTokens(messages)
+// CompactInputs bundles the optional context that lets Compact run the full
+// progressive pipeline. When Checkpoints / Optimizer / NameFn are non-nil,
+// the loss-minimizing Phase 0 substitution + masking passes run before the
+// drop-based Phase 1+ pipeline. Callers that only have (messages,
+// tokenLimit) should use Compact() — equivalent to CompactWith with empty
+// optionals.
+type CompactInputs struct {
+	// Messages is the prepared message slice to compact. Required.
+	Messages []Message
+	// TokenLimit is the upper bound on output tokens. Compact targets a
+	// fraction of this internally (emergencyTargetFraction = 0.85).
+	TokenLimit int
+	// Checkpoints, when non-nil, enables Phase 0a: iterative substitution
+	// of the oldest checkpointed turn with its summary, one at a time,
+	// stopping the moment the estimate falls to target.
+	Checkpoints []TurnCheckpoint
+	// MaskNameFn maps a tool-call ID to a human-readable tool name. When
+	// non-nil it enables Phase 0b: iterative observation masking of the
+	// oldest big consumed tool result, oldest first, after Phase 0a is
+	// exhausted. Pass nil to skip Phase 0b.
+	MaskNameFn func(callID string) string
+	// EstimateFn, when non-nil, replaces the internal roughTokens estimator
+	// used by Phase 0a/0b iteration. Pass the live provider's EstimateTokens
+	// so the iterative passes use the same token math as the loop's trigger
+	// decision — without this they can disagree (trigger says "compact", but
+	// the internal estimate says we're already under target, so Phase 0
+	// does nothing and we silently degrade to Phase 1+). Optional.
+	EstimateFn func(messages []Message) int
+}
 
-	if len(messages) <= defaultMinMessages || tokensBefore <= tokenLimit {
+// Compact reduces messages to fit within the token limit using the
+// drop-based pipeline only (no checkpoint substitution, no observation
+// masking). Equivalent to CompactWith with no Checkpoints / MaskNameFn.
+//
+// Kept for backward compatibility with callers that don't have access to
+// the agent's checkpoint state — notably tryContextOverflowRecovery, which
+// runs on the post-compaction message slice in the retry loop. New code
+// should prefer CompactWith.
+func Compact(messages []Message, tokenLimit int) CompactionResult {
+	return CompactWith(CompactInputs{Messages: messages, TokenLimit: tokenLimit})
+}
+
+// CompactWith is the progressive compaction entry point.
+//
+// Pipeline (each phase exits early as soon as estimate falls to target):
+//
+//   - **Phase 0a — Iterative checkpoint substitution.** Replace the oldest
+//     checkpointed turn with its summary, one at a time. Smallest unit of
+//     information loss. Skipped if Checkpoints is empty.
+//   - **Phase 0b — Iterative observation masking.** Mask the oldest big
+//     consumed tool result with a placeholder, one at a time. Honors the
+//     observationMaskKeepLast window. Skipped if MaskNameFn is nil.
+//   - **Phase 1 — Drop oldest checkpoint summaries.** Existing pipeline.
+//   - **Phase 1.5 — Drop oldest raw turns.** Existing pipeline.
+//   - **Phase 2 — Emergency truncate.** Existing pipeline.
+//
+// Why this order: Phase 0 preserves *raw recoverable* context (the model
+// can still refer back to the summary, which carries a revision pointer
+// for sprout's view_history tool to recover the diff). Phase 1+ drops
+// content entirely. We exhaust the recoverable steps before resorting to
+// destruction.
+//
+// See docs/compaction.md for the full design rationale.
+func CompactWith(in CompactInputs) CompactionResult {
+	messages := in.Messages
+	tokenLimit := in.TokenLimit
+	// Use the caller-supplied estimator when provided so the entire
+	// pipeline agrees with the trigger decision (see CompactInputs.EstimateFn
+	// docs). When the caller doesn't supply one, fall back to the internal
+	// roughTokens estimator when no provider-tokenizer is supplied.
+	estimate := func(msgs []Message) int { return roughTokens(msgs) }
+	if in.EstimateFn != nil {
+		estimate = in.EstimateFn
+	}
+	tokensBefore := estimate(messages)
+	targetTokens := int(float64(tokenLimit) * emergencyTargetFraction)
+
+	// Early exit: nothing to compact if there are too few messages OR we're
+	// already under the target. Compare against target (not tokenLimit) so
+	// we don't no-op while sitting *at* the hard limit with no headroom for
+	// the next iteration's response — that would let provider
+	// context-overflow errors slip through.
+	if len(messages) <= defaultMinMessages || tokensBefore <= targetTokens {
 		return CompactionResult{
 			Messages:     messages,
 			Strategy:     "none",
@@ -82,19 +147,57 @@ func Compact(messages []Message, tokenLimit int) CompactionResult {
 			TokensAfter:  tokensBefore,
 		}
 	}
+	strategies := []string{} // accumulate phases that actually fired
 
-	// Target: emergency truncation threshold — same as emergencyTruncate.
-	targetTokens := int(float64(tokenLimit) * emergencyTargetFraction)
-	// Phase 1: Try dropping checkpoint summaries to free space.
+	// Phase 0a: iterative checkpoint substitution (loss-minimizing).
+	if len(in.Checkpoints) > 0 {
+		newMsgs, applied, under := IterativelySubstituteCheckpoints(messages, in.Checkpoints, targetTokens, estimate)
+		if applied > 0 {
+			messages = newMsgs
+			strategies = append(strategies, "substitute")
+		}
+		if under {
+			return CompactionResult{
+				Messages:     messages,
+				Strategy:     joinStrategies(strategies),
+				TokensBefore: tokensBefore,
+				TokensAfter:  estimate(messages),
+			}
+		}
+	}
+
+	// Phase 0b: iterative observation masking (loss-minimizing).
+	if in.MaskNameFn != nil {
+		newMsgs, applied, under := IterativelyMaskOldestConsumedToolResults(messages, in.MaskNameFn, targetTokens, estimate)
+		if applied > 0 {
+			messages = newMsgs
+			strategies = append(strategies, "mask")
+		}
+		if under {
+			return CompactionResult{
+				Messages:     messages,
+				Strategy:     joinStrategies(strategies),
+				TokensBefore: tokensBefore,
+				TokensAfter:  estimate(messages),
+			}
+		}
+	}
+
+	// Phase 1+: drop-based pipeline. The drop functions internally use the
+	// roughTokens estimator (not the caller-supplied EstimateFn) to decide
+	// how much to drop, so the inter-phase checks must also use roughTokens
+	// for consistency — otherwise a wildly-different provider estimate (e.g.
+	// a mock pinned to ContextSize+) would prevent the early exit even
+	// after drops succeeded.
 	dropped := dropOldestCheckpointSummaries(messages, defaultRecentToKeep, targetTokens)
 
 	if roughTokens(dropped) <= targetTokens {
-		// Dropping checkpoints alone brought us under the threshold.
+		strategies = append(strategies, "checkpoint_drop")
 		return CompactionResult{
 			Messages:     dropped,
-			Strategy:     "checkpoint_drop",
+			Strategy:     joinStrategies(strategies),
 			TokensBefore: tokensBefore,
-			TokensAfter:  roughTokens(dropped),
+			TokensAfter:  estimate(dropped),
 		}
 	}
 
@@ -102,27 +205,45 @@ func Compact(messages []Message, tokenLimit int) CompactionResult {
 	turnDropped := dropOldestTurns(dropped, defaultRecentToKeep, targetTokens)
 
 	if roughTokens(turnDropped) <= targetTokens {
-		// Dropping turns brought us under the threshold.
+		strategies = append(strategies, "tool_trim")
 		return CompactionResult{
 			Messages:     turnDropped,
-			Strategy:     "tool_trim",
+			Strategy:     joinStrategies(strategies),
 			TokensBefore: tokensBefore,
-			TokensAfter:  roughTokens(turnDropped),
+			TokensAfter:  estimate(turnDropped),
 		}
 	}
 
 	// Phase 2: Emergency truncation on the already-dropped messages.
 	result, droppedMsgs := emergencyTruncate(turnDropped, tokenLimit)
-	strategy := "truncation"
 	if droppedMsgs {
-		strategy = "emergency"
+		strategies = append(strategies, "emergency")
+	} else {
+		strategies = append(strategies, "truncation")
 	}
 	return CompactionResult{
 		Messages:     result,
-		Strategy:     strategy,
+		Strategy:     joinStrategies(strategies),
 		TokensBefore: tokensBefore,
-		TokensAfter:  roughTokens(result),
+		TokensAfter:  estimate(result),
 	}
+}
+
+// joinStrategies returns a "+"-joined strategy name like "substitute+mask"
+// or "substitute+checkpoint_drop", matching the existing event-shape
+// (single strategy) when only one fired.
+func joinStrategies(s []string) string {
+	if len(s) == 0 {
+		return "none"
+	}
+	if len(s) == 1 {
+		return s[0]
+	}
+	out := s[0]
+	for _, x := range s[1:] {
+		out += "+" + x
+	}
+	return out
 }
 
 // dropOldestTurns drops complete turns (user + assistant + tool chain) oldest

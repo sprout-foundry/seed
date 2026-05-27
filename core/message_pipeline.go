@@ -4,48 +4,32 @@ import "strings"
 
 // prepareMessages assembles the message list for the API request.
 //
-// Two passes are pressure-gated by Agent.compactionStartFractionOrDefault():
+// Progressive pipeline:
 //
-//   - Checkpoint substitution: replaces past checkpointed turns with their
-//     summary messages. Lossy — the raw turn's tool outputs/file reads are
-//     hidden behind a one-line summary. Only fires when raw history already
-//     exceeds the start-gate fraction of context.
-//   - Observation masking (inside the optimizer): replaces big consumed
-//     tool results with placeholders. Same gate.
+//   - First, estimate the raw conversation against the trigger fraction.
+//   - If over: run **Phase 0a** (iterative checkpoint substitution) on the
+//     raw state.Messages() slice — this is where checkpoint indices are
+//     valid. Stop as soon as the estimate falls to target.
+//   - If still over: run **Phase 0b** (iterative observation masking)
+//     against the post-substitution slice. Same iterative contract.
+//   - Below the trigger: raw history flows through. No substitution, no
+//     masking. The model gets full fidelity for short and medium chats
+//     and for long single-turn tool-iteration chains.
 //
-// Below the start-gate fraction, the raw conversation flows through. This
-// matters in two cases the user actually cares about: (1) short and
-// medium-length chats stay lucid because the model can refer back to its
-// prior file reads, (2) long single-turn iteration chains don't plateau
-// because old tool results aren't masked until pressure justifies it.
+// The loop's downstream pressure check (in conversation.go) then runs
+// **Phase 1+** drops via Compact() only if Phase 0 didn't relieve enough
+// pressure (or if the consumer wired pruner/llmSummarizer). Recovery from
+// provider-overflow errors uses Compact()'s drop path directly.
 //
-// The estimate uses the raw state.Messages() slice (pre-transform) so the
-// gate reflects true pressure, not the artificially-low post-transform
-// pressure the previous unconditional path produced.
+// See docs/compaction.md for the full design.
 func (ch *ConversationHandler) prepareMessages() []Message {
 	// Get current messages
 	messages := ch.agent.state.Messages()
 
-	// Pressure check on the raw conversation. We deliberately estimate on
-	// messages before checkpoint substitution and observation masking so
-	// the gate sees the actual cost of shipping the raw history — if we
-	// estimated after transforming, the gate would be self-negating (the
-	// transformations always make it look small enough to skip them).
-	pressureGate := ch.computePressureGate(messages)
-
-	// Checkpoint compaction: replace consumed checkpoint ranges with summary
-	// messages before any other transformation. Checkpoint indices reference
-	// the raw state.Messages() slice, so this must run first.
-	//
-	// SP-059-followup: only substitute under pressure. The checkpoints
-	// themselves are still recorded every turn (cheap, useful for
-	// embedding lookups even when not consumed here).
-	if pressureGate.underPressure {
-		checkpoints := ch.agent.state.GetCheckpoints()
-		if len(checkpoints) > 0 {
-			messages, _ = BuildCheckpointCompactedMessages(messages, checkpoints)
-		}
-	}
+	// Phase 0 (iterative, loss-minimizing) — operate on the RAW slice so
+	// checkpoint indices remain valid. Only fires when raw history exceeds
+	// the trigger × context_size threshold; below that, raw flows through.
+	messages = ch.runIterativeCompactionPhase0(messages)
 
 	// Strip system messages from history (we always prepend current system prompt)
 	filtered := make([]Message, 0, len(messages))
@@ -82,47 +66,18 @@ func (ch *ConversationHandler) prepareMessages() []Message {
 	// terminal formatting codes from polluting LLM context.
 	allMessages = sanitizeMessages(allMessages)
 
-	// Optimize: deduplicate redundant file reads and shell commands.
-	// Observation masking (big-tool-result placeholders) is gated on the
-	// same pressure check as checkpoint substitution above. Dedup itself
-	// is always safe so it runs unconditionally.
+	// Optimize: dedupe-only pass. Observation masking is *not* run here —
+	// it's part of Compact()'s iterative Phase 0b, gated on pressure.
+	// Dedup of redundant file reads / shell command outputs is always
+	// strictly beneficial (it only replaces tool-result content when an
+	// IDENTICAL earlier content exists) so it runs unconditionally.
 	if ch.agent.optimizer != nil {
 		allMessages = ch.agent.optimizer.OptimizeConversationWithOptions(allMessages, OptimizeOptions{
-			MaskConsumedToolResults: pressureGate.underPressure,
+			MaskConsumedToolResults: false,
 		})
 	}
 
 	return allMessages
-}
-
-// pressureGateResult carries the cached pressure check from a single
-// prepareMessages call so both gating sites use the same decision.
-type pressureGateResult struct {
-	rawTokens     int
-	contextSize   int
-	threshold     int
-	underPressure bool
-}
-
-// computePressureGate returns the pressure decision for the given raw
-// messages. ContextSize == 0 (some providers don't report one) collapses
-// to "not under pressure" — better to keep raw history than guess.
-func (ch *ConversationHandler) computePressureGate(rawMessages []Message) pressureGateResult {
-	contextSize := ch.agent.provider.Info().ContextSize
-	if contextSize <= 0 {
-		return pressureGateResult{contextSize: contextSize}
-	}
-	rawTokens := ch.agent.provider.EstimateTokens(&ChatRequest{
-		Messages: rawMessages,
-		Tools:    ch.agent.executor.GetTools(),
-	})
-	threshold := int(float64(contextSize) * ch.agent.compactionStartFractionOrDefault())
-	return pressureGateResult{
-		rawTokens:     rawTokens,
-		contextSize:   contextSize,
-		threshold:     threshold,
-		underPressure: rawTokens > threshold,
-	}
 }
 
 // stripImages removes image data from messages for non-vision models.
@@ -192,6 +147,79 @@ func collapseSystemMessages(messages []Message) []Message {
 	result = append(result, merged)
 	result = append(result, nonSystem...)
 	return result
+}
+
+// runIterativeCompactionPhase0 applies Phase 0 (loss-minimizing)
+// compaction to the raw state.Messages() slice:
+//   - Phase 0a: iterative checkpoint substitution (oldest first, one at a
+//     time, stop when under target). Operates on the raw slice so the
+//     checkpoint StartIndex/EndIndex references remain valid.
+//   - Phase 0b: iterative observation masking of big consumed tool results
+//     (oldest first, one at a time, honoring the keep-last window).
+//
+// Returns the raw slice unchanged when the conversation is under the
+// trigger fraction of the model's context window. Returns the most
+// aggressively-compacted variant Phase 0 could produce otherwise; the
+// caller's downstream pressure check decides whether Phase 1+ drops are
+// still needed.
+func (ch *ConversationHandler) runIterativeCompactionPhase0(rawMessages []Message) []Message {
+	contextSize := ch.agent.provider.Info().ContextSize
+	if contextSize <= 0 || len(rawMessages) == 0 {
+		return rawMessages
+	}
+
+	// Caller-supplied estimator so this code and the loop's trigger
+	// decision use the same token math. Without it, the loop may decide
+	// "compact" and Phase 0 may decide "nothing to do" (or vice versa)
+	// and the model silently sees one of the two views.
+	tools := ch.agent.executor.GetTools()
+	provider := ch.agent.provider
+	estimate := func(msgs []Message) int {
+		return provider.EstimateTokens(&ChatRequest{Messages: msgs, Tools: tools})
+	}
+
+	// Trigger gate: same threshold the loop's downstream check uses.
+	triggerLimit := int(float64(contextSize) * ch.agent.triggerFractionOrDefault())
+	if estimate(rawMessages) <= triggerLimit {
+		return rawMessages
+	}
+	target := int(float64(contextSize) * emergencyTargetFraction)
+
+	// Phase 0a: iterative checkpoint substitution.
+	checkpoints := ch.agent.state.GetCheckpoints()
+	if len(checkpoints) > 0 {
+		newMsgs, _, under := IterativelySubstituteCheckpoints(rawMessages, checkpoints, target, estimate)
+		rawMessages = newMsgs
+		if under {
+			return rawMessages
+		}
+	}
+
+	// Phase 0b: iterative observation masking. Only enabled when the
+	// optimizer is wired — without it we can't resolve tool-call IDs to
+	// human-readable tool names for the placeholder text.
+	if ch.agent.optimizer != nil {
+		nameFn := func(callID string) string {
+			for _, m := range rawMessages {
+				if m.Role != "assistant" {
+					continue
+				}
+				for _, tc := range m.ToolCalls {
+					if tc.ID == callID {
+						return tc.Function.Name
+					}
+				}
+			}
+			if callID != "" {
+				return callID
+			}
+			return "tool"
+		}
+		newMsgs, _, _ := IterativelyMaskOldestConsumedToolResults(rawMessages, nameFn, target, estimate)
+		rawMessages = newMsgs
+	}
+
+	return rawMessages
 }
 
 // sanitizeMessages applies sanitizeANSI to every message's content.
