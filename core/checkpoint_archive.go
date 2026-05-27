@@ -13,7 +13,6 @@ import (
 // active checkpoint set passes this threshold; each archived checkpoint
 // shrinks from a multi-line summary to a single commit-title-style line
 // (~80 characters), bounding the long-tail growth.
-//
 const MetaCompactionThreshold = 100
 
 // MetaArchiveBatchSize is the maximum number of checkpoints sent in a single
@@ -41,7 +40,6 @@ const MetaArchiveBatchSize = 25
 // summaries are likely still actively informing the model and shouldn't be
 // flattened. The default recommendation is to keep 24 checkpoints raw
 // (matching seed's defaultRecentToKeep convention for compaction).
-//
 func ArchiveOldCheckpoints(ctx context.Context, checkpoints []TurnCheckpoint, keepRecent int, summarizer LLMSummarizer) []TurnCheckpoint {
 	if summarizer == nil || len(checkpoints) <= keepRecent {
 		// Defensive copy so the caller's slice isn't aliased; matches the

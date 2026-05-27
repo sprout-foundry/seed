@@ -278,8 +278,8 @@ func TestCompactWith_SubstituteThenDrop_WhenSubstituteInsufficient(t *testing.T)
 		cps = append(cps, TurnCheckpoint{
 			StartIndex:        i * 2,
 			EndIndex:          i*2 + 1,
-			Summary:           bigSummary,                // ~1850 tokens each
-			ActionableSummary: bigSummary[:600],          // > 500, so picker uses Summary
+			Summary:           bigSummary,       // ~1850 tokens each
+			ActionableSummary: bigSummary[:600], // > 500, so picker uses Summary
 		})
 	}
 	// After substituting all 4: ~7400 tokens of summaries. Target = 50
@@ -414,7 +414,7 @@ func TestMaxTokensMath_ScalesBufferWithEstimate(t *testing.T) {
 	const (
 		contextSize     = 200000
 		tokenEstimate   = 100000
-		expectedBuffer  = 10000          // 10% of 100k
+		expectedBuffer  = 10000 // 10% of 100k
 		expectedDerived = contextSize - tokenEstimate - expectedBuffer
 		maxOutputCap    = 16384
 	)

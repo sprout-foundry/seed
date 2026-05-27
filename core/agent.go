@@ -103,7 +103,6 @@ func (a *Agent) triggerFractionOrDefault() float64 {
 	return defaultCompactionTriggerFraction
 }
 
-
 func (rc RetryConfig) JitterOrDefault() float64 {
 	return rc.Jitter
 }

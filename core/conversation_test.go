@@ -1196,4 +1196,3 @@ func TestSanitizeANSI(t *testing.T) {
 		})
 	}
 }
-
