@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -100,32 +101,29 @@ func main() {
 	}
 }
 
-// loadSpecs reads all .json files from the given directory and returns parsed specs.
+// loadSpecs reads all .json files from the given directory (recursively) and returns parsed specs.
 func loadSpecs(dir string) ([]Spec, error) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return nil, fmt.Errorf("reading specs directory %s: %w", dir, err)
-	}
-
 	var specs []Spec
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
-			continue
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
 		}
-
-		path := filepath.Join(dir, entry.Name())
+		if d.IsDir() || !strings.HasSuffix(d.Name(), ".json") {
+			return nil
+		}
 		data, err := os.ReadFile(path)
 		if err != nil {
-			return nil, fmt.Errorf("reading spec file %s: %w", path, err)
+			return fmt.Errorf("reading spec file %s: %w", path, err)
 		}
-
 		var spec Spec
 		if err := json.Unmarshal(data, &spec); err != nil {
-			return nil, fmt.Errorf("parsing spec file %s: %w", path, err)
+			return fmt.Errorf("parsing spec file %s: %w", path, err)
 		}
-
 		specs = append(specs, spec)
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("walking specs directory %s: %w", dir, err)
 	}
-
 	return specs, nil
 }
