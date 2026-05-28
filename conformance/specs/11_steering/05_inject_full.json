@@ -32,6 +32,13 @@
       }
     },
     {
+      "id": 51,
+      "method": "mock.addTextResponse",
+      "params": {
+        "content": "acknowledged"
+      }
+    },
+    {
       "id": 6,
       "method": "agent.run",
       "params": {
@@ -56,7 +63,7 @@
     {
       "id": 4,
       "result": {
-        "ok": false
+        "accepted": false
       },
       "type": "response"
     },

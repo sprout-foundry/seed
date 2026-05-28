@@ -75,6 +75,10 @@ func (fp *FallbackParser) parseToolCallsJSON(content string) []ToolCall {
 		return nil
 	}
 
+	// Attempt to repair common model output issues (trailing commas) so
+	// that all subsequent unmarshal attempts have a chance of succeeding.
+	content = repairJSONForParsing(content)
+
 	// Direct array of tool calls
 	var tcs []ToolCall
 	if err := json.Unmarshal([]byte(content), &tcs); err == nil && len(tcs) > 0 {
@@ -129,11 +133,27 @@ func (fp *FallbackParser) parseToolCallsJSON(content string) []ToolCall {
 		Input any    `json:"input"`
 	}
 	if err := json.Unmarshal([]byte(content), &ni); err == nil {
-		if ni.Name != "" {
+		if ni.Name != "" && ni.Input != nil {
 			args := fp.anyToString(ni.Input)
 			return []ToolCall{{
 				Type:     "function",
 				Function: ToolCallFunction{Name: ni.Name, Arguments: args},
+			}}
+		}
+	}
+
+	// {name: "...", arguments: {...}} — top-level name/arguments format
+	// commonly emitted by models that don't use a wrapper object.
+	var na struct {
+		Name      string `json:"name"`
+		Arguments any    `json:"arguments"`
+	}
+	if err := json.Unmarshal([]byte(content), &na); err == nil {
+		if na.Name != "" {
+			args := fp.anyToString(na.Arguments)
+			return []ToolCall{{
+				Type:     "function",
+				Function: ToolCallFunction{Name: na.Name, Arguments: args},
 			}}
 		}
 	}
@@ -147,6 +167,22 @@ func (fp *FallbackParser) parseToolCallsJSON(content string) []ToolCall {
 	}
 
 	return nil
+}
+
+// repairJSONForParsing attempts basic repair of JSON content so that
+// json.Unmarshal can succeed on malformed but repairable input.
+// Returns the repaired string if repair succeeded, or the original
+// unchanged if repair was unnecessary or failed.
+func repairJSONForParsing(s string) string {
+	if json.Valid([]byte(s)) {
+		return s
+	}
+	fixed := strings.ReplaceAll(s, ",}", "}")
+	fixed = strings.ReplaceAll(fixed, ",]", "]")
+	if json.Valid([]byte(fixed)) {
+		return fixed
+	}
+	return s
 }
 
 // anyToString converts a value to a JSON argument string.

@@ -96,6 +96,8 @@ var strongPatternMarkers = []string{
 	"<tool=",
 	"<tool>",
 	"<tool_use>",
+	// call: prefix (e.g., "call:calculator{...}")
+	"call:",
 	// JSON keys — quoted so they only match actual JSON key occurrences
 	// (e.g., {"tool_calls": ...}), not bare English prose.
 	// JSON keys are high-confidence because normal prose rarely has these
@@ -289,6 +291,7 @@ func (fp *FallbackParser) normalize(blocks []rawBlock) []ToolCall {
 				continue
 			}
 			trimmed := strings.TrimSpace(tc.Function.Arguments)
+			trimmed = tryRepairJSON(trimmed)
 			if trimmed == "" || !isValidJSON(trimmed) {
 				continue
 			}
@@ -322,6 +325,23 @@ func syntheticID(name string) string {
 
 func isValidJSON(s string) bool {
 	return json.Valid([]byte(strings.TrimSpace(s)))
+}
+
+// tryRepairJSON attempts to repair common JSON issues in argument strings:
+//  1. If already valid JSON, returns as-is.
+//  2. Removes trailing commas before } or ] (e.g., {"location": "NYC",} → {"location":"NYC"}).
+//  3. If repair succeeds, returns the fixed string. Otherwise returns the original
+//     unchanged (caller's isValidJSON check will then reject it).
+func tryRepairJSON(s string) string {
+	if json.Valid([]byte(s)) {
+		return s
+	}
+	fixed := strings.ReplaceAll(s, ",}", "}")
+	fixed = strings.ReplaceAll(fixed, ",]", "]")
+	if json.Valid([]byte(fixed)) {
+		return fixed
+	}
+	return s
 }
 
 // canonicalizeJSON re-marshals valid JSON into compact canonical form.

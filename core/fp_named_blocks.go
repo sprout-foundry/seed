@@ -54,10 +54,13 @@ func (fp *FallbackParser) extractNamedToolBlocks(content string) []rawBlock {
 		// Extract the full JSON object including braces
 		argsStr := strings.TrimSpace(stripped[braceStart : braceEnd+1])
 
-		// Validate that the content is valid JSON
-		if !json.Valid([]byte(argsStr)) {
+		// Validate that the content is valid JSON, with repair for common
+		// model output issues (trailing commas, unquoted keys).
+		repaired := repairBlockJSON(argsStr)
+		if !json.Valid([]byte(repaired)) {
 			continue
 		}
+		argsStr = repaired
 
 		// Create the tool call
 		tc := ToolCall{
@@ -114,4 +117,94 @@ func dedupeBlocks(blocks []rawBlock) []rawBlock {
 		}
 	}
 	return result
+}
+
+// repairBlockJSON attempts to repair common JSON issues in extracted blocks:
+// 1. Removes trailing commas before } or ]
+// 2. Quotes unquoted keys (e.g., {expression: "val"} → {"expression":"val"})
+// Returns the original string if it's already valid JSON. Returns the original
+// unchanged if repair fails (caller should check validity).
+func repairBlockJSON(s string) string {
+	if json.Valid([]byte(s)) {
+		return s
+	}
+
+	// Strategy 1: Remove trailing commas before } or ]
+	fixed := strings.ReplaceAll(s, ",}", "}")
+	fixed = strings.ReplaceAll(fixed, ",]", "]")
+	if json.Valid([]byte(fixed)) {
+		return fixed
+	}
+
+	// Strategy 2: Quote unquoted keys
+	// Match patterns like `{key:` or `, key:` and quote the key.
+	result := strings.Builder{}
+	i := 0
+	for i < len(fixed) {
+		// Look for unquoted key patterns: after { or , optionally with whitespace,
+		// followed by an identifier, then :
+		ch := fixed[i]
+		if ch == '{' || ch == ',' {
+			result.WriteByte(ch)
+			i++
+			// Skip whitespace
+			skip := i
+			for skip < len(fixed) && (fixed[skip] == ' ' || fixed[skip] == '\t' || fixed[skip] == '\n' || fixed[skip] == '\r') {
+				skip++
+			}
+			// Copy the whitespace
+			for i < skip {
+				result.WriteByte(fixed[i])
+				i++
+			}
+			// Check if we have an unquoted key (identifier not starting with ")
+			if i < len(fixed) && fixed[i] != '"' && fixed[i] != '}' && fixed[i] != ']' {
+				// Collect identifier characters
+				kStart := i
+				for i < len(fixed) && isIdentChar(fixed[i]) {
+					i++
+				}
+				// Skip whitespace after identifier
+				skip2 := i
+				for skip2 < len(fixed) && (fixed[skip2] == ' ' || fixed[skip2] == '\t') {
+					skip2++
+				}
+				// Check if followed by ':'
+				if skip2 < len(fixed) && fixed[skip2] == ':' {
+					// Quote the key
+					result.WriteByte('"')
+					for kStart < i {
+						result.WriteByte(fixed[kStart])
+						kStart++
+					}
+					result.WriteByte('"')
+					// Copy whitespace before ':'
+					for i < skip2 {
+						result.WriteByte(fixed[i])
+						i++
+					}
+					// Copy ':'
+					result.WriteByte(fixed[i])
+					i++
+					continue
+				}
+				// Not a key-value pair, output as-is
+				for kStart < i {
+					result.WriteByte(fixed[kStart])
+					kStart++
+				}
+				continue
+			}
+			continue
+		}
+		result.WriteByte(ch)
+		i++
+	}
+
+	if json.Valid([]byte(result.String())) {
+		return result.String()
+	}
+
+	// Could not repair
+	return s
 }
