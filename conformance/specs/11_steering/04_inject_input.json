@@ -1,0 +1,63 @@
+{
+  "actions": [
+    {
+      "id": 1,
+      "method": "agent.new",
+      "params": {}
+    },
+    {
+      "id": 2,
+      "method": "mock.blockUntil",
+      "params": {}
+    },
+    {
+      "id": 3,
+      "method": "agent.injectInput",
+      "params": {
+        "input": "additional context"
+      }
+    },
+    {
+      "id": 4,
+      "method": "mock.addTextResponse",
+      "params": {
+        "content": "Acknowledged."
+      }
+    },
+    {
+      "id": 5,
+      "method": "agent.run",
+      "params": {
+        "query": "start"
+      }
+    },
+    {
+      "id": 6,
+      "method": "mock.release",
+      "params": {}
+    }
+  ],
+  "assertions": [
+    {
+      "id": 1,
+      "type": "noError"
+    },
+    {
+      "id": 3,
+      "type": "noError"
+    },
+    {
+      "id": 5,
+      "type": "noError"
+    },
+    {
+      "id": 5,
+      "result": {
+        "result": "Acknowledged."
+      },
+      "type": "response"
+    }
+  ],
+  "description": "Input injected mid-conversation loop becomes available as new user input",
+  "name": "inject_input"
+}

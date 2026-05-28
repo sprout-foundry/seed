@@ -1,0 +1,54 @@
+{
+  "actions": [
+    {
+      "id": 1,
+      "method": "agent.new",
+      "params": {}
+    },
+    {
+      "id": 2,
+      "method": "mock.addTextResponse",
+      "params": {
+        "content": ""
+      }
+    },
+    {
+      "id": 3,
+      "method": "mock.addTextResponse",
+      "params": {
+        "content": "Here is the actual response."
+      }
+    },
+    {
+      "id": 4,
+      "method": "agent.run",
+      "params": {
+        "query": "Hi"
+      }
+    }
+  ],
+  "assertions": [
+    {
+      "id": 1,
+      "type": "noError"
+    },
+    {
+      "id": 4,
+      "type": "noError"
+    },
+    {
+      "id": 4,
+      "result": {
+        "result": "Here is the actual response."
+      },
+      "type": "response"
+    },
+    {
+      "equals": 2,
+      "path": "callCount",
+      "type": "mock"
+    }
+  ],
+  "description": "First call returns empty/blank content → agent re-prompts; second call returns real content",
+  "name": "blank_response_handling"
+}
