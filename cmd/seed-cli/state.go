@@ -12,13 +12,14 @@ import (
 
 // cliState holds all shared state for the CLI session.
 type cliState struct {
-	mu     sync.Mutex
-	h      *test.Harness
-	agent  *core.Agent
-	ctx    context.Context
-	cancel context.CancelFunc
+	mu       sync.Mutex
+	h        *test.Harness
+	agent    *core.Agent
+	ctx      context.Context
+	cancel   context.CancelFunc
+	metadata map[string]string
 
-	// blockCh is closed by mock.unblock to unblock a pending provider call.
+	// blockCh is closed by mock.release to unblock a pending provider call.
 	blockCh chan struct{}
 }
 
@@ -79,6 +80,28 @@ func (s *cliState) newAgent(params map[string]interface{}) (map[string]interface
 	}
 	if v, ok := params["disableNormalizer"]; ok {
 		opts.DisableNormalizer = v.(bool)
+	}
+
+	// SP-016-1k: Additional Options fields
+	if v, ok := params["initialMessages"]; ok {
+		if arr, ok := v.([]interface{}); ok {
+			opts.InitialMessages = parseMessages(arr)
+		}
+	}
+	if v, ok := params["initialCheckpoints"]; ok {
+		if arr, ok := v.([]interface{}); ok {
+			opts.InitialCheckpoints = parseCheckpoints(arr)
+		}
+	}
+	if v, ok := params["retryConfig"]; ok {
+		if m, ok := v.(map[string]interface{}); ok {
+			opts.RetryConfig = parseRetryConfig(m)
+		}
+	}
+	if v, ok := params["optimizer"]; ok {
+		if m, ok := v.(map[string]interface{}); ok {
+			opts.Optimizer = parseOptimizer(m)
+		}
 	}
 
 	agent, err := core.NewAgent(opts)
@@ -168,13 +191,13 @@ func (s *cliState) addToolCallResponse(params map[string]interface{}) (map[strin
 			for _, tc := range arr {
 				if obj, ok := tc.(map[string]interface{}); ok {
 					call := core.ToolCall{
-						ID:   getString(obj, "id"),
-						Type: getString(obj, "type"),
+						ID:   getStringVal(obj, "id"),
+						Type: getStringVal(obj, "type"),
 					}
 					if fn, ok := obj["function"].(map[string]interface{}); ok {
 						call.Function = core.ToolCallFunction{
-							Name:      getString(fn, "name"),
-							Arguments: getString(fn, "arguments"),
+							Name:      getStringVal(fn, "name"),
+							Arguments: getStringVal(fn, "arguments"),
 						}
 					}
 					toolCalls = append(toolCalls, call)
@@ -209,7 +232,7 @@ func (s *cliState) addTool(params map[string]interface{}) (map[string]interface{
 		Type: "function",
 		Function: core.ToolFunction{
 			Name:        name,
-			Description: getString(params, "description"),
+			Description: getStringVal(params, "description"),
 		},
 	}
 
@@ -323,13 +346,4 @@ func toolSlice(tools []core.Tool) []map[string]interface{} {
 		}
 	}
 	return out
-}
-
-func getString(m map[string]interface{}, key string) string {
-	if v, ok := m[key]; ok {
-		if s, ok := v.(string); ok {
-			return s
-		}
-	}
-	return ""
 }

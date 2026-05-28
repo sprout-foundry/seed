@@ -234,9 +234,9 @@ func (s *cliState) addTextResponseWithFinish(params map[string]interface{}) (map
 // withInfo sets the provider info.
 func (s *cliState) withInfo(params map[string]interface{}) (map[string]interface{}, *rpcError) {
 	info := core.ProviderInfo{
-		Model:       getString(params, "model"),
-		ContextSize: getInt(params, "contextSize"),
-		HasVision:   getBool(params, "hasVision"),
+		Model:       getStringVal(params, "model"),
+		ContextSize: getIntVal(params, "contextSize"),
+		HasVision:   getBoolVal(params, "hasVision"),
 	}
 	if info.Model == "" {
 		info.Model = "mock-model"
@@ -331,27 +331,4 @@ func (s *cliState) executorLastCalls() (map[string]interface{}, *rpcError) {
 		}
 	}
 	return map[string]interface{}{"calls": out}, nil
-}
-
-// ---- Helper functions ----
-
-func getInt(m map[string]interface{}, key string) int {
-	if v, ok := m[key]; ok {
-		switch v2 := v.(type) {
-		case float64:
-			return int(v2)
-		case int:
-			return v2
-		}
-	}
-	return 0
-}
-
-func getBool(m map[string]interface{}, key string) bool {
-	if v, ok := m[key]; ok {
-		if b, ok := v.(bool); ok {
-			return b
-		}
-	}
-	return false
 }

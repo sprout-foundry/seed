@@ -75,6 +75,61 @@ func dispatch(state *cliState, method string, params map[string]interface{}) (ma
 		return state.executorCallCount()
 	case "mock.executorLastCalls":
 		return state.executorLastCalls()
+	case "mock.blockUntil":
+		return state.blockUntilHandler()
+	case "mock.release":
+		return state.releaseHandler(params)
+
+	// State management (SP-016-1c)
+	case "state.messages":
+		return state.stateMessages()
+	case "state.sessionId":
+		return state.stateSessionID()
+	case "state.setSessionId":
+		return state.stateSetSessionID(params)
+	case "state.ensureSessionId":
+		return state.stateEnsureSessionID()
+	case "state.tokens":
+		return state.stateTokens()
+	case "state.cost":
+		return state.stateCost()
+	case "state.addMessage":
+		return state.stateAddMessage(params)
+	case "state.len":
+		return state.stateLen()
+	case "state.clearCheckpoints":
+		return state.stateClearCheckpoints()
+
+	// Configuration (SP-016-1d)
+	case "agent.setProvider":
+		return state.setProvider(params)
+	case "agent.setFlushCallback":
+		return state.setFlushCallback()
+
+	// Steering & Injection (SP-016-1e)
+	case "agent.injectInput":
+		return state.injectInput(params)
+
+	// Checkpoints, Provider, Streaming (SP-016-1f)
+	case "agent.providerInfo":
+		return state.providerInfo()
+	case "agent.estimateTokens":
+		return state.estimateTokens(params)
+	case "agent.streamingBuffer":
+		return state.streamingBuffer()
+	case "agent.reasoningBuffer":
+		return state.reasoningBuffer()
+
+	// Output Manager (SP-016-1g)
+	case "output.setMetadata":
+		return state.outputSetMetadata(params)
+	case "output.getMetadata":
+		return state.outputGetMetadata(params)
+	case "output.flush":
+		return state.outputFlush()
+	case "output.reset":
+		return state.outputReset()
+
 	default:
 		return nil, &rpcError{Code: -32601, Message: "method not found: " + method}
 	}
