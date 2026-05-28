@@ -1,8 +1,14 @@
 # Roadmap
 
-All 15 specs are complete. See [docs/](../docs/) for current implementation details.
+## In Progress
+
+| Spec | Title | Description |
+|------|-------|-------------|
+| SP-016 | Conformance Test Suite | Language-agnostic CLI-based test suite — 99/102 tests passing, 3 known core limitations |
 
 ## Completed
+
+All 15 core specs are complete. See [docs/](../docs/) for current implementation details.
 
 | Spec | Title | Docs |
 |------|-------|------|
@@ -31,3 +37,35 @@ All 15 specs are complete. See [docs/](../docs/) for current implementation deta
 | Circuit Breaker | Consumer's executor controls repetition handling |
 | Scripted Client | Test utility, not library functionality |
 | Agent Lifecycle / Debug Logger | Logging is an integration concern (consumer wires `UI`) |
+
+## Spec File Convention
+
+Each spec follows this structure:
+
+```
+## Summary
+One-paragraph description of what this spec accomplishes.
+
+## Current State (if applicable)
+What exists today relevant to this spec.
+
+## Requirements
+Numbered list of everything that must be true when this spec is done.
+
+## Technical Design
+Implementation details, data models, API contracts, code paths.
+
+## Acceptance Criteria
+Testable conditions that prove the spec is complete.
+
+## Dependencies
+Other specs that must be completed first.
+```
+
+## Pipeline
+
+Process roadmap items via `process/roadmap_workflow.json`:
+
+```bash
+sprout agent --workflow-config process/roadmap_workflow.json
+```
