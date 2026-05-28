@@ -1,1 +1,4 @@
 .sprout
+/runner
+/seed-agent
+/seed-cli
