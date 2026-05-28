@@ -20,5 +20,10 @@ vet:
 fmt:
 	go fmt ./...
 
+# Run conformance tests
+conformance: build
+	go build -o seed-cli ./cmd/seed-cli/
+	go run ./conformance/runner/ --cli ./seed-cli --specs ./conformance/specs/
+
 # Full check: vet, fmt, build, test
 check: vet fmt build test
