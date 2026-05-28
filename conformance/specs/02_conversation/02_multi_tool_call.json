@@ -92,7 +92,7 @@
     },
     {
       "equals": 2,
-      "path": "executorCallCount",
+      "path": "callCount",
       "type": "mock"
     }
   ],

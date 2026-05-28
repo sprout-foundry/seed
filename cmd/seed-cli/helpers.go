@@ -159,13 +159,6 @@ func (p *providerShim) ChatStream(_ context.Context, _ *core.ChatRequest, _ core
 func (p *providerShim) Info() core.ProviderInfo                { return p.info }
 func (p *providerShim) EstimateTokens(_ *core.ChatRequest) int { return 100 }
 
-// getAgent returns the agent under lock.
-func (s *cliState) getAgent() *core.Agent {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.agent
-}
-
 // getStringVal gets a string from a map.
 func getStringVal(m map[string]interface{}, key string) string {
 	if v, ok := m[key]; ok {

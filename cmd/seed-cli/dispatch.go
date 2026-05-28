@@ -23,6 +23,12 @@ func dispatch(state *cliState, method string, params map[string]interface{}) (ma
 		return state.exportState()
 	case "agent.importState":
 		return state.importState(params)
+
+	// Aliases for state.* namespace
+	case "state.exportState":
+		return state.exportState()
+	case "state.importState":
+		return state.importState(params)
 	case "agent.setSystemPrompt":
 		return state.setSystemPrompt(params)
 	case "agent.steer":

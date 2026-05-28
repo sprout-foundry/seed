@@ -16,11 +16,11 @@ var errorTypeMap = map[string][]string{
 	"paused":           {"agent is paused"},
 	"zero_choices":     {"zero choices"},
 	"transient":        {"transient error"},
-	"rate_limit":       {"rate limit"},
+	"rate_limit":       {"rate limit", "too many requests"},
 	"context_overflow": {"context window exceeded"},
 	"auth":             {"authentication failed"},
 	"client":           {"client error"},
-	"content_filtered": {"content filter", "content_filtered"},
+	"content_filtered": {"content filter", "content_filtered", "content policy"},
 	"blank_response":   {"blank", "repetitive"},
 }
 
@@ -135,4 +135,24 @@ func errorMessage(errMap *map[string]interface{}) string {
 		return fmt.Sprint(v)
 	}
 	return ""
+}
+
+// getResponseForAssertion returns the response for the given ID.
+// When ID is 0 (default for assertions without an explicit id), it falls back
+// to the response with the highest ID (the most recent response).
+func getResponseForAssertion(id int, responses map[int]*CollectedResponse) *CollectedResponse {
+	if id != 0 {
+		return responses[id]
+	}
+	// Fallback: find the response with the highest ID
+	maxID := -1
+	for k := range responses {
+		if k > maxID {
+			maxID = k
+		}
+	}
+	if maxID < 0 {
+		return nil
+	}
+	return responses[maxID]
 }

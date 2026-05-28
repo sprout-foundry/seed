@@ -4,16 +4,11 @@ import (
 	"github.com/sprout-foundry/seed/core"
 )
 
-// errAgentNotCreated is a sentinel RPC error for missing agent.
-var errAgentNotCreated = &rpcError{Code: -32603, Message: "agent not created; call agent.new first"}
-
 // agentOrErr returns the agent or an error response if nil.
+// Uses ensureAgent() for lazy creation so that tools registered after
+// agent.new but before the first access are visible to the agent.
 func (s *cliState) agentOrErr() (*core.Agent, *rpcError) {
-	a := s.getAgent()
-	if a == nil {
-		return nil, errAgentNotCreated
-	}
-	return a, nil
+	return s.ensureAgent()
 }
 
 // ---- State management handlers (SP-016-1c) ----
@@ -23,7 +18,12 @@ func (s *cliState) stateMessages() (map[string]interface{}, *rpcError) {
 	if err != nil {
 		return nil, err
 	}
-	return map[string]interface{}{"messages": serializeMessages(a.State().Messages())}, nil
+	msgs := a.State().Messages()
+	out := serializeMessages(msgs)
+	return map[string]interface{}{
+		"messages": out,
+		"len":      a.State().Len(),
+	}, nil
 }
 
 func (s *cliState) stateSessionID() (map[string]interface{}, *rpcError) {

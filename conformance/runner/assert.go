@@ -167,8 +167,8 @@ func assertEventsCount(asrt SpecAssertion, events []CollectedEvent) AssertionRes
 
 // assertState checks state from a response using the given path.
 func assertState(asrt SpecAssertion, responses map[int]*CollectedResponse) AssertionResult {
-	resp, ok := responses[asrt.ID]
-	if !ok {
+	resp := getResponseForAssertion(asrt.ID, responses)
+	if resp == nil {
 		return AssertionResult{Assertion: asrt, Passed: false, Message: fmt.Sprintf("no response found for id %d (state assertion)", asrt.ID)}
 	}
 	if resp.Result == nil {
@@ -215,8 +215,8 @@ func assertState(asrt SpecAssertion, responses map[int]*CollectedResponse) Asser
 
 // assertMock checks mock state from a response.
 func assertMock(asrt SpecAssertion, responses map[int]*CollectedResponse) AssertionResult {
-	resp, ok := responses[asrt.ID]
-	if !ok {
+	resp := getResponseForAssertion(asrt.ID, responses)
+	if resp == nil {
 		return AssertionResult{Assertion: asrt, Passed: false, Message: fmt.Sprintf("no response found for id %d (mock assertion)", asrt.ID)}
 	}
 	if resp.Result == nil {

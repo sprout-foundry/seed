@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"sync"
 
@@ -12,34 +11,43 @@ import (
 
 // cliState holds all shared state for the CLI session.
 type cliState struct {
-	mu       sync.Mutex
-	h        *test.Harness
-	agent    *core.Agent
-	ctx      context.Context
-	cancel   context.CancelFunc
-	metadata map[string]string
+	mu        sync.Mutex
+	h         *test.Harness
+	agent     *core.Agent
+	agentOpts *core.Options // stored options for lazy agent creation
+	ctx       context.Context
+	metadata  map[string]string
 
 	// blockCh is closed by mock.release to unblock a pending provider call.
-	blockCh chan struct{}
+	blockCh     chan struct{}
+	interrupted bool // pending interrupt flag for lazy creation
 }
 
 // newCliState creates a fresh CLI state with mocks and context.
 func newCliState() *cliState {
-	ctx, cancel := context.WithCancel(context.Background())
 	return &cliState{
-		h:      test.NewHarness(),
-		ctx:    ctx,
-		cancel: cancel,
+		h:   test.NewHarness(),
+		ctx: context.Background(),
 	}
 }
 
-// newAgent creates a new agent using the harness mocks and configured options.
+// newAgent stores options for lazy agent creation. The agent is created
+// lazily in ensureAgent() so that tools registered after agent.new but
+// before the first run() are visible to the fallback parser.
 func (s *cliState) newAgent(params map[string]interface{}) (map[string]interface{}, *rpcError) {
 	opts := core.Options{
 		Provider:       s.h.Provider(),
 		Executor:       s.h.Executor(),
 		UI:             core.NoopUI,
 		EventPublisher: s.h.EventBus(),
+	}
+
+	// Wire OnCheckpoint to publish on_checkpoint events via the event bus.
+	bus := s.h.EventBus()
+	opts.OnCheckpoint = func(cp core.TurnCheckpoint) {
+		bus.Publish("on_checkpoint", map[string]interface{}{
+			"checkpoint": cp,
+		})
 	}
 
 	if v, ok := params["systemPrompt"]; ok {
@@ -104,16 +112,41 @@ func (s *cliState) newAgent(params map[string]interface{}) (map[string]interface
 		}
 	}
 
-	agent, err := core.NewAgent(opts)
-	if err != nil {
-		return nil, &rpcError{Code: -32603, Message: err.Error()}
-	}
-
+	// Store options for lazy creation — agent is created in ensureAgent().
 	s.mu.Lock()
-	s.agent = agent
+	s.agentOpts = &opts
+	s.agent = nil
 	s.mu.Unlock()
 
 	return map[string]interface{}{"ok": true}, nil
+}
+
+// ensureAgent creates the agent lazily from stored options, or returns the
+// existing agent. This ensures tools registered after agent.new but before
+// the first run() are visible to the fallback parser and other components.
+func (s *cliState) ensureAgent() (*core.Agent, *rpcError) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.agent != nil {
+		return s.agent, nil
+	}
+	if s.agentOpts == nil {
+		return nil, &rpcError{Code: -32603, Message: "agent not created; call agent.new first"}
+	}
+
+	agent, err := core.NewAgent(*s.agentOpts)
+	if err != nil {
+		return nil, &rpcError{Code: -32603, Message: err.Error()}
+	}
+	s.agent = agent
+
+	// Apply pending interrupt if one was queued before agent creation.
+	if s.interrupted {
+		agent.Interrupt()
+	}
+
+	return agent, nil
 }
 
 // run calls agent.Run with the given query.
@@ -123,15 +156,25 @@ func (s *cliState) run(params map[string]interface{}) (map[string]interface{}, *
 		return nil, &rpcError{Code: -32602, Message: "missing required param: query"}
 	}
 
-	s.mu.Lock()
-	agent := s.agent
-	s.mu.Unlock()
-
-	if agent == nil {
-		return nil, &rpcError{Code: -32603, Message: "agent not created; call agent.new first"}
+	agent, rpcErr := s.ensureAgent()
+	if rpcErr != nil {
+		return nil, rpcErr
 	}
 
-	result, err := agent.Run(s.ctx, query)
+	// If the agent was pre-interrupted before creation, return error immediately.
+	s.mu.Lock()
+	isInterrupted := s.interrupted
+	s.mu.Unlock()
+	if isInterrupted {
+		return nil, &rpcError{Code: -32603, Message: "agent interrupted"}
+	}
+
+	// Use the CLI context for this run.
+	s.mu.Lock()
+	ctx := s.ctx
+	s.mu.Unlock()
+
+	result, err := agent.Run(ctx, query)
 	if err != nil {
 		msg := err.Error()
 		if strings.Contains(msg, "context canceled") {
@@ -142,208 +185,31 @@ func (s *cliState) run(params map[string]interface{}) (map[string]interface{}, *
 	return map[string]interface{}{"result": result}, nil
 }
 
-// interrupt calls agent.Interrupt().
+// interrupt calls agent.Interrupt() or sets a pending interrupt flag if the
+// agent hasn't been created yet (lazy creation).
 func (s *cliState) interrupt() (map[string]interface{}, *rpcError) {
 	s.mu.Lock()
+	s.interrupted = true
 	agent := s.agent
 	s.mu.Unlock()
 
-	if agent == nil {
-		return nil, &rpcError{Code: -32603, Message: "agent not created; call agent.new first"}
+	if agent != nil {
+		agent.Interrupt()
 	}
-
-	agent.Interrupt()
 	return map[string]interface{}{"ok": true}, nil
 }
 
-// resetInterrupt calls agent.ResetInterrupt().
+// resetInterrupt clears the interrupt state on the agent and pending flag.
 func (s *cliState) resetInterrupt() (map[string]interface{}, *rpcError) {
 	s.mu.Lock()
+	s.interrupted = false
 	agent := s.agent
 	s.mu.Unlock()
 
-	if agent == nil {
-		return nil, &rpcError{Code: -32603, Message: "agent not created; call agent.new first"}
+	if agent != nil {
+		ctx := agent.ResetInterrupt()
+		return map[string]interface{}{"ok": true, "context": ctx != nil}, nil
 	}
-
-	ctx := agent.ResetInterrupt()
-	return map[string]interface{}{"ok": true, "context": ctx != nil}, nil
-}
-
-// addTextResponse queues a text response on the mock provider.
-func (s *cliState) addTextResponse(params map[string]interface{}) (map[string]interface{}, *rpcError) {
-	content, ok := params["content"].(string)
-	if !ok {
-		return nil, &rpcError{Code: -32602, Message: "missing required param: content"}
-	}
-
-	s.h.Provider().AddTextResponse(content)
-	return map[string]interface{}{"ok": true}, nil
-}
-
-// addToolCallResponse queues a tool call response on the mock provider.
-func (s *cliState) addToolCallResponse(params map[string]interface{}) (map[string]interface{}, *rpcError) {
-	content, _ := params["content"].(string)
-
-	var toolCalls []core.ToolCall
-	if raw, ok := params["toolCalls"]; ok {
-		if arr, ok := raw.([]interface{}); ok {
-			for _, tc := range arr {
-				if obj, ok := tc.(map[string]interface{}); ok {
-					call := core.ToolCall{
-						ID:   getStringVal(obj, "id"),
-						Type: getStringVal(obj, "type"),
-					}
-					if fn, ok := obj["function"].(map[string]interface{}); ok {
-						call.Function = core.ToolCallFunction{
-							Name:      getStringVal(fn, "name"),
-							Arguments: getStringVal(fn, "arguments"),
-						}
-					}
-					toolCalls = append(toolCalls, call)
-				}
-			}
-		}
-	}
-
-	s.h.Provider().AddToolCallResponse(content, toolCalls...)
-	return map[string]interface{}{"ok": true}, nil
-}
-
-// addError queues an error on the mock provider.
-func (s *cliState) addError(params map[string]interface{}) (map[string]interface{}, *rpcError) {
-	msg, ok := params["message"].(string)
-	if !ok {
-		return nil, &rpcError{Code: -32602, Message: "missing required param: message"}
-	}
-
-	s.h.Provider().AddError(errors.New(msg))
-	return map[string]interface{}{"ok": true}, nil
-}
-
-// addTool adds a tool to the mock executor.
-func (s *cliState) addTool(params map[string]interface{}) (map[string]interface{}, *rpcError) {
-	name, ok := params["name"].(string)
-	if !ok {
-		return nil, &rpcError{Code: -32602, Message: "missing required param: name"}
-	}
-
-	tool := core.Tool{
-		Type: "function",
-		Function: core.ToolFunction{
-			Name:        name,
-			Description: getStringVal(params, "description"),
-		},
-	}
-
-	if p, ok := params["parameters"].(map[string]interface{}); ok {
-		tool.Function.Parameters = p
-	}
-
-	s.h.Executor().AddTool(tool)
-	return map[string]interface{}{"ok": true}, nil
-}
-
-// addToolResult queues a tool result on the mock executor.
-func (s *cliState) addToolResult(params map[string]interface{}) (map[string]interface{}, *rpcError) {
-	callID, ok := params["toolCallId"].(string)
-	if !ok {
-		return nil, &rpcError{Code: -32602, Message: "missing required param: toolCallId"}
-	}
-
-	content, _ := params["content"].(string)
-	s.h.Executor().AddToolResult(callID, content)
-	return map[string]interface{}{"ok": true}, nil
-}
-
-// reset clears all mock state and the agent.
-func (s *cliState) reset() (map[string]interface{}, *rpcError) {
-	s.h.Reset()
-	s.mu.Lock()
-	s.agent = nil
-	s.mu.Unlock()
-	return map[string]interface{}{"ok": true}, nil
-}
-
-// callCount returns the provider call count.
-func (s *cliState) callCount() (map[string]interface{}, *rpcError) {
-	return map[string]interface{}{"count": s.h.Provider().CallCount()}, nil
-}
-
-// lastRequest returns the last provider request.
-func (s *cliState) lastRequest() (map[string]interface{}, *rpcError) {
-	req := s.h.Provider().LastRequest()
-	if req == nil {
-		return map[string]interface{}{"request": nil}, nil
-	}
-	return mapToMap(req), nil
-}
-
-// ---- helper functions for serialization ----
-
-// mapToMap converts a ChatRequest to a serializable map.
-func mapToMap(req *core.ChatRequest) map[string]interface{} {
-	result := map[string]interface{}{
-		"model":     req.Model,
-		"messages":  msgSlice(req.Messages),
-		"maxTokens": req.MaxTokens,
-		"stream":    req.Stream,
-	}
-	if len(req.Tools) > 0 {
-		result["tools"] = toolSlice(req.Tools)
-	}
-	if req.ToolChoice != "" {
-		result["toolChoice"] = req.ToolChoice
-	}
-	return result
-}
-
-func msgSlice(msgs []core.Message) []map[string]interface{} {
-	out := make([]map[string]interface{}, len(msgs))
-	for i, m := range msgs {
-		out[i] = map[string]interface{}{
-			"role":    m.Role,
-			"content": m.Content,
-		}
-		if m.ReasoningContent != "" {
-			out[i]["reasoningContent"] = m.ReasoningContent
-		}
-		if m.ToolCallID != "" {
-			out[i]["toolCallId"] = m.ToolCallID
-		}
-		if len(m.ToolCalls) > 0 {
-			out[i]["toolCalls"] = tcSlice(m.ToolCalls)
-		}
-	}
-	return out
-}
-
-func tcSlice(calls []core.ToolCall) []map[string]interface{} {
-	out := make([]map[string]interface{}, len(calls))
-	for i, c := range calls {
-		out[i] = map[string]interface{}{
-			"id":   c.ID,
-			"type": c.Type,
-			"function": map[string]interface{}{
-				"name":      c.Function.Name,
-				"arguments": c.Function.Arguments,
-			},
-		}
-	}
-	return out
-}
-
-func toolSlice(tools []core.Tool) []map[string]interface{} {
-	out := make([]map[string]interface{}, len(tools))
-	for i, t := range tools {
-		out[i] = map[string]interface{}{
-			"type": t.Type,
-			"function": map[string]interface{}{
-				"name":        t.Function.Name,
-				"description": t.Function.Description,
-				"parameters":  t.Function.Parameters,
-			},
-		}
-	}
-	return out
+	// Agent not yet created — just clear the flag.
+	return map[string]interface{}{"ok": true, "context": true}, nil
 }

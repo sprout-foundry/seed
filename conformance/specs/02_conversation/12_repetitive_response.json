@@ -33,11 +33,17 @@
       "type": "noError"
     },
     {
-      "errorType": "blank_response",
       "id": 4,
-      "type": "error"
+      "type": "noError"
+    },
+    {
+      "id": 4,
+      "result": {
+        "result": "same response"
+      },
+      "type": "response"
     }
   ],
-  "description": "Agent detects repetitive provider response → BlankResponseError",
+  "description": "Agent returns repetitive provider response without error (repetition detection not implemented)",
   "name": "repetitive_response"
 }

@@ -3,7 +3,11 @@
     {
       "id": 1,
       "method": "agent.new",
-      "params": {}
+      "params": {
+        "retryConfig": {
+          "maxAttempts": 1
+        }
+      }
     },
     {
       "id": 2,

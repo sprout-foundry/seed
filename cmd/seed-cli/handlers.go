@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+
 	"github.com/sprout-foundry/seed/core"
 )
 
@@ -13,15 +15,29 @@ func (s *cliState) runStream(params map[string]interface{}) (map[string]interfac
 		return nil, &rpcError{Code: -32602, Message: "missing required param: query"}
 	}
 
-	s.mu.Lock()
-	agent := s.agent
-	s.mu.Unlock()
-
-	if agent == nil {
-		return nil, &rpcError{Code: -32603, Message: "agent not created; call agent.new first"}
+	agent, rpcErr := s.ensureAgent()
+	if rpcErr != nil {
+		return nil, rpcErr
 	}
 
-	result, err := agent.RunStream(s.ctx, query)
+	// If the agent was pre-interrupted before creation, return error immediately.
+	s.mu.Lock()
+	isInterrupted := s.interrupted
+	s.mu.Unlock()
+	if isInterrupted {
+		return nil, &rpcError{Code: -32603, Message: "agent interrupted"}
+	}
+
+	// Context can be injected via _runCtx param (by the CLI for async dispatch)
+	// or fall back to the default CLI context.
+	ctx, ok := params["_runCtx"].(context.Context)
+	if !ok || ctx == nil {
+		s.mu.Lock()
+		ctx = s.ctx
+		s.mu.Unlock()
+	}
+
+	result, err := agent.RunStream(ctx, query)
 	if err != nil {
 		msg := err.Error()
 		if msg == "context canceled" || msg == "context deadline exceeded" {
@@ -34,17 +50,14 @@ func (s *cliState) runStream(params map[string]interface{}) (map[string]interfac
 
 // exportState serializes the current agent state to JSON.
 func (s *cliState) exportState() (map[string]interface{}, *rpcError) {
-	s.mu.Lock()
-	agent := s.agent
-	s.mu.Unlock()
-
-	if agent == nil {
-		return nil, &rpcError{Code: -32603, Message: "agent not created; call agent.new first"}
+	a, err := s.agentOrErr()
+	if err != nil {
+		return nil, err
 	}
 
-	data, err := agent.ExportState()
-	if err != nil {
-		return nil, &rpcError{Code: -32603, Message: err.Error()}
+	data, err2 := a.ExportState()
+	if err2 != nil {
+		return nil, &rpcError{Code: -32603, Message: err2.Error()}
 	}
 	return map[string]interface{}{"state": string(data)}, nil
 }
@@ -56,15 +69,12 @@ func (s *cliState) importState(params map[string]interface{}) (map[string]interf
 		return nil, &rpcError{Code: -32602, Message: "missing required param: state"}
 	}
 
-	s.mu.Lock()
-	agent := s.agent
-	s.mu.Unlock()
-
-	if agent == nil {
-		return nil, &rpcError{Code: -32603, Message: "agent not created; call agent.new first"}
+	a, err := s.agentOrErr()
+	if err != nil {
+		return nil, err
 	}
 
-	if err := agent.ImportState([]byte(raw)); err != nil {
+	if err := a.ImportState([]byte(raw)); err != nil {
 		return nil, &rpcError{Code: -32603, Message: err.Error()}
 	}
 	return map[string]interface{}{"ok": true}, nil
@@ -77,15 +87,12 @@ func (s *cliState) setSystemPrompt(params map[string]interface{}) (map[string]in
 		return nil, &rpcError{Code: -32602, Message: "missing required param: prompt"}
 	}
 
-	s.mu.Lock()
-	agent := s.agent
-	s.mu.Unlock()
-
-	if agent == nil {
-		return nil, &rpcError{Code: -32603, Message: "agent not created; call agent.new first"}
+	a, err := s.agentOrErr()
+	if err != nil {
+		return nil, err
 	}
 
-	agent.SetSystemPrompt(prompt)
+	a.SetSystemPrompt(prompt)
 	return map[string]interface{}{"ok": true}, nil
 }
 
@@ -98,15 +105,12 @@ func (s *cliState) steer(params map[string]interface{}) (map[string]interface{},
 		role = "system"
 	}
 
-	s.mu.Lock()
-	agent := s.agent
-	s.mu.Unlock()
-
-	if agent == nil {
-		return nil, &rpcError{Code: -32603, Message: "agent not created; call agent.new first"}
+	a, err := s.agentOrErr()
+	if err != nil {
+		return nil, err
 	}
 
-	agent.Steer(core.Message{Role: role, Content: content})
+	a.Steer(core.Message{Role: role, Content: content})
 	return map[string]interface{}{"ok": true}, nil
 }
 
@@ -117,83 +121,65 @@ func (s *cliState) steerSystem(params map[string]interface{}) (map[string]interf
 		return nil, &rpcError{Code: -32602, Message: "missing required param: content"}
 	}
 
-	s.mu.Lock()
-	agent := s.agent
-	s.mu.Unlock()
-
-	if agent == nil {
-		return nil, &rpcError{Code: -32603, Message: "agent not created; call agent.new first"}
+	a, err := s.agentOrErr()
+	if err != nil {
+		return nil, err
 	}
 
-	agent.SteerSystem(content)
+	a.SteerSystem(content)
 	return map[string]interface{}{"ok": true}, nil
 }
 
 // pause pauses the agent for user clarification.
 func (s *cliState) pause() (map[string]interface{}, *rpcError) {
-	s.mu.Lock()
-	agent := s.agent
-	s.mu.Unlock()
-
-	if agent == nil {
-		return nil, &rpcError{Code: -32603, Message: "agent not created; call agent.new first"}
+	a, err := s.agentOrErr()
+	if err != nil {
+		return nil, err
 	}
 
-	agent.Pause()
+	a.Pause()
 	return map[string]interface{}{"ok": true}, nil
 }
 
 // resume resumes a paused agent.
 func (s *cliState) resume() (map[string]interface{}, *rpcError) {
-	s.mu.Lock()
-	agent := s.agent
-	s.mu.Unlock()
-
-	if agent == nil {
-		return nil, &rpcError{Code: -32603, Message: "agent not created; call agent.new first"}
+	a, err := s.agentOrErr()
+	if err != nil {
+		return nil, err
 	}
 
-	agent.Resume()
+	a.Resume()
 	return map[string]interface{}{"ok": true}, nil
 }
 
 // isPaused returns whether the agent is paused.
 func (s *cliState) isPaused() (map[string]interface{}, *rpcError) {
-	s.mu.Lock()
-	agent := s.agent
-	s.mu.Unlock()
-
-	if agent == nil {
-		return nil, &rpcError{Code: -32603, Message: "agent not created; call agent.new first"}
+	a, err := s.agentOrErr()
+	if err != nil {
+		return nil, err
 	}
 
-	return map[string]interface{}{"paused": agent.IsPaused()}, nil
+	return map[string]interface{}{"paused": a.IsPaused()}, nil
 }
 
 // checkpoints returns a copy of all recorded turn checkpoints.
 func (s *cliState) checkpoints() (map[string]interface{}, *rpcError) {
-	s.mu.Lock()
-	agent := s.agent
-	s.mu.Unlock()
-
-	if agent == nil {
-		return nil, &rpcError{Code: -32603, Message: "agent not created; call agent.new first"}
+	a, err := s.agentOrErr()
+	if err != nil {
+		return nil, err
 	}
 
-	return map[string]interface{}{"checkpoints": agent.Checkpoints()}, nil
+	return map[string]interface{}{"checkpoints": a.Checkpoints()}, nil
 }
 
 // agentState returns the message count and session ID from the agent's state.
 func (s *cliState) agentState() (map[string]interface{}, *rpcError) {
-	s.mu.Lock()
-	agent := s.agent
-	s.mu.Unlock()
-
-	if agent == nil {
-		return nil, &rpcError{Code: -32603, Message: "agent not created; call agent.new first"}
+	a, err := s.agentOrErr()
+	if err != nil {
+		return nil, err
 	}
 
-	st := agent.State()
+	st := a.State()
 	return map[string]interface{}{
 		"messageCount": st.Len(),
 		"sessionID":    st.SessionID(),
@@ -250,10 +236,14 @@ func (s *cliState) withInfo(params map[string]interface{}) (map[string]interface
 }
 
 // withTokenEstimate sets the token estimate.
+// Accepts "count" or "estimate" as param name.
 func (s *cliState) withTokenEstimate(params map[string]interface{}) (map[string]interface{}, *rpcError) {
-	count, ok := params["count"].(float64)
-	if !ok {
-		return nil, &rpcError{Code: -32602, Message: "missing required param: count"}
+	var count float64
+	var ok bool
+	if count, ok = params["count"].(float64); !ok {
+		if count, ok = params["estimate"].(float64); !ok {
+			return nil, &rpcError{Code: -32602, Message: "missing required param: count or estimate"}
+		}
 	}
 
 	s.h.Provider().WithTokenEstimate(int(count))
@@ -267,6 +257,9 @@ func (s *cliState) withStreaming() (map[string]interface{}, *rpcError) {
 }
 
 // addStreamChunks configures explicit chunk sequences for streaming.
+// Accepts two formats:
+//   - ["chunk1", "chunk2"] (simple strings)
+//   - [{"content": "Hel"}, {"reasoning": "think"}, {"content": "lo"}] (objects with content/reasoning)
 func (s *cliState) addStreamChunks(params map[string]interface{}) (map[string]interface{}, *rpcError) {
 	raw, ok := params["chunks"].([]interface{})
 	if !ok {
@@ -274,13 +267,34 @@ func (s *cliState) addStreamChunks(params map[string]interface{}) (map[string]in
 	}
 
 	var chunks []string
+	var finalContent string
 	for _, c := range raw {
-		if s, ok := c.(string); ok {
-			chunks = append(chunks, s)
+		switch v := c.(type) {
+		case string:
+			chunks = append(chunks, v)
+			finalContent += v
+		case map[string]interface{}:
+			// Object format: {content: "...", reasoning: "..."}
+			if content, ok := v["content"].(string); ok {
+				chunks = append(chunks, content)
+				finalContent += content
+			} else if reasoning, ok := v["reasoning"].(string); ok {
+				chunks = append(chunks, reasoning)
+				// reasoning doesn't add to final content for the response
+			}
 		}
 	}
 
-	s.h.Provider().AddStreamChunks(chunks...)
+	// Enable streaming mode and add chunks
+	p := s.h.Provider()
+	p.WithStreaming()
+
+	// Add a placeholder response so ChatStream doesn't fail with
+	// "no more responses configured". The handler will replace
+	// the content with the actual streamed content via OnDone.
+	p.AddTextResponse(finalContent)
+
+	p.AddStreamChunks(chunks...)
 	return map[string]interface{}{"ok": true}, nil
 }
 

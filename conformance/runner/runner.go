@@ -10,10 +10,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -21,34 +21,8 @@ import (
 type Spec struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description"`
-	Setup       *SpecSetup      `json:"setup,omitempty"`
 	Actions     []SpecAction    `json:"actions"`
 	Assertions  []SpecAssertion `json:"assertions"`
-}
-
-// SpecSetup contains optional legacy setup configuration.
-type SpecSetup struct {
-	Options           map[string]interface{} `json:"options,omitempty"`
-	ProviderResponses []SpecProviderResponse `json:"providerResponses,omitempty"`
-}
-
-// SpecProviderResponse describes a mocked provider response.
-type SpecProviderResponse struct {
-	Type      string         `json:"type"`
-	Content   string         `json:"content,omitempty"`
-	ToolCalls []SpecToolCall `json:"toolCalls,omitempty"`
-	Error     string         `json:"error,omitempty"`
-	Finish    string         `json:"finish,omitempty"`
-}
-
-// SpecToolCall describes a tool call in a mock response.
-type SpecToolCall struct {
-	ID       string `json:"id"`
-	Type     string `json:"type"`
-	Function struct {
-		Name      string `json:"name"`
-		Arguments string `json:"arguments"`
-	} `json:"function"`
 }
 
 // SpecAction is a single action to send to the CLI.
@@ -98,6 +72,7 @@ type CollectedEvent struct {
 
 // RunSpecResult holds the results of running a single spec.
 type RunSpecResult struct {
+	mu         sync.Mutex
 	Spec       Spec
 	Response   map[int]*CollectedResponse
 	Events     []CollectedEvent
@@ -114,8 +89,8 @@ type AssertionResult struct {
 
 // RunSpec spawns the CLI, executes the spec's actions, collects responses
 // and events, then evaluates assertions. Returns the result for reporting.
-func RunSpec(spec Spec, cliPath string, verbose bool) RunSpecResult {
-	result := RunSpecResult{
+func RunSpec(spec Spec, cliPath string, verbose bool) *RunSpecResult {
+	result := &RunSpecResult{
 		Spec:     spec,
 		Response: make(map[int]*CollectedResponse),
 		Events:   make([]CollectedEvent, 0),
@@ -201,7 +176,9 @@ func RunSpec(spec Spec, cliPath string, verbose bool) RunSpecResult {
 					}
 				}
 
+				result.mu.Lock()
 				result.Response[id] = resp
+				result.mu.Unlock()
 			} else if eventVal, ok := raw["event"]; ok {
 				if eventStr, ok := eventVal.(string); ok {
 					var data map[string]interface{}
@@ -210,17 +187,19 @@ func RunSpec(spec Spec, cliPath string, verbose bool) RunSpecResult {
 							data = m
 						}
 					}
+					result.mu.Lock()
 					result.Events = append(result.Events, CollectedEvent{
 						Event: eventStr,
 						Data:  data,
 					})
+					result.mu.Unlock()
 				}
 			}
 		}
 	}()
 
 	// Send actions to stdin.
-	for _, action := range spec.Actions {
+	for i, action := range spec.Actions {
 		if action.Params == nil {
 			action.Params = make(map[string]interface{})
 		}
@@ -258,9 +237,56 @@ func RunSpec(spec Spec, cliPath string, verbose bool) RunSpecResult {
 			return result
 		}
 
+		// Wait for long-running actions (agent.run / agent.runStream) to complete
+		// before sending the next action, so stdin isn't closed prematurely.
+		// Also honor explicit Wait hints on the action.
+		var waitID int
+		if action.Wait != nil {
+			waitID = *action.Wait
+		} else if action.Method == "agent.run" || action.Method == "agent.runStream" {
+			waitID = action.ID
+		}
+		if waitID > 0 && i < len(spec.Actions)-1 {
+			deadline := time.Now().Add(15 * time.Second)
+			for time.Now().Before(deadline) {
+				result.mu.Lock()
+				_, ok := result.Response[waitID]
+				result.mu.Unlock()
+				if ok {
+					break
+				}
+				time.Sleep(50 * time.Millisecond)
+			}
+		}
+
 		// Small delay to let CLI process the action before next one.
 		// This is a safety valve for fast processors.
 		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Preprocess assertions: collect mock/state assertions with id=0 so we
+	// can inject query actions AFTER the agent.run response is received.
+	injectedActions := preprocessAssertions(&spec)
+
+	// If we have injected actions, wait for the agent.run/response to arrive
+	// before sending the injected queries, so mock/state counts reflect the
+	// completed run.
+	if len(injectedActions) > 0 {
+		waitForRunResponse(&spec, result)
+	}
+
+	// Send injected query actions after waiting for agent.run to complete.
+	if len(injectedActions) > 0 {
+		if errMsg, ok := sendInjectedActions(injectedActions, stdin, verbose); !ok {
+			result.Assertions = []AssertionResult{{
+				Passed:  false,
+				Message: errMsg["error"].(string),
+			}}
+			result.Failed = true
+			stdin.Close()
+			<-stdoutDone
+			return result
+		}
 	}
 
 	// Close stdin to signal EOF to the CLI (cancels any running query).
@@ -288,31 +314,4 @@ func RunSpec(spec Spec, cliPath string, verbose bool) RunSpecResult {
 	}
 
 	return result
-}
-
-// parseLine determines if a JSON line is a response or event and returns
-// the parsed data accordingly.
-func parseLine(line string) (isResponse bool, isEvent bool, data map[string]interface{}) {
-	var raw map[string]interface{}
-	if err := json.Unmarshal([]byte(line), &raw); err != nil {
-		return false, false, nil
-	}
-
-	if _, ok := raw["id"]; ok {
-		return true, false, raw
-	}
-	if _, ok := raw["event"]; ok {
-		return false, true, raw
-	}
-	return false, false, raw
-}
-
-// writeJSONLine writes a JSON object as a single line to the given writer.
-func writeJSONLine(w io.Writer, v interface{}) error {
-	data, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-	_, err = fmt.Fprintln(w, string(data))
-	return err
 }

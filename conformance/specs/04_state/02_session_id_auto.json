@@ -31,10 +31,9 @@
     },
     {
       "id": 3,
-      "result": {
-        "notEmpty": true
-      },
-      "type": "response"
+      "notEmpty": true,
+      "path": "sessionId",
+      "type": "state"
     }
   ],
   "description": "EnsureSessionID auto-generates a valid session ID when none set",
