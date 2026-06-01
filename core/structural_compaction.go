@@ -153,8 +153,11 @@ func compactLayered(ctx context.Context, messages []Message, anchorEnd, recentSt
 
 // compactionAnchorEnd returns the index past the opening anchor — the
 // system message (if any) plus the first user message and any immediately
-// following non-tool-calling assistant response. This anchor stays intact
-// across compactions so the model never loses the original task framing.
+// following non-tool-calling assistant response. The anchor's *length* is
+// preserved across compactions so chat-format ordering stays valid, but
+// the user/assistant content inside it is demoted to past-tense historical
+// stubs by spliceSummary so the model stops reading the original prompt as
+// a live instruction.
 func compactionAnchorEnd(messages []Message) int {
 	if len(messages) == 0 {
 		return 0
@@ -205,9 +208,41 @@ func adjustCompactionBoundary(messages []Message, recentStart, anchorEnd int) in
 // summary-as-assistant + recent. The summary message carries
 // MetaKeyCheckpoint so downstream code (and the next compaction pass) can
 // recognize it as a synthetic checkpoint and drop it under further pressure.
+//
+// The anchor's first user message and any anchored assistant reply are
+// demoted to past-tense historical stubs. Previously the original prompt
+// was copied through verbatim, which caused the model to occasionally
+// re-anchor on it as a fresh instruction even when the conversation had
+// long moved on. The original request text is still preserved upstream
+// in the compacted summary; the stub here just keeps chat-format ordering
+// valid while signalling "this is history, not your current task."
 func spliceSummary(messages []Message, anchorEnd, recentStart int, summaryBody string) []Message {
 	compacted := make([]Message, 0, anchorEnd+1+len(messages)-recentStart)
-	compacted = append(compacted, messages[:anchorEnd]...)
+	for _, m := range messages[:anchorEnd] {
+		switch m.Role {
+		case "user":
+			compacted = append(compacted, Message{
+				Role:    "user",
+				Content: demoteAnchorUserMessage(m.Content),
+			})
+		case "assistant":
+			// Only demote the anchored assistant if it has no tool calls.
+			// A tool-calling assistant in the anchor would need its tool
+			// results to follow; better to pass it through unchanged in
+			// that unlikely shape.
+			if len(m.ToolCalls) == 0 {
+				compacted = append(compacted, Message{
+					Role:    "assistant",
+					Content: "[Acknowledged. See the compacted summary and recent messages for the current task state.]",
+				})
+			} else {
+				compacted = append(compacted, m)
+			}
+		default:
+			// system, tool, etc — pass through unchanged.
+			compacted = append(compacted, m)
+		}
+	}
 	summary := Message{
 		Role:    "assistant",
 		Content: summaryBody,
@@ -216,6 +251,21 @@ func spliceSummary(messages []Message, anchorEnd, recentStart int, summaryBody s
 	compacted = append(compacted, summary)
 	compacted = append(compacted, messages[recentStart:]...)
 	return compacted
+}
+
+// demoteAnchorUserMessage renders the original first user message as a
+// past-tense historical note instead of a verbatim live instruction. The
+// excerpt is bounded so a long opening prompt doesn't dominate the new
+// anchor slot; the full text remains available upstream in the compacted
+// summary body that follows immediately after.
+func demoteAnchorUserMessage(content string) string {
+	const maxExcerpt = 200
+	excerpt := strings.TrimSpace(content)
+	excerpt = strings.ReplaceAll(excerpt, "\n", " ")
+	if len(excerpt) > maxExcerpt {
+		excerpt = excerpt[:maxExcerpt] + "…"
+	}
+	return fmt.Sprintf("[Earlier session context — this session began with the request: %q. The compacted summary below and the recent messages document the actual work performed; refer to those for the current task state, not to this opening request.]", excerpt)
 }
 
 // dropConsecutiveAssistantAfter removes an assistant message that sits
