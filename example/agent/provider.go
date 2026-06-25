@@ -96,10 +96,10 @@ func newProvider(params map[string]interface{}) (*openAIProv, error) {
 // --- Wire types for OpenAI API ---
 
 type wReq struct {
-	Model     string   `json:"model"`
-	Messages  []wMsg   `json:"messages"`
-	Tools     []wTool  `json:"tools,omitempty"`
-	MaxTokens int      `json:"max_tokens,omitempty"`
+	Model     string  `json:"model"`
+	Messages  []wMsg  `json:"messages"`
+	Tools     []wTool `json:"tools,omitempty"`
+	MaxTokens int     `json:"max_tokens,omitempty"`
 }
 
 type wMsg struct {
@@ -240,7 +240,7 @@ func (p *openAIProv) build(req *core.ChatRequest) wReq {
 			for _, img := range msg.Images {
 				if img.URL != "" {
 					parts = append(parts, map[string]interface{}{
-						"type": "image_url",
+						"type":      "image_url",
 						"image_url": map[string]interface{}{"url": img.URL},
 					})
 				} else if img.Base64 != "" {

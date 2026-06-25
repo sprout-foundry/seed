@@ -231,9 +231,9 @@ func handleRun(s *state, params map[string]interface{}) (map[string]interface{},
 
 	st := ag.State()
 	return map[string]interface{}{
-		"result":  r,
-		"tokens":  st.TotalTokens(),
-		"cost":    st.TotalCost(),
+		"result": r,
+		"tokens": st.TotalTokens(),
+		"cost":   st.TotalCost(),
 	}, nil
 }
 
