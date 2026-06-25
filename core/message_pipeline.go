@@ -62,6 +62,12 @@ func (ch *ConversationHandler) prepareMessages() []Message {
 	// Sanitize: remove orphaned tool results
 	allMessages = ch.removeOrphanedToolResults(allMessages)
 
+	// Reorder: ensure tool results follow their tool calls in the correct
+	// order. Some providers (MiniMax, DeepSeek) require strict threading:
+	// tool results must appear immediately after the assistant message
+	// containing their tool calls, and in the same order as the tool calls.
+	allMessages = reorderToolResultsForThreading(allMessages)
+
 	// Sanitize: strip ANSI escape codes from message content to prevent
 	// terminal formatting codes from polluting LLM context.
 	allMessages = sanitizeMessages(allMessages)
@@ -117,6 +123,98 @@ func (ch *ConversationHandler) removeOrphanedToolResults(messages []Message) []M
 		}
 	}
 	return filtered
+}
+
+// reorderToolResultsForThreading ensures tool result messages appear in the
+// same order as their corresponding tool calls in the preceding assistant
+// message. Some providers (MiniMax, DeepSeek) enforce strict threading: a
+// tool result must follow the assistant message that issued its tool call,
+// and multiple results must match the tool call order.
+//
+// The function walks the message list. When it finds an assistant message
+// with tool calls, it collects the immediately-following tool results and
+// reorders them to match the tool call ID sequence. Non-tool messages
+// (user, system, assistant without tool calls) pass through unchanged.
+func reorderToolResultsForThreading(messages []Message) []Message {
+	if len(messages) <= 1 {
+		return messages
+	}
+
+	// Fast path: check if any assistant message has tool calls.
+	hasToolCalls := false
+	for _, msg := range messages {
+		if msg.Role == "assistant" && len(msg.ToolCalls) > 0 {
+			hasToolCalls = true
+			break
+		}
+	}
+	if !hasToolCalls {
+		return messages
+	}
+
+	result := make([]Message, 0, len(messages))
+	i := 0
+
+	for i < len(messages) {
+		msg := messages[i]
+
+		if msg.Role == "assistant" && len(msg.ToolCalls) > 0 {
+			// Build the expected order: tool call ID -> index in tool calls slice.
+			expectedOrder := make(map[string]int, len(msg.ToolCalls))
+			for j, tc := range msg.ToolCalls {
+				if tc.ID != "" {
+					expectedOrder[tc.ID] = j
+				}
+			}
+
+			// Collect immediately-following tool results.
+			i++
+			var toolResults []Message
+			for i < len(messages) && messages[i].Role == "tool" {
+				toolResults = append(toolResults, messages[i])
+				i++
+			}
+
+			// Add the assistant message.
+			result = append(result, msg)
+
+			// Reorder tool results to match tool call order.
+			if len(toolResults) > 1 {
+				// Build a map from tool_call_id to result.
+				resultByCallID := make(map[string]Message, len(toolResults))
+				for _, tr := range toolResults {
+					resultByCallID[tr.ToolCallID] = tr
+				}
+
+				// Emit results in tool call order.
+				for _, tc := range msg.ToolCalls {
+					if tc.ID == "" {
+						continue
+					}
+					if tr, ok := resultByCallID[tc.ID]; ok {
+						result = append(result, tr)
+						delete(resultByCallID, tc.ID)
+					}
+				}
+
+				// Any remaining results (orphaned within this block) are
+				// appended at the end to preserve them rather than dropping.
+				for _, tr := range toolResults {
+					if _, ok := resultByCallID[tr.ToolCallID]; ok {
+						result = append(result, tr)
+					}
+				}
+			} else {
+				// Single result — no reordering needed.
+				result = append(result, toolResults...)
+			}
+		} else {
+			result = append(result, msg)
+			i++
+		}
+	}
+
+	return result
 }
 
 // collapseSystemMessages merges multiple system messages into one at the front.
