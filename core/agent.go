@@ -103,6 +103,18 @@ func (a *Agent) triggerFractionOrDefault() float64 {
 	return defaultCompactionTriggerFraction
 }
 
+// substitutionTargetOrDefault returns the configured substitution target
+// fraction (clamped to (0, 1)) or the default if unset / out of range. This is
+// the context share that Phase 0a (checkpoint substitution) aims for when
+// pressure fires — deliberately well below the trigger so each substitution
+// pass buys many turns of headroom.
+func (a *Agent) substitutionTargetOrDefault() float64 {
+	if a.substitutionTargetFraction > 0 && a.substitutionTargetFraction < 1.0 {
+		return a.substitutionTargetFraction
+	}
+	return defaultSubstitutionTargetFraction
+}
+
 func (rc RetryConfig) JitterOrDefault() float64 {
 	return rc.Jitter
 }
@@ -134,6 +146,18 @@ type Options struct {
 	// defaultCompactionTriggerFraction (0.85). Set to 1.0 to keep the legacy
 	// "only compact when the estimate already exceeds the window" behavior.
 	CompactionTriggerFraction float64
+	// SubstitutionTargetFraction is the share of the model's context window
+	// that Phase 0a (iterative checkpoint substitution) targets when it fires.
+	// When context pressure crosses CompactionTriggerFraction, checkpoints are
+	// substituted oldest-first until the estimate drops to
+	// SubstitutionTargetFraction × contextSize (or all checkpoints are
+	// consumed). Defaults to emergencyTargetFraction (0.85), preserving the
+	// historical "substitute just enough to clear the trigger" behavior.
+	// Consumers who want each substitution pass to buy substantial headroom
+	// (e.g. sprout sets 0.50) can override here. The emergency drop/truncate
+	// cascade (Phase 1+) is unaffected — it always targets
+	// emergencyTargetFraction. Valid range is (0, 1); zero uses the default.
+	SubstitutionTargetFraction float64
 	// LLMSummarizer, if non-nil, enables LLM-based structural compaction. The
 	// compaction pipeline calls it to compress a window of older middle history
 	// into a single summary message, preserving intent better than the
@@ -205,6 +229,11 @@ type Agent struct {
 	// above which the chat loop runs proactive compaction. See
 	// Options.CompactionTriggerFraction.
 	compactionTriggerFraction float64
+
+	// substitutionTargetFraction is the target context share that Phase 0a
+	// (checkpoint substitution) aims for when pressure fires. See
+	// Options.SubstitutionTargetFraction.
+	substitutionTargetFraction float64
 
 	// llmSummarizer is the consumer-supplied LLM-summary callback used by
 	// structural compaction. Nil = disabled, fall back to rule-based compaction.
@@ -307,6 +336,7 @@ func NewAgent(opts Options) (*Agent, error) {
 		onCheckpoint:              opts.OnCheckpoint,
 		retryConfig:               opts.RetryConfig,
 		compactionTriggerFraction: opts.CompactionTriggerFraction,
+		substitutionTargetFraction: opts.SubstitutionTargetFraction,
 		llmSummarizer:             opts.LLMSummarizer,
 		pruner:                    opts.Pruner,
 		interruptCtx:              interruptCtx,

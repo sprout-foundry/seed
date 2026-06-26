@@ -16,6 +16,19 @@ const (
 	// the trigger must sit below 1.0 to give the loop room to react.
 	defaultCompactionTriggerFraction = 0.85
 
+	// defaultSubstitutionTargetFraction is the context share that Phase 0a
+	// (iterative checkpoint substitution) targets when pressure fires.
+	// Defaults to emergencyTargetFraction (0.85) to preserve the historical
+	// behavior for existing consumers — substitution gets just barely under
+	// the pressure zone. Consumers who want each substitution pass to buy
+	// substantial headroom (e.g. sprout) should set
+	// Options.SubstitutionTargetFraction to a lower value like 0.50: paying
+	// the one-way information-loss cost of substitution should clear the
+	// pressure zone for many turns rather than re-substituting one checkpoint
+	// every turn. The emergency drop/truncate cascade (Phase 1+) always
+	// targets emergencyTargetFraction regardless of this setting.
+	defaultSubstitutionTargetFraction = emergencyTargetFraction
+
 	// recoveryCompactionTargetFraction is the more aggressive target used when
 	// the provider has already returned a ContextOverflowError. Compaction
 	// during a recovery retry trims further so the retried request has clear
@@ -85,6 +98,12 @@ type CompactInputs struct {
 	// the internal estimate says we're already under target, so Phase 0
 	// does nothing and we silently degrade to Phase 1+). Optional.
 	EstimateFn func(messages []Message) int
+	// SubstitutionTargetFraction overrides the Phase 0a substitution target.
+	// When zero (default), Phase 0a uses the same emergencyTargetFraction as
+	// the drop phases. Set to a lower fraction (e.g. 0.50) to make each
+	// substitution pass buy more headroom. Only affects Phase 0a; Phase 1+
+	// drops always use emergencyTargetFraction.
+	SubstitutionTargetFraction float64
 }
 
 // Compact reduces messages to fit within the token limit using the
@@ -151,7 +170,14 @@ func CompactWith(in CompactInputs) CompactionResult {
 
 	// Phase 0a: iterative checkpoint substitution (loss-minimizing).
 	if len(in.Checkpoints) > 0 {
-		newMsgs, applied, under := IterativelySubstituteCheckpoints(messages, in.Checkpoints, targetTokens, estimate)
+		// Phase 0a can target a lower fraction than Phase 1+ so each
+		// substitution pass buys substantial headroom. Default keeps the
+		// historical behavior (same as emergencyTargetFraction).
+		subTarget := targetTokens
+		if in.SubstitutionTargetFraction > 0 && in.SubstitutionTargetFraction < 1.0 {
+			subTarget = int(float64(tokenLimit) * in.SubstitutionTargetFraction)
+		}
+		newMsgs, applied, under := IterativelySubstituteCheckpoints(messages, in.Checkpoints, subTarget, estimate)
 		if applied > 0 {
 			messages = newMsgs
 			strategies = append(strategies, "substitute")

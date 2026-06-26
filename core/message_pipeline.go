@@ -281,7 +281,10 @@ func (ch *ConversationHandler) runIterativeCompactionPhase0(rawMessages []Messag
 	if estimate(rawMessages) <= triggerLimit {
 		return rawMessages
 	}
-	target := int(float64(contextSize) * emergencyTargetFraction)
+	// Phase 0a targets the substitution fraction (default 0.50), well below
+	// the trigger, so each substitution pass buys many turns of headroom
+	// rather than re-substituting one checkpoint every turn.
+	target := int(float64(contextSize) * ch.agent.substitutionTargetOrDefault())
 
 	// Phase 0a: iterative checkpoint substitution.
 	checkpoints := ch.agent.state.GetCheckpoints()
