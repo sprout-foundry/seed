@@ -655,6 +655,44 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 		results := ch.agent.executor.Execute(ctx, assistantMsg.ToolCalls)
 		execDuration := time.Since(execStart)
 
+		// --- Threading recovery: dedupe + synthesize missing results ---
+		//
+		// When Execute returns fewer (or duplicate) results than the number of
+		// tool calls, the conversation state would end up with N assistant
+		// tool-calls but only M<N tool-result messages. Providers like MiniMax
+		// and DeepSeek reject this with "tool call result does not follow tool
+		// call" (error 2013). Fix it here so the message list stays well-formed.
+		//
+		// Step 1: Deduplicate results (keep first occurrence of each ToolCallID).
+		seenResultIDs := make(map[string]bool, len(results))
+		deduped := results[:0]
+		for _, r := range results {
+			if r.ToolCallID != "" && seenResultIDs[r.ToolCallID] {
+				continue // skip duplicate (empty IDs are kept; they're assigned later)
+			}
+			if r.ToolCallID != "" {
+				seenResultIDs[r.ToolCallID] = true
+			}
+			deduped = append(deduped, r)
+		}
+		results = deduped
+
+		// Step 2: Synthesize error results for any tool call that has no match.
+		for _, tc := range assistantMsg.ToolCalls {
+			if !seenResultIDs[tc.ID] {
+				ch.agent.debugLog("[threading-recovery] Synthesizing missing result for tool call %s\n", tc.ID)
+				results = append(results, ToolErrorMessage(
+					tc.ID,
+					tc.Function.Name,
+					"synthetic-result: executor did not return a result for this tool call; "+
+						"this is a recovery placeholder so the message list stays well-formed "+
+						"for providers that enforce strict tool-call/result threading "+
+						"(MiniMax error 2013, DeepSeek).",
+				))
+			}
+		}
+		// --- end threading recovery ---
+
 		// Publish tool_end events
 		if ch.agent.eventPublisher != nil {
 			toolCallMap := make(map[string]ToolCall)

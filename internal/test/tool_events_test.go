@@ -187,7 +187,7 @@ func TestE2E_ToolEndEvent_MissingResult_DefensivePublish(t *testing.T) {
 	// Should still get 2 tool_end events
 	endEvents := h.FindEvents(events.EventTypeToolEnd)
 	if len(endEvents) != 2 {
-		t.Fatalf("expected 2 tool_end events (including defensive), got %d", len(endEvents))
+		t.Fatalf("expected 2 tool_end events (including synthetic recovery), got %d", len(endEvents))
 	}
 
 	endByID := make(map[string]map[string]interface{})
@@ -202,12 +202,16 @@ func TestE2E_ToolEndEvent_MissingResult_DefensivePublish(t *testing.T) {
 		t.Errorf("expected call_1 status='completed', got %v", endByID["call_1"]["status"])
 	}
 
-	// call_2 should have error status (defensive publish for missing result)
+	// call_2 should have error status (synthetic result from threading recovery)
 	if endByID["call_2"]["status"] != core.ToolStatusError {
 		t.Errorf("expected call_2 status=%q, got %v", core.ToolStatusError, endByID["call_2"]["status"])
 	}
-	if endByID["call_2"]["error"] == nil || endByID["call_2"]["error"] == "" {
-		t.Error("expected call_2 to have an error message")
+	// The synthetic result is published through the normal tool_end path (which
+	// sets "result" with the synthetic content), not the defensive publish path
+	// (which sets "error"). Either is acceptable — the key invariant is that a
+	// tool_end event exists for call_2 with error status.
+	if endByID["call_2"]["error"] == nil && endByID["call_2"]["result"] == nil {
+		t.Error("expected call_2 to have an error or result field")
 	}
 }
 
