@@ -198,6 +198,21 @@ type Options struct {
 	// If the callback panics, the panic is caught and the agent continues
 	// normally.
 	OnCheckpoint func(TurnCheckpoint)
+	// OnDiagnosticCapture is an optional fire-and-forget callback invoked when
+	// the agent detects a severe, hard-to-reproduce condition that warrants
+	// saving the full prepared message transcript for offline analysis. The
+	// primary trigger is a tool-call threading rejection (e.g. MiniMax HTTP 400
+	// error 2013: "tool call result does not follow tool call") — a recurring
+	// failure the reordering fix did not fully eliminate.
+	//
+	// The callback receives a DiagnosticCapture with the exact message list,
+	// the detected violations, the provider error (when reactive), and the
+	// active system prompt. Implementations typically write the payload to disk
+	// (see WriteDiagnosticTranscript) and/or publish an event. If the callback
+	// panics, the panic is caught and the agent continues normally. The capture
+	// never blocks the conversation flow or alters error handling — it is
+	// purely observational.
+	OnDiagnosticCapture func(DiagnosticCapture)
 }
 
 // Agent is the main entry point for the conversation engine.
@@ -223,6 +238,7 @@ type Agent struct {
 	optimizer      *ConversationOptimizer
 	onIteration    func(iteration int, messages int, tokenEstimate int, contextSize int)
 	onCheckpoint   func(TurnCheckpoint)
+	onDiagnostic   func(DiagnosticCapture)
 	retryConfig    RetryConfig
 
 	// compactionTriggerFraction is the share of the model's context window
@@ -334,6 +350,7 @@ func NewAgent(opts Options) (*Agent, error) {
 		optimizer:                  opts.Optimizer,
 		onIteration:                opts.OnIteration,
 		onCheckpoint:               opts.OnCheckpoint,
+		onDiagnostic:               opts.OnDiagnosticCapture,
 		retryConfig:                opts.RetryConfig,
 		compactionTriggerFraction:  opts.CompactionTriggerFraction,
 		substitutionTargetFraction: opts.SubstitutionTargetFraction,

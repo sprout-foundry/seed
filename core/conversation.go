@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -239,6 +240,19 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 			})
 		}
 
+		// Tool-threading cleanup: run every iteration as a safety net. The
+		// reorder in prepareMessages runs on the raw slice, but the compaction
+		// cascade above (pruner / LLM-summary / Compact) mutates the slice
+		// afterward and can break the tool-result ordering invariants that
+		// MiniMax and DeepSeek enforce strictly (HTTP 400, error 2013). Even
+		// without compaction, tool execution in the previous iteration may have
+		// appended results out of order. Removing orphaned tool results and
+		// reordering here closes the window before the provider send. This is
+		// the fix for the recurring "tool call result does not follow tool
+		// call" rejection that survived the original reorder-only fix.
+		messages = ch.removeOrphanedToolResults(messages)
+		messages = reorderToolResultsForThreading(messages)
+
 		// Compute max_tokens for the completion.
 		//
 		// Math:
@@ -285,6 +299,16 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 			}
 			maxTokens = derived
 		}
+
+		// Diagnostic pre-send validation. The threading reorder inside
+		// prepareMessages can be undone by the compaction cascade above
+		// (pruner / LLM-summary / Compact all mutate the slice after reorder
+		// runs). Re-validate here as a safety net: when violations are found,
+		// capture a full transcript so the recurring "tool call result does
+		// not follow tool call" provider rejection (MiniMax 2013) can finally
+		// be reproduced and root-caused. The capture never blocks or alters
+		// control flow — it is purely observational.
+		ch.maybeCaptureThreadingDiagnostics(messages, iter, DiagnosticTriggerPreSendValidation, nil)
 
 		// Send to LLM
 		resp, err := chatFn(ctx, &ChatRequest{
@@ -774,6 +798,16 @@ func (ch *ConversationHandler) ProcessQuery(ctx context.Context, query string) (
 			classifiedErr := ClassifyError(err, providerName)
 			lastErr = classifiedErr
 
+			// Reactive diagnostic capture: when the provider explicitly rejects
+			// the request for tool-call threading violations (MiniMax 2013),
+			// snapshot the exact messages we sent plus local validation of
+			// them, so the failure can be reproduced offline. This is the
+			// authoritative capture path — the provider saw these messages and
+			// rejected them.
+			if IsToolThreadingError(classifiedErr) {
+				ch.maybeCaptureThreadingDiagnostics(req.Messages, iter, DiagnosticTriggerProviderRejection, classifiedErr)
+			}
+
 			// Fail fast on auth errors — retry won't help
 			if IsAuthError(classifiedErr) {
 				ch.agent.debugLog("[!!] Auth error, failing fast: %v\n", classifiedErr)
@@ -783,6 +817,14 @@ func (ch *ConversationHandler) ProcessQuery(ctx context.Context, query string) (
 			// Fail fast on context overflow — retry won't help
 			if IsContextOverflow(classifiedErr) {
 				ch.agent.debugLog("[!!] Context overflow, failing fast: %v\n", classifiedErr)
+				return nil, classifiedErr
+			}
+
+			// Fail fast on tool-threading errors — retrying the identical
+			// malformed message list wastes the retry budget (each attempt
+			// sends the same broken request and gets the same rejection).
+			if IsToolThreadingError(classifiedErr) {
+				ch.agent.debugLog("[!!] Tool threading error, failing fast: %v\n", classifiedErr)
 				return nil, classifiedErr
 			}
 
@@ -819,7 +861,16 @@ func (ch *ConversationHandler) ProcessQueryStream(ctx context.Context, query str
 		streamHandler := NewAgentStreamHandler(ch.agent, ch.agent.state)
 		streamErr := ch.agent.provider.ChatStream(ctx, req, streamHandler)
 		if streamErr != nil {
-			return nil, streamErr
+			// Classify and capture diagnostics for threading violations, mirroring
+			// the non-streaming ProcessQuery path. Streaming requests can hit the
+			// same MiniMax 2013 rejection; without this, failures escape unclassified
+			// and no diagnostic transcript is saved. Unlike the non-streaming path,
+			// there is no retry loop here — streaming errors are terminal.
+			classifiedErr := ClassifyError(streamErr, ch.agent.provider.Info().Model)
+			if IsToolThreadingError(classifiedErr) {
+				ch.maybeCaptureThreadingDiagnostics(req.Messages, iter, DiagnosticTriggerProviderRejection, classifiedErr)
+			}
+			return nil, classifiedErr
 		}
 
 		resp := streamHandler.Response()
@@ -831,6 +882,88 @@ func (ch *ConversationHandler) ProcessQueryStream(ctx context.Context, query str
 	}
 
 	return ch.runLoop(ctx, query, "ProcessQueryStream", chatFn)
+}
+
+// maybeCaptureThreadingDiagnostics runs ValidateToolThreading against the
+// prepared message list and, if violations are found (or a provider rejection
+// error is supplied), invokes the agent's OnDiagnosticCapture callback with a
+// full transcript snapshot. It is safe to call even when no callback is
+// configured (no-op) and never panics: a panicking callback is recovered and
+// logged so diagnostic capture can never break the conversation flow.
+//
+// trigger is one of the DiagnosticTrigger* constants. triggerErr is the
+// provider error for reactive captures (DiagnosticTriggerProviderRejection)
+// and nil for proactive pre-send captures.
+func (ch *ConversationHandler) maybeCaptureThreadingDiagnostics(messages []Message, iter int, trigger string, triggerErr error) {
+	if ch.agent.onDiagnostic == nil {
+		return
+	}
+
+	violations := ValidateToolThreading(messages)
+
+	// Proactive pre-send: only fire when there is something wrong. Reactive:
+	// always fire (the provider already rejected the request) even if our
+	// local validator happens to miss it — the provider's view is authoritative.
+	if trigger == DiagnosticTriggerPreSendValidation && len(violations) == 0 {
+		return
+	}
+
+	sortViolations(violations)
+
+	errMsg := ""
+	if triggerErr != nil {
+		errMsg = triggerErr.Error()
+	}
+
+	capture := DiagnosticCapture{
+		Trigger:      trigger,
+		Provider:     ch.agent.provider.Info().Model,
+		Iteration:    iter,
+		Violations:   violations,
+		Messages:     cloneMessagesForCapture(messages),
+		Error:        errMsg,
+		SystemPrompt: ch.agent.systemPrompt,
+	}
+
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				buf := make([]byte, 4096)
+				n := runtime.Stack(buf, false)
+				ch.agent.debugLog("[!!] OnDiagnosticCapture callback panicked: %v\n%s\n", r, buf[:n])
+			}
+		}()
+		ch.agent.onDiagnostic(capture)
+	}()
+}
+
+// cloneMessagesForCapture returns a shallow copy of the message slice with
+// copied ToolCalls/Images/Meta so the diagnostic snapshot is insulated from
+// any later in-place mutation of the live conversation state.
+func cloneMessagesForCapture(messages []Message) []Message {
+	out := make([]Message, len(messages))
+	for i := range messages {
+		m := messages[i]
+		if len(m.ToolCalls) > 0 {
+			tc := make([]ToolCall, len(m.ToolCalls))
+			copy(tc, m.ToolCalls)
+			m.ToolCalls = tc
+		}
+		if len(m.Images) > 0 {
+			img := make([]ImageData, len(m.Images))
+			copy(img, m.Images)
+			m.Images = img
+		}
+		if len(m.Meta) > 0 {
+			meta := make(map[string]string, len(m.Meta))
+			for k, v := range m.Meta {
+				meta[k] = v
+			}
+			m.Meta = meta
+		}
+		out[i] = m
+	}
+	return out
 }
 
 // compactMessages reduces the message list to fit within the context window.

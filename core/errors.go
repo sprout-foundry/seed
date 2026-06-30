@@ -182,7 +182,52 @@ func IsClientError(err error) bool {
 	return errors.As(err, &c)
 }
 
-// ContentFilteredError indicates the provider's content filter blocked the
+// ToolThreadingError indicates the provider rejected the request because tool
+// result messages did not satisfy its tool-call threading invariants: each
+// tool result must immediately follow the assistant message containing its
+// tool call, and multiple results for one assistant turn must appear in the
+// same order as the tool calls. Some providers (MiniMax, DeepSeek) enforce
+// this strictly and return HTTP 400 with a code like 2013: "tool call result
+// does not follow tool call".
+//
+// This is a permanent ClientError variant — retrying an identical request
+// won't help. It is separated from the generic ClientError so callers can
+// trigger diagnostic capture and targeted recovery (re-running the threading
+// cleanup) rather than failing opaquely.
+type ToolThreadingError struct {
+	// Provider is the provider that returned the rejection.
+	Provider string
+	// Violations summarizes the threading problems detected in the prepared
+	// message list at capture time. Empty when the error was classified from
+	// a provider response before local validation ran.
+	Violations []ToolThreadingViolation
+	// Wrapped is the underlying error returned by the provider.
+	Wrapped error
+}
+
+func (e *ToolThreadingError) Error() string {
+	base := "tool call threading error"
+	if e.Provider != "" {
+		base += " (" + e.Provider + ")"
+	}
+	if len(e.Violations) > 0 {
+		base += fmt.Sprintf(": %d violation(s)", len(e.Violations))
+	}
+	if e.Wrapped != nil {
+		base += ": " + e.Wrapped.Error()
+	}
+	return base
+}
+
+func (e *ToolThreadingError) Unwrap() error { return e.Wrapped }
+
+// IsToolThreadingError reports whether err is a *ToolThreadingError.
+func IsToolThreadingError(err error) bool {
+	var t *ToolThreadingError
+	return errors.As(err, &t)
+}
+
+// ContentFilteredError indicates that the provider's content filter blocked the
 // response after a retry attempt was already made.
 type ContentFilteredError struct {
 	// Provider is the provider that returned the content filter.

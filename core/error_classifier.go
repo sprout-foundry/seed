@@ -14,7 +14,7 @@ func ClassifyError(err error, provider string) error {
 	}
 
 	// Return typed errors unchanged.
-	if IsTransient(err) || IsRateLimit(err) || IsContextOverflow(err) || IsAuthError(err) || IsClientError(err) {
+	if IsTransient(err) || IsRateLimit(err) || IsContextOverflow(err) || IsAuthError(err) || IsClientError(err) || IsToolThreadingError(err) {
 		return err
 	}
 
@@ -52,6 +52,20 @@ func ClassifyError(err error, provider string) error {
 		"input is too long", "prompt is too long") {
 		return &ContextOverflowError{
 			Wrapped: err,
+		}
+	}
+
+	// Tool-call threading rejection. Some providers (MiniMax, DeepSeek) return
+	// HTTP 400 with a distinctive message when tool results don't follow their
+	// tool calls. Detect this BEFORE the generic 4xx client-error check below
+	// so callers can trigger diagnostic capture and targeted recovery instead
+	// of an opaque ClientError. MiniMax's code is 2013.
+	if containsAny(msg, "tool call result does not follow", "does not follow tool call",
+		"tool result does not follow", "tool call does not match",
+		"tool_use_ids must match", "tool messages must follow") {
+		return &ToolThreadingError{
+			Provider: provider,
+			Wrapped:  err,
 		}
 	}
 
