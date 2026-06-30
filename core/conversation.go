@@ -679,15 +679,15 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 
 		// Step 2: Synthesize error results for any tool call that has no match.
 		for _, tc := range assistantMsg.ToolCalls {
+			if tc.ID == "" {
+				continue // empty IDs are kept; they're assigned later
+			}
 			if !seenResultIDs[tc.ID] {
 				ch.agent.debugLog("[threading-recovery] Synthesizing missing result for tool call %s\n", tc.ID)
 				results = append(results, ToolErrorMessage(
 					tc.ID,
 					tc.Function.Name,
-					"synthetic-result: executor did not return a result for this tool call; "+
-						"this is a recovery placeholder so the message list stays well-formed "+
-						"for providers that enforce strict tool-call/result threading "+
-						"(MiniMax error 2013, DeepSeek).",
+					"synthetic-result: executor did not return a result for this tool call; recovery placeholder to keep message list well-formed",
 				))
 			}
 		}

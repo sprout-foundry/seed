@@ -267,3 +267,77 @@ func TestThreadingRecovery_NoChangeWhenBalanced(t *testing.T) {
 		t.Errorf("expected 0 violations in balanced scenario, got %d: %v", len(violations), violations)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// TestThreadingRecovery_AllResultsMissingFromNilExecutor
+//
+// Scenario: executor.Execute returns nil (e.g. noopExecutor) but the
+// assistant message contains tool calls. The recovery code must synthesize
+// error results for ALL tool calls so the message list stays well-formed.
+// ---------------------------------------------------------------------------
+
+func TestThreadingRecovery_AllResultsMissingFromNilExecutor(t *testing.T) {
+	provider := &dynamicProvider{
+		info: ProviderInfo{ContextSize: 10000},
+		responses: []*ChatResponse{
+			{
+				Choices: []ChatChoice{{
+					Message: Message{
+						Role:    "assistant",
+						Content: "Running tools.",
+						ToolCalls: []ToolCall{
+							{ID: "call_x", Function: ToolCallFunction{Name: "toolX", Arguments: "{}"}},
+							{ID: "call_y", Function: ToolCallFunction{Name: "toolY", Arguments: "{}"}},
+						},
+					},
+				}},
+				Usage: ChatUsage{TotalTokens: 10},
+			},
+			{
+				Choices: []ChatChoice{{
+					Message: Message{Role: "assistant", Content: "Done."},
+				}},
+				Usage: ChatUsage{TotalTokens: 5},
+			},
+		},
+	}
+
+	// Executor returns nil — simulates a noop or broken executor.
+	executor := &mockExecutor{results: nil}
+
+	a, err := NewAgent(Options{
+		Provider:      provider,
+		Executor:      executor,
+		MaxIterations: 3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = a.Run(context.Background(), "Run tools")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	msgs := a.State().Messages()
+
+	// Both tool calls must have synthetic error results.
+	syntheticCount := 0
+	for _, m := range msgs {
+		if m.Role == "tool" && strings.Contains(m.Content, "synthetic-result") {
+			syntheticCount++
+			if m.Status != ToolStatusError {
+				t.Errorf("expected synthetic result status=%q for tool call %q, got %q", ToolStatusError, m.ToolCallID, m.Status)
+			}
+		}
+	}
+	if syntheticCount != 2 {
+		t.Errorf("expected 2 synthetic tool results, got %d", syntheticCount)
+	}
+
+	// Validate the full message list — should have zero violations.
+	violations := ValidateToolThreading(msgs)
+	if len(violations) > 0 {
+		t.Errorf("expected 0 violations after nil-executor recovery, got %d: %v", len(violations), violations)
+	}
+}
