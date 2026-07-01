@@ -191,6 +191,11 @@ type Options struct {
 	// structured tool calls will not be cleaned before execution. Default
 	// (false): normalizer is enabled.
 	DisableNormalizer bool
+	// DisableMinimumSubstanceGuard disables the minimum-substance-after-tools
+	// check. When enabled, the guard catches short meta-acknowledgements
+	// ("I've reviewed the files.") returned after tool results and retries
+	// with a reminder to synthesize findings. Default false: guard enabled.
+	DisableMinimumSubstanceGuard bool
 	// OnCheckpoint is an optional fire-and-forget callback invoked synchronously
 	// after each completed turn. It receives the TurnCheckpoint summarizing what
 	// happened in the turn. The callback is invoked immediately after the
@@ -235,11 +240,15 @@ type Agent struct {
 	fallbackParser *FallbackParser
 	normalizer     *ToolCallNormalizer
 	validator      *ResponseValidator
-	optimizer      *ConversationOptimizer
-	onIteration    func(iteration int, messages int, tokenEstimate int, contextSize int)
-	onCheckpoint   func(TurnCheckpoint)
-	onDiagnostic   func(DiagnosticCapture)
-	retryConfig    RetryConfig
+	// disableSubstanceGuard disables the minimum-substance-after-tools check.
+	// When true, short meta-acknowledgements after tool results ("I've
+	// reviewed the files.") are accepted without a retry. Default false.
+	disableSubstanceGuard bool
+	optimizer             *ConversationOptimizer
+	onIteration           func(iteration int, messages int, tokenEstimate int, contextSize int)
+	onCheckpoint          func(TurnCheckpoint)
+	onDiagnostic          func(DiagnosticCapture)
+	retryConfig           RetryConfig
 
 	// compactionTriggerFraction is the share of the model's context window
 	// above which the chat loop runs proactive compaction. See
@@ -347,6 +356,7 @@ func NewAgent(opts Options) (*Agent, error) {
 		fallbackParser:             fallbackParser,
 		normalizer:                 normalizer,
 		validator:                  validator,
+		disableSubstanceGuard:      opts.DisableMinimumSubstanceGuard,
 		optimizer:                  opts.Optimizer,
 		onIteration:                opts.OnIteration,
 		onCheckpoint:               opts.OnCheckpoint,

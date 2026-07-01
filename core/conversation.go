@@ -50,6 +50,12 @@ type ConversationHandler struct {
 	// separate from continuationCount and resets when tool calls are executed.
 	tentativeRejectionCount int
 
+	// substanceRejectionCount tracks consecutive rejections of short,
+	// non-substantive responses returned after tool results. Mirrors the
+	// tentativeRejectionCount pattern: after 2 rejections, the response is
+	// accepted to avoid infinite loops. Resets when tool calls are executed.
+	substanceRejectionCount int
+
 	// contentFilterRetry tracks whether we've already retried once for a
 	// content_filter finish_reason. On first occurrence, we retry. On second,
 	// we return a ContentFilteredError to the consumer.
@@ -102,6 +108,7 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 	ch.contentFilterRetry = false
 	ch.continuationCount = 0
 	ch.tentativeRejectionCount = 0
+	ch.substanceRejectionCount = 0
 	ch.consecutiveBlank = 0
 	ch.turnCompleted = false
 
@@ -487,6 +494,36 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 					continue
 				}
 			}
+			// Minimum-substance-after-tools guard: when the model returns "stop"
+			// with no tool calls immediately after tool results, and the content
+			// is short and lacks structural/content markers of genuine findings
+			// (file paths, code blocks, error messages, etc.), reject it and ask
+			// for a real synthesis. After 2 rejections, accept to avoid loops.
+			// This catches the gap the tentative check misses: a brief
+			// meta-acknowledgement like "I've reviewed the files." is neither
+			// blank, nor tentative planning language, nor truncated — yet it
+			// conveys no findings and leaves the caller with nothing useful.
+			if a.validator != nil && !a.disableSubstanceGuard &&
+				len(assistantMsg.ToolCalls) == 0 &&
+				ch.followsRecentToolResults() &&
+				a.validator.LooksInsufficientAfterToolCalls(assistantMsg.Content) {
+				ch.substanceRejectionCount++
+				if ch.substanceRejectionCount >= 2 {
+					ch.substanceRejectionCount = 0
+					ch.agent.debugLog("[finish] stop — insufficient post-tool substance rejection limit reached, accepting response\n")
+					// Fall through to the existing tool-call / completion logic below.
+				} else {
+					ch.agent.debugLog("[finish] stop — insufficient post-tool substance (rejection %d/2), looping again\n",
+						ch.substanceRejectionCount)
+					ch.enqueueTransientMessage(Message{
+						Role: "user",
+						Content: "You just received tool results. Your previous response was too brief to convey findings. " +
+							"Synthesize what you learned: cite specific file paths, line numbers, function names, " +
+							"error messages, or relevant code snippets from the tool results.",
+					})
+					continue
+				}
+			}
 			// Fall through to the existing tool-call / completion logic below.
 
 		case "tool_calls", "":
@@ -626,6 +663,7 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 		// continuation budget and blank counter before executing.
 		ch.continuationCount = 0
 		ch.tentativeRejectionCount = 0
+		ch.substanceRejectionCount = 0
 		ch.consecutiveBlank = 0
 
 		ch.agent.debugLog("[tool] Executing %d tool calls\n", len(assistantMsg.ToolCalls))

@@ -276,3 +276,129 @@ func (rv *ResponseValidator) LooksLikeTentativePostToolResponse(content string) 
 	rv.log("[validate] LooksLikeTentativePostToolResponse: false (no prefix match)")
 	return false
 }
+
+// insufficientWordThreshold is the word-count ceiling below which a
+// post-tool response is a candidate for the insufficiency check.
+// Responses at or above this count are assumed substantive regardless
+// of content. This is deliberately higher than tentativeWordThreshold
+// (40) because a model can produce 40 words of pure meta-acknowledgement
+// ("I've reviewed the files you mentioned. They appear to contain the
+// code for the build runner. Let me know if you need anything else.")
+// that is neither tentative planning language nor useful findings.
+const insufficientWordThreshold = 60
+
+// insufficientMetaPrefixes are language patterns that indicate the model
+// is claiming to have done something ("reviewed", "checked", "looked at")
+// without actually reporting what it found. These are the signatures of
+// the bug: a researcher reads files, then responds with a brief
+// acknowledgement that conveys zero findings. The list is intentionally
+// narrow — simple confirmations ("Done.", "Got it.", "Yes.") and
+// substantive findings (file paths, code blocks, error messages) are
+// NOT matched and pass through unaffected.
+var insufficientMetaPrefixes = []string{
+	"i've reviewed",
+	"i have reviewed",
+	"i reviewed",
+	"i've checked",
+	"i have checked",
+	"i checked",
+	"i've looked at",
+	"i have looked at",
+	"i looked at",
+	"i've read",
+	"i have read",
+	"i read the",
+	"i've examined",
+	"i have examined",
+	"i examined",
+}
+
+// LooksInsufficientAfterToolCalls detects when the model returned "stop"
+// with no tool calls immediately after receiving tool results, but the
+// content is a brief meta-acknowledgement that claims action without
+// delivering findings.
+//
+// This targets a specific bug pattern: a researcher subagent reads
+// files, then responds "I've reviewed the files." — which is neither
+// blank, nor tentative planning language ("Let me..."), nor truncated,
+// yet conveys no findings. Simple confirmations ("Done.", "Got it.")
+// and substantive responses (file paths, code, errors) pass through
+// unaffected.
+//
+// Returns true only when ALL of these hold:
+//   - Content is under insufficientWordThreshold (60) words.
+//   - Content starts with one of the insufficientMetaPrefixes (case-insensitive).
+//   - Content contains none of the insufficientSignals (substance markers).
+func (rv *ResponseValidator) LooksInsufficientAfterToolCalls(content string) bool {
+	if len(content) == 0 {
+		// Empty content is handled by isBlankIteration, not here.
+		return false
+	}
+
+	// Word count gate: long responses are substantive regardless of prefix.
+	wordCount := len(strings.Fields(content))
+	if wordCount >= insufficientWordThreshold {
+		rv.log("[validate] LooksInsufficientAfterToolCalls: false (too long: %d words)",
+			wordCount)
+		return false
+	}
+
+	// Prefix gate: only trigger on meta-acknowledgement language. A response
+	// like "Done." or "Build passed." doesn't match and is left alone.
+	lower := strings.ToLower(strings.TrimSpace(content))
+	matchedPrefix := ""
+	for _, prefix := range insufficientMetaPrefixes {
+		if strings.HasPrefix(lower, prefix) {
+			matchedPrefix = prefix
+			break
+		}
+	}
+	if matchedPrefix == "" {
+		return false
+	}
+
+	// Signal gate: even if the prefix matches, presence of any substance
+	// marker (file path, code block, error message) exempts the response.
+	for _, signal := range insufficientSignals {
+		if strings.Contains(lower, signal) {
+			rv.log("[validate] LooksInsufficientAfterToolCalls: false (matched prefix %q but found signal %q)",
+				matchedPrefix, signal)
+			return false
+		}
+	}
+
+	rv.log("[validate] LooksInsufficientAfterToolCalls: true (prefix %q, %d words, no signals)",
+		matchedPrefix, wordCount)
+	return true
+}
+
+// insufficientSignals are substrings that, when present, indicate the
+// response contains substantive findings rather than a bare
+// acknowledgement. The check is case-insensitive. Presence of ANY signal
+// exempts the response from the insufficiency check — even a short
+// response that quotes a file path or an error message is useful.
+var insufficientSignals = []string{
+	"\n-",          // markdown list item
+	"\n*",          // markdown list item (alt)
+	"\n1.",         // numbered list
+	"\n2.",         // numbered list
+	"\n\u2022",     // unicode bullet
+	"\n```",        // fenced code block
+	".go:",         // Go file:line reference
+	".ts:",         // TypeScript file:line
+	".py:",         // Python file:line
+	".rs:",         // Rust file:line
+	"line ",        // "on line 42"
+	"func ",        // Go function reference
+	"err != nil",   // Go error-handling pattern
+	"panic(",       // Go panic
+	"error:",       // generic error report
+	"stack trace",  // error/panic reference
+	"undefined",    // compiler/linter finding
+	"imported but", // unused-import finding
+	"not declared", // compiler finding
+	"unexpected",   // test failure language
+	"expected",     // test assertion language
+	"failed:",      // test/build failure
+	"passed",       // test result
+}
