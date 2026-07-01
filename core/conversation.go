@@ -56,6 +56,13 @@ type ConversationHandler struct {
 	// accepted to avoid infinite loops. Resets when tool calls are executed.
 	substanceRejectionCount int
 
+	// reasoningOnlyRejectionCount tracks consecutive rejections of
+	// reasoning-only responses — assistant turns where the visible Content
+	// is essentially empty but ReasoningContent carries the model's
+	// intent. After 2 rejections the response is accepted to avoid
+	// infinite loops. Resets when tool calls are executed.
+	reasoningOnlyRejectionCount int
+
 	// contentFilterRetry tracks whether we've already retried once for a
 	// content_filter finish_reason. On first occurrence, we retry. On second,
 	// we return a ContentFilteredError to the consumer.
@@ -109,6 +116,7 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 	ch.continuationCount = 0
 	ch.tentativeRejectionCount = 0
 	ch.substanceRejectionCount = 0
+	ch.reasoningOnlyRejectionCount = 0
 	ch.consecutiveBlank = 0
 	ch.turnCompleted = false
 
@@ -423,35 +431,77 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 			// "stop" — model completed normally.
 			// Check for blank or repetitive content when there are no tool calls.
 			if len(assistantMsg.ToolCalls) == 0 {
-				isBlank := ch.isBlankIteration(assistantMsg.Content)
-				isRepetitive := !isBlank && a.validator != nil && ch.isRepetitiveContent(assistantMsg.Content)
-
-				if isBlank || isRepetitive {
-					ch.consecutiveBlank++
-					if ch.consecutiveBlank == 1 {
-						// First blank/repetitive response — send a reminder.
-						reminder := "Your previous response was empty. Please provide a complete response."
-						if isRepetitive {
-							reminder = "Your previous response appears repetitive. Please provide new content."
-						}
-						ch.agent.debugLog("[finish] stop with %s content — 1st consecutive, sending reminder\n",
-							map[bool]string{true: "repetitive", false: "blank"}[isRepetitive])
+				// Reasoning-only-after-tool-results: a reasoning-capable model
+				// (minimax, deepseek-r1, glm, etc.) sent "stop" with essentially
+				// empty visible Content but non-empty ReasoningContent. The
+				// model was thinking about its next step rather than executing
+				// it. Without this guard the runLoop accepts the stop and exits
+				// the turn after a tool call, leaving callers with tool results
+				// but no synthesis.
+				//
+				// Checks FIRST (more specific than blank) — a reasoning-only
+				// response has empty Content which would also trip the blank
+				// guard, but the blank guard's generic "your response was
+				// empty" nudge doesn't tell the model *why* we're asking for
+				// more. The reasoning-only nudge explicitly asks the model to
+				// surface its plan as an action or a final answer.
+				//
+				// Fires only when:
+				//   1. finish_reason is "stop" (not "length", not a tool call).
+				//   2. There are no tool calls in this response.
+				//   3. The validator reports LooksLikeReasoningOnlyAfterToolResults.
+				//
+				// Capped at 2 rejections to avoid infinite loops on a model that
+				// keeps thinking without acting.
+				if a.validator != nil && !a.disableSubstanceGuard &&
+					a.validator.LooksLikeReasoningOnlyAfterToolResults(assistantMsg.Content, assistantMsg.ReasoningContent) {
+					ch.reasoningOnlyRejectionCount++
+					if ch.reasoningOnlyRejectionCount >= 2 {
+						ch.reasoningOnlyRejectionCount = 0
+						ch.agent.debugLog("[finish] stop — reasoning-only rejection limit reached, accepting response\n")
+						// Reset consecutiveBlank so the blank guard doesn't trip on this same response.
+						ch.consecutiveBlank = 0
+						// Fall through to the existing tool-call / completion logic below.
+					} else {
+						ch.agent.debugLog("[finish] stop — reasoning-only response after tool results (rejection %d/2), asking model to act or answer\n",
+							ch.reasoningOnlyRejectionCount)
 						ch.enqueueTransientMessage(Message{
 							Role:    "user",
-							Content: reminder,
+							Content: "Your previous response had reasoning but no visible text. Call the next tool or state the final answer explicitly — do not end with only thinking.",
 						})
 						continue
 					}
-					// Second consecutive blank/repetitive — force-finalize with error.
-					ch.agent.debugLog("[finish] stop with %s content — %d consecutive blank/repetitive responses, force-finalizing with error\n",
-						map[bool]string{true: "repetitive", false: "blank"}[isRepetitive], ch.consecutiveBlank)
-					return "", &BlankResponseError{
-						Provider: ch.agent.provider.Info().Model,
-						Count:    ch.consecutiveBlank,
+				} else {
+					isBlank := ch.isBlankIteration(assistantMsg.Content)
+					isRepetitive := !isBlank && a.validator != nil && ch.isRepetitiveContent(assistantMsg.Content)
+
+					if isBlank || isRepetitive {
+						ch.consecutiveBlank++
+						if ch.consecutiveBlank == 1 {
+							// First blank/repetitive response — send a reminder.
+							reminder := "Your previous response was empty. Please provide a complete response."
+							if isRepetitive {
+								reminder = "Your previous response appears repetitive. Please provide new content."
+							}
+							ch.agent.debugLog("[finish] stop with %s content — 1st consecutive, sending reminder\n",
+								map[bool]string{true: "repetitive", false: "blank"}[isRepetitive])
+							ch.enqueueTransientMessage(Message{
+								Role:    "user",
+								Content: reminder,
+							})
+							continue
+						}
+						// Second consecutive blank/repetitive — force-finalize with error.
+						ch.agent.debugLog("[finish] stop with %s content — %d consecutive blank/repetitive responses, force-finalizing with error\n",
+							map[bool]string{true: "repetitive", false: "blank"}[isRepetitive], ch.consecutiveBlank)
+						return "", &BlankResponseError{
+							Provider: ch.agent.provider.Info().Model,
+							Count:    ch.consecutiveBlank,
+						}
 					}
+					// Non-blank, non-repetitive content — reset the counter.
+					ch.consecutiveBlank = 0
 				}
-				// Non-blank, non-repetitive content — reset the counter.
-				ch.consecutiveBlank = 0
 			}
 			// If content is structurally incomplete (truncated), ask the model
 			// to provide its final answer. This catches cases where the model

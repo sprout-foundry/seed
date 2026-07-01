@@ -372,6 +372,63 @@ func (rv *ResponseValidator) LooksInsufficientAfterToolCalls(content string) boo
 	return true
 }
 
+// reasoningOnlyContentMaxLen is the maximum length of Content (after trim)
+// for which a post-tool response is treated as empty-from-the-user's-perspective.
+// One or two words — even with proper punctuation — is not enough to convey
+// findings after a tool call. A response like "Done." or "Looks good." still
+// counts as essentially empty for the purpose of detecting reasoning-only turns,
+// which is what this guard is for.
+const reasoningOnlyContentMaxLen = 2
+
+// reasoningOnlyReasoningMinLen is the minimum length of ReasoningContent
+// required to count as a real reasoning stream rather than empty reasoning
+// metadata. A response with no reasoning at all (ReasoningContent == "") is
+// caught by the existing blank guard and doesn't need this check.
+const reasoningOnlyReasoningMinLen = 5
+
+// LooksLikeReasoningOnlyAfterToolResults detects when the model sent "stop"
+// after receiving tool results, but the visible Content is essentially empty
+// while ReasoningContent (the model's internal chain-of-thought) carries
+// intent that should have been an action or a final answer.
+//
+// This guards against a specific bug pattern observed with reasoning-capable
+// models (e.g. minimax, glm, deepseek-r1): the model emits a thinking block,
+// decides what it would do "next", then sends an empty or near-empty Content
+// along with finish_reason "stop". The conversation loop accepts the stop and
+// exits the run, leaving the caller with tool results but no synthesis.
+//
+// A response is "reasoning only" when ALL of these hold:
+//   - Trimmed Content has fewer than reasoningOnlyContentMaxLen whitespace-separated tokens.
+//   - ReasoningContent is non-empty and at least reasoningOnlyReasoningMinLen runes.
+//   - Content has no tool calls (otherwise the model genuinely picked a tool).
+//
+// Returns false for genuine short answers ("Done.", "Yes.") and for responses
+// that pair reasoning with a one- or two-word acknowledgment that the model
+// might reasonably intend as the final answer — those go through the existing
+// blank / repetition guard which handles them appropriately.
+func (rv *ResponseValidator) LooksLikeReasoningOnlyAfterToolResults(content, reasoningContent string) bool {
+	// Visible content must be essentially empty. Count whitespace-separated
+	// tokens after trim; the guard fires on zero or one token. We use
+	// Fields not len() so "Done." (1 token) is treated as empty for this
+	// purpose — the goal is to push the model toward a real sentence.
+	trimmedContent := strings.TrimSpace(content)
+	if len(strings.Fields(trimmedContent)) >= reasoningOnlyContentMaxLen {
+		return false
+	}
+
+	// ReasoningContent must indicate the model actually thought. Empty
+	// reasoning metadata is not the same as a reasoning-only turn — that's
+	// the blank guard's job.
+	trimmedReasoning := strings.TrimSpace(reasoningContent)
+	if utf8.RuneCountInString(trimmedReasoning) < reasoningOnlyReasoningMinLen {
+		return false
+	}
+
+	rv.log("[validate] LooksLikeReasoningOnlyAfterToolResults: true (content=%q, reasoning_len=%d)",
+		trimmedContent, utf8.RuneCountInString(trimmedReasoning))
+	return true
+}
+
 // insufficientSignals are substrings that, when present, indicate the
 // response contains substantive findings rather than a bare
 // acknowledgement. The check is case-insensitive. Presence of ANY signal
