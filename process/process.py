@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import pathlib
 import re
 import subprocess
@@ -44,24 +45,48 @@ PLACEHOLDER = "{TODO_TEXT}"
 
 # Patterns that indicate the agent is still making progress
 _PROGRESS_PATTERNS = [
+    # Tool execution
     r"tool_call",
     r"running subagent",
     r"spawn.*subagent",
     r"executing tool",
     r"tool result",
+    # LLM activity
     r"llm call",
     r"tokens_",
+    r"streaming",
+    r"token",
+    # Agent lifecycle
     r"iteration",
     r"compacting",
     r"preparing messages",
     r"process_query",
     r"finish_reason",
+    # Git/build activity
     r"staged changes",
     r"commit",
     r"git add",
     r"build",
     r"test",
     r"review",
+    # Sprout-specific output markers
+    r"\[OK\]",          # Completion success
+    r"\[WARN\]",        # Warnings during execution
+    r"\[STOP\]",        # Stop/interrupt messages
+    r"\[FAIL\]",        # Errors (still activity)
+    r"\[~\]",           # Pruning/compaction
+    r"\[>>\]",          # Direct mode processing
+    r"\[web\]",         # Web UI messages
+    r"\[bot\]",         # Interactive mode
+    r"\[chart\]",       # Provider/model info
+    r"\[Detected",      # Command detection
+    r"\[Auto-",         # Auto-execution
+    r"\[!]",            # Fast path
+    r"\[\|",            # Workflow yield
+    r"\[debug\]",       # Debug output
+    r"\[credentials\]", # Credential messages
+    r"\[mcp",           # MCP messages
+    r"\[coder\]|running subagent",  # Subagent persona output
 ]
 _PROGRESS_RE = re.compile("|".join(_PROGRESS_PATTERNS), re.IGNORECASE)
 
@@ -265,8 +290,12 @@ class ProgressMonitor:
     def feed(self, data: str) -> None:
         """Process output data and update progress tracking."""
         self.total_bytes += len(data)
-        if _PROGRESS_RE.search(data):
+        # Reset staleness on any non-empty output — the process is alive if
+        # it's producing bytes.  Reset stale warning count only on recognised
+        # progress indicators so a spinner doesn't mask a real stall.
+        if data.strip():
             self.last_progress_time = time.time()
+        if _PROGRESS_RE.search(data):
             self.stale_warnings = 0
 
     def is_stale(self) -> bool:
@@ -284,22 +313,212 @@ class ProgressMonitor:
         )
 
 
-def _tee_output(
-    source,  # subprocess stdout/stderr pipe
-    monitor: ProgressMonitor,
-    label: str = "",
-) -> str:
-    """Read from pipe, tee to stderr with progress monitoring, return collected text."""
-    collected: list[str] = []
-    prefix = f"[{label}] " if label else ""
-    for line in source:
-        line = line if isinstance(line, str) else line.decode("utf-8", errors="replace")
-        monitor.feed(line)
-        collected.append(line)
-        # Only print non-empty lines to avoid flooding stderr
-        if line.strip():
-            print(f"{prefix}{line}", end="", file=sys.stderr)
-    return "".join(collected)
+def _have_pty() -> bool:
+    """True if this platform supports PTY operations (os.openpty + fcntl)."""
+    if not hasattr(os, "openpty"):
+        return False
+    try:
+        import fcntl  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+def _drain_pty(master_fd: int, monitor: ProgressMonitor) -> str:
+    """Read all available data from a non-blocking PTY master fd.
+
+    Returns the decoded text collected this call (may be empty).
+    """
+    chunks: list[str] = []
+    while True:
+        try:
+            chunk = os.read(master_fd, 4096)
+            if not chunk:
+                break
+            text = chunk.decode("utf-8", errors="replace")
+            chunks.append(text)
+            monitor.feed(text)
+            for line in text.split("\n"):
+                if line:
+                    print(f"[out] {line}\n", end="", file=sys.stderr)
+        except (BlockingIOError, OSError):
+            break
+    return "".join(chunks)
+
+
+def _run_process_pty(
+    cmd: list[str],
+    cwd: pathlib.Path | str,
+    timeout: int | None,
+    stale_timeout: int,
+) -> subprocess.CompletedProcess[str]:
+    """PTY-backed run — gives line-buffered output from the child.
+
+    stdout and stderr share one PTY stream, so we record the merged output
+    as ``stdout`` and leave ``stderr`` empty to avoid double-counting when
+    callers concatenate ``stdout + stderr``.
+    """
+    import fcntl  # Unix-only; guarded by _have_pty()
+
+    monitor = ProgressMonitor(stale_timeout)
+    stale_warning_interval = max(stale_timeout // 2, 60)
+
+    master_fd, slave_fd = os.openpty()
+    try:
+        flags = fcntl.fcntl(master_fd, fcntl.F_GETFL)
+        fcntl.fcntl(master_fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+
+        proc = subprocess.Popen(
+            cmd, cwd=str(cwd), stdin=subprocess.DEVNULL,
+            stdout=slave_fd, stderr=slave_fd,
+        )
+        os.close(slave_fd)
+        slave_fd = -1
+
+        start_time = time.time()
+        last_stale_warning = 0.0
+        output_text = ""
+
+        try:
+            while True:
+                elapsed = time.time() - start_time
+
+                output_text += _drain_pty(master_fd, monitor)
+
+                if timeout and elapsed >= timeout:
+                    _log(f"TIMEOUT after {elapsed:.0f}s – killing agent")
+                    _log(f"  Progress: {monitor.status()}")
+                    proc.kill()
+                    try:
+                        proc.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        pass
+                    output_text += _drain_pty(master_fd, monitor)
+                    return subprocess.CompletedProcess(
+                        cmd, returncode=-1, stdout=output_text, stderr="",
+                    )
+
+                if monitor.is_stale():
+                    if elapsed - last_stale_warning > stale_warning_interval:
+                        monitor.stale_warnings += 1
+                        _log(
+                            f"STALE output (warning #{monitor.stale_warnings}): "
+                            f"no progress for {stale_timeout}s. {monitor.status()}"
+                        )
+                        last_stale_warning = elapsed
+
+                ret = proc.poll()
+                if ret is not None:
+                    output_text += _drain_pty(master_fd, monitor)
+                    # PTY translates \n → \r\n (ONLCR); normalise back so
+                    # downstream pattern matching and line splitting work.
+                    output_text = output_text.replace("\r\n", "\n")
+                    return subprocess.CompletedProcess(
+                        cmd, returncode=ret, stdout=output_text, stderr="",
+                    )
+
+                time.sleep(2)
+
+        except KeyboardInterrupt:
+            _log("Interrupted – killing agent process")
+            proc.kill()
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                pass
+            raise
+    finally:
+        if master_fd >= 0:
+            os.close(master_fd)
+        if slave_fd >= 0:
+            os.close(slave_fd)
+
+
+def _run_process_pipes(
+    cmd: list[str],
+    cwd: pathlib.Path | str,
+    timeout: int | None,
+    stale_timeout: int,
+) -> subprocess.CompletedProcess[str]:
+    """Portable fallback using PIPE + threads (works on Windows).
+
+    Trades line-buffered visibility for cross-platform compatibility.
+    """
+    monitor = ProgressMonitor(stale_timeout)
+    stale_warning_interval = max(stale_timeout // 2, 60)
+
+    proc = subprocess.Popen(
+        cmd, cwd=str(cwd), stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    start_time = time.time()
+    last_stale_warning = 0.0
+    stdout_parts: list[str] = []
+    stderr_parts: list[str] = []
+    stdout_done = threading.Event()
+    stderr_done = threading.Event()
+
+    def _read(stream, parts: list[str], label: str):
+        try:
+            for line in stream:
+                parts.append(line)
+                monitor.feed(line)
+                if line.strip():
+                    print(f"[{label}] {line}", end="", file=sys.stderr)
+        finally:
+            stream.close()
+            (stdout_done if label == "stdout" else stderr_done).set()
+
+    t_out = threading.Thread(target=_read, args=(proc.stdout, stdout_parts, "stdout"), daemon=True)
+    t_err = threading.Thread(target=_read, args=(proc.stderr, stderr_parts, "stderr"), daemon=True)
+    t_out.start()
+    t_err.start()
+
+    try:
+        while True:
+            elapsed = time.time() - start_time
+            if timeout and elapsed >= timeout:
+                _log(f"TIMEOUT after {elapsed:.0f}s – killing agent")
+                _log(f"  Progress: {monitor.status()}")
+                proc.kill()
+                try:
+                    proc.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    pass
+                stdout_done.wait(timeout=5)
+                stderr_done.wait(timeout=5)
+                return subprocess.CompletedProcess(
+                    cmd, returncode=-1, stdout="".join(stdout_parts), stderr="".join(stderr_parts),
+                )
+
+            if monitor.is_stale():
+                if elapsed - last_stale_warning > stale_warning_interval:
+                    monitor.stale_warnings += 1
+                    _log(
+                        f"STALE output (warning #{monitor.stale_warnings}): "
+                        f"no progress for {stale_timeout}s. {monitor.status()}"
+                    )
+                    last_stale_warning = elapsed
+
+            ret = proc.poll()
+            if ret is not None:
+                stdout_done.wait(timeout=5)
+                stderr_done.wait(timeout=5)
+                return subprocess.CompletedProcess(
+                    cmd, returncode=ret,
+                    stdout="".join(stdout_parts), stderr="".join(stderr_parts),
+                )
+
+            time.sleep(2)
+
+    except KeyboardInterrupt:
+        _log("Interrupted – killing agent process")
+        proc.kill()
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            pass
+        raise
 
 
 def _run_process(
@@ -308,105 +527,19 @@ def _run_process(
     timeout: int | None = None,
     stale_timeout: int = 600,
 ) -> subprocess.CompletedProcess[str]:
-    """Run a command with stdout/stderr flowing directly to the console.
+    """Run a subprocess with progress monitoring.
 
-    Monitors output for progress indicators. Warns if output stalls.
-    On timeout, kills the process gracefully and returns a CompletedProcess
-    with returncode=-1 (special sentinel for timeout).
+    On Unix, uses a PTY so the child process line-buffers its output,
+    giving real-time visibility without ``stdbuf``.  Falls back to PIPE +
+    threads on Windows or when PTY allocation fails.
     """
-    monitor = ProgressMonitor(stale_timeout)
-    stale_warning_interval = max(stale_timeout // 2, 60)  # warn at most every N seconds
-
-    proc = subprocess.Popen(
-        cmd,
-        cwd=str(cwd),
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-
-    start_time = time.time()
-    last_stale_warning = 0.0
-    stdout_text = ""
-    stderr_text = ""
-
     try:
-        # Use threads to read stdout/stderr concurrently while monitoring
-        stdout_done = threading.Event()
-        stderr_done = threading.Event()
+        if _have_pty():
+            return _run_process_pty(cmd, cwd, timeout, stale_timeout)
+    except (OSError, ImportError):
+        pass  # PTY not available — fall through to pipes
 
-        def read_stdout():
-            try:
-                nonlocal stdout_text
-                stdout_text = _tee_output(proc.stdout, monitor, "stdout")
-            finally:
-                proc.stdout.close()
-                stdout_done.set()
-
-        def read_stderr():
-            try:
-                nonlocal stderr_text
-                stderr_text = _tee_output(proc.stderr, monitor, "stderr")
-            finally:
-                proc.stderr.close()
-                stderr_done.set()
-
-        t_out = threading.Thread(target=read_stdout, daemon=True)
-        t_err = threading.Thread(target=read_stderr, daemon=True)
-        t_out.start()
-        t_err.start()
-
-        while True:
-            elapsed = time.time() - start_time
-
-            # Check timeout
-            if timeout and elapsed >= timeout:
-                _log(f"TIMEOUT after {elapsed:.0f}s – killing agent")
-                _log(f"  Progress: {monitor.status()}")
-                proc.kill()
-                proc.wait(timeout=10)
-                stdout_done.wait(timeout=5)
-                stderr_done.wait(timeout=5)
-                return subprocess.CompletedProcess(
-                    cmd,
-                    returncode=-1,  # sentinel: timeout
-                    stdout=stdout_text,
-                    stderr=stderr_text,
-                )
-
-            # Check for staleness (no output progress)
-            if monitor.is_stale():
-                if elapsed - last_stale_warning > stale_warning_interval:
-                    monitor.stale_warnings += 1
-                    _log(
-                        f"STALE output (warning #{monitor.stale_warnings}): "
-                        f"no progress indicators for {stale_timeout}s. "
-                        f"{monitor.status()}"
-                    )
-                    last_stale_warning = elapsed
-
-            # Check if process finished
-            ret = proc.poll()
-            if ret is not None:
-                stdout_done.wait(timeout=5)
-                stderr_done.wait(timeout=5)
-                return subprocess.CompletedProcess(
-                    cmd,
-                    returncode=ret,
-                    stdout=stdout_text,
-                    stderr=stderr_text,
-                )
-
-            time.sleep(2)  # poll interval
-
-    except KeyboardInterrupt:
-        _log("Interrupted – killing agent process")
-        proc.kill()
-        proc.wait(timeout=10)
-        stdout_done.wait(timeout=5)
-        stderr_done.wait(timeout=5)
-        raise
+    return _run_process_pipes(cmd, cwd, timeout, stale_timeout)
 
 
 def run_sprout_agent(
@@ -545,6 +678,7 @@ def run_sprout_commit(opts: Opts) -> subprocess.CompletedProcess[str]:
             ["sprout", "commit"], returncode=0, stdout="", stderr=""
         )
 
+    # sprout commit — _run_process handles PTY/pipe selection.
     cmd = [opts.sprout_bin, "commit", "--skip-prompt"]
     _log(f"Running: {' '.join(cmd)}")
     if opts.dry_run:
