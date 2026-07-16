@@ -140,6 +140,8 @@ type ChatUsage struct {
 	CachedTokens int `json:"cached_tokens,omitempty"`
 	// CacheWriteTokens is the number of prompt tokens written to cache (OpenRouter).
 	CacheWriteTokens *int `json:"cache_write_tokens,omitempty"`
+	// ImageTokens is the number of tokens consumed by image inputs (vision models).
+	ImageTokens int `json:"image_tokens,omitempty"`
 }
 
 // AgentState tracks the state of an agent's conversation.
