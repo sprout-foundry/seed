@@ -77,19 +77,23 @@ func TestBuildCheckpointCompactedMessages_SingleCheckpoint(t *testing.T) {
 
 	outMsgs, outCps := BuildCheckpointCompactedMessages(msgs, checkpoints)
 
-	// Should have 2 messages: system + summary.
-	if len(outMsgs) != 2 {
-		t.Fatalf("expected 2 messages, got %d", len(outMsgs))
+	// Should have 3 messages: system + original user query + summary.
+	if len(outMsgs) != 3 {
+		t.Fatalf("expected 3 messages, got %d", len(outMsgs))
 	}
 
 	if outMsgs[0].Role != "system" || outMsgs[0].Content != "You are helpful." {
 		t.Errorf("system message mismatch: %+v", outMsgs[0])
 	}
-	if outMsgs[1].Role != "user" {
-		t.Errorf("expected summary to be user role, got %s", outMsgs[1].Role)
+	// Original user query is preserved before the summary (SP-128 fix).
+	if outMsgs[1].Role != "user" || outMsgs[1].Content != "What is 2+2?" {
+		t.Errorf("expected original user query at [1], got: %+v", outMsgs[1])
 	}
-	if outMsgs[1].Content != "- Question: What is 2+2?\n- Result: 4" {
-		t.Errorf("expected actionable summary content, got: %s", outMsgs[1].Content)
+	if outMsgs[2].Role != "user" {
+		t.Errorf("expected summary to be user role, got %s", outMsgs[2].Role)
+	}
+	if outMsgs[2].Content != "- Question: What is 2+2?\n- Result: 4" {
+		t.Errorf("expected actionable summary content, got: %s", outMsgs[2].Content)
 	}
 
 	// Consumed checkpoint is kept in the returned list so future calls
@@ -120,9 +124,9 @@ func TestBuildCheckpointCompactedMessages_MultipleCheckpoints(t *testing.T) {
 
 	outMsgs, outCps := BuildCheckpointCompactedMessages(msgs, checkpoints)
 
-	// 3 messages (system) + 2 summaries + 1 last turn = 5 messages.
-	if len(outMsgs) != 5 {
-		t.Fatalf("expected 5 messages, got %d", len(outMsgs))
+	// 1 system + 2 preserved users + 2 summaries + 1 last turn + 1 assistant = 7 messages.
+	if len(outMsgs) != 7 {
+		t.Fatalf("expected 7 messages, got %d", len(outMsgs))
 	}
 
 	// Both consumed checkpoints are kept for future re-application.
@@ -137,8 +141,8 @@ func TestBuildCheckpointCompactedMessages_MultipleCheckpoints(t *testing.T) {
 		t.Errorf("expected checkpoint [3,4], got [%d,%d]", outCps[1].StartIndex, outCps[1].EndIndex)
 	}
 
-	// Verify structure: system, summary1, summary2, user3, assistant3
-	expectedRoles := []string{"system", "user", "user", "user", "assistant"}
+	// Verify structure: system, user1, summary1, user2, summary2, user3, assistant3
+	expectedRoles := []string{"system", "user", "user", "user", "user", "user", "assistant"}
 	for i, role := range expectedRoles {
 		if outMsgs[i].Role != role {
 			t.Errorf("expected role %s at index %d, got %s", role, i, outMsgs[i].Role)
@@ -166,13 +170,12 @@ func TestBuildCheckpointCompactedMessages_MixedConsumable(t *testing.T) {
 
 	outMsgs, outCps := BuildCheckpointCompactedMessages(msgs, checkpoints)
 
-	// Checkpoint 1 consumed: [0,1] -> 1 summary. 1 message removed.
-	// Checkpoint 2 unconsumable: kept as-is.
-	// Checkpoint 3 consumed: original [4,5] -> 1 summary. 1 message removed.
-	// Result messages: summary1, user2, assistant2, summary3 = 4 messages.
-
-	if len(outMsgs) != 4 {
-		t.Errorf("expected 4 messages, got %d", len(outMsgs))
+	// Checkpoint 1 consumed: [0,1] -> preserved Q1 + summary = 2 messages.
+	// Checkpoint 2 unconsumable: kept as-is = Q2, A2 = 2 messages.
+	// Checkpoint 3 consumed: [4,5] -> preserved Q3 + summary = 2 messages.
+	// Result: preserved Q1 + summary1 + Q2 + A2 + preserved Q3 + summary3 = 6 messages.
+	if len(outMsgs) != 6 {
+		t.Errorf("expected 6 messages, got %d", len(outMsgs))
 	}
 
 	// All checkpoints returned (consumed ones kept for future re-application).
@@ -296,9 +299,9 @@ func TestBuildCheckpointCompactedMessages_AllButLastConsumed(t *testing.T) {
 
 	outMsgs, outCps := BuildCheckpointCompactedMessages(msgs, checkpoints)
 
-	// 3 summaries + Q4 + A4 = 5 messages (indices 6,7 not covered)
-	if len(outMsgs) != 5 {
-		t.Errorf("expected 5 messages, got %d", len(outMsgs))
+	// 3 preserved users + 3 summaries + Q4 + A4 = 8 messages (indices 6,7 not covered)
+	if len(outMsgs) != 8 {
+		t.Errorf("expected 8 messages, got %d", len(outMsgs))
 	}
 	// All consumed checkpoints are kept for future re-application.
 	if len(outCps) != 3 {
@@ -322,18 +325,24 @@ func TestBuildCheckpointCompactedMessages_CheckpointSummariesOnly(t *testing.T) 
 
 	outMsgs, outCps := BuildCheckpointCompactedMessages(msgs, checkpoints)
 
-	// 1 system + 2 summaries = 3 messages.
-	if len(outMsgs) != 3 {
-		t.Fatalf("expected 3 messages, got %d", len(outMsgs))
+	// 1 system + 2 preserved users + 2 summaries = 5 messages.
+	if len(outMsgs) != 5 {
+		t.Fatalf("expected 5 messages, got %d", len(outMsgs))
 	}
 	if outMsgs[0].Role != "system" {
 		t.Errorf("first message should be system, got %s", outMsgs[0].Role)
 	}
-	if outMsgs[1].Role != "user" || outMsgs[1].Content != "User asked about topic A." {
+	if outMsgs[1].Role != "user" || outMsgs[1].Content != "First question with lots of content" {
 		t.Errorf("second message wrong: %+v", outMsgs[1])
 	}
-	if outMsgs[2].Role != "user" || outMsgs[2].Content != "User asked about topic B." {
+	if outMsgs[2].Role != "user" || outMsgs[2].Content != "User asked about topic A." {
 		t.Errorf("third message wrong: %+v", outMsgs[2])
+	}
+	if outMsgs[3].Role != "user" || outMsgs[3].Content != "Second question with lots of content" {
+		t.Errorf("fourth message wrong: %+v", outMsgs[3])
+	}
+	if outMsgs[4].Role != "user" || outMsgs[4].Content != "User asked about topic B." {
+		t.Errorf("fifth message wrong: %+v", outMsgs[4])
 	}
 	// Both consumed checkpoints are kept for future re-application.
 	if len(outCps) != 2 {
@@ -392,15 +401,18 @@ func TestBuildCheckpointCompactedMessages_ToolCallTurn(t *testing.T) {
 
 	outMsgs, _ := BuildCheckpointCompactedMessages(msgs, checkpoints)
 
-	// 1 system + 1 summary = 2 messages.
-	if len(outMsgs) != 2 {
-		t.Fatalf("expected 2 messages, got %d", len(outMsgs))
+	// 1 system + 1 preserved user + 1 summary = 3 messages.
+	if len(outMsgs) != 3 {
+		t.Fatalf("expected 3 messages, got %d", len(outMsgs))
 	}
 	if outMsgs[0].Role != "system" {
 		t.Errorf("expected system first, got %s", outMsgs[0].Role)
 	}
-	if outMsgs[1].Content != "User asked to list files. Assistant listed file1.txt and file2.txt." {
-		t.Errorf("unexpected summary: %s", outMsgs[1].Content)
+	if outMsgs[1].Role != "user" || outMsgs[1].Content != "List files" {
+		t.Errorf("expected preserved user query at [1], got %+v", outMsgs[1])
+	}
+	if outMsgs[2].Content != "User asked to list files. Assistant listed file1.txt and file2.txt." {
+		t.Errorf("unexpected summary: %s", outMsgs[2].Content)
 	}
 }
 
@@ -409,16 +421,16 @@ func TestBuildCheckpointCompactedMessages_AllMessagesConsumed(t *testing.T) {
 		{Role: "user", Content: "hi"},
 		{Role: "assistant", Content: "hello"},
 	}
-	// Single checkpoint covering all messages — should produce one summary.
+	// Single checkpoint covering all messages — should produce one preserved user + one summary.
 	checkpoints := []TurnCheckpoint{
 		{StartIndex: 0, EndIndex: 1, Summary: "consumed"},
 	}
 
 	outMsgs, outCps := BuildCheckpointCompactedMessages(msgs, checkpoints)
 
-	// Both messages consumed, 1 summary left.
-	if len(outMsgs) != 1 {
-		t.Errorf("expected 1 message, got %d", len(outMsgs))
+	// Both messages consumed: 1 preserved user + 1 summary = 2 messages.
+	if len(outMsgs) != 2 {
+		t.Errorf("expected 2 messages (user + summary), got %d", len(outMsgs))
 	}
 	// Consumed checkpoint is kept for future re-application.
 	if len(outCps) != 1 {
@@ -443,11 +455,11 @@ func TestBuildCheckpointCompactedMessages_ThreeCheckpointsWithOneUnconsumed(t *t
 
 	outMsgs, outCps := BuildCheckpointCompactedMessages(msgs, checkpoints)
 
-	// First consumed: [0,1] -> 1 summary. 1 message removed.
-	// Third consumed: [4,5] -> 1 summary. 1 message removed.
-	// Result: 1 summary + user2 + assistant2 + 1 summary = 4 messages.
-	if len(outMsgs) != 4 {
-		t.Errorf("expected 4 messages, got %d", len(outMsgs))
+	// First consumed: [0,1] -> preserved user + summary (2 msgs). 1 message removed.
+	// Third consumed: [4,5] -> preserved user + summary (2 msgs). 1 message removed.
+	// Result: 1 preserved user + 1 summary + user2 + assistant2 + 1 preserved user + 1 summary = 6 messages.
+	if len(outMsgs) != 6 {
+		t.Errorf("expected 6 messages, got %d", len(outMsgs))
 	}
 
 	// All checkpoints returned (consumed ones kept for future re-application).
@@ -485,13 +497,18 @@ func TestBuildCheckpointCompactedMessages_OverlappingCheckpoints(t *testing.T) {
 
 	outMsgs, outCps := BuildCheckpointCompactedMessages(msgs, checkpoints)
 
-	// First consumed [0,2], second overlaps so it's not consumed.
-	// Result: summary S1 + msgs[3] + msgs[4] + msgs[5] = 4 messages.
-	if len(outMsgs) != 4 {
-		t.Fatalf("expected 4 messages, got %d", len(outMsgs))
+	// First consumed [0,2]: preserved user Q1 + summary S1.
+	// Second overlaps so it's not consumed.
+	// Result: preserved Q1 + summary S1 + msgs[3] + msgs[4] + msgs[5] = 5 messages.
+	if len(outMsgs) != 5 {
+		t.Fatalf("expected 5 messages, got %d", len(outMsgs))
 	}
-	if outMsgs[0].Content != "S1" {
-		t.Errorf("expected first message to be S1 summary, got %q", outMsgs[0].Content)
+	// Original user Q1 is preserved before the summary.
+	if outMsgs[0].Content != "Q1" {
+		t.Errorf("expected preserved Q1 at [0], got %q", outMsgs[0].Content)
+	}
+	if outMsgs[1].Content != "S1" {
+		t.Errorf("expected S1 summary at [1], got %q", outMsgs[1].Content)
 	}
 
 	// Both checkpoints returned (first consumed, second overlaps so unconsumed).
@@ -524,16 +541,22 @@ func TestBuildCheckpointCompactedMessages_ConsecutiveAssistantMerge(t *testing.T
 
 	outMsgs, outCps := BuildCheckpointCompactedMessages(msgs, checkpoints)
 
-	// summary + merged assistant + user + assistant = 4 messages.
-	if len(outMsgs) != 4 {
-		t.Fatalf("expected 4 messages, got %d", len(outMsgs))
+	// After fix: preserved Q1 + summary S1 replaces only Q1.
+	// Result: preserved Q1 + summary S1 + A1 + A2 + Q3 + A3 = 6 messages.
+	// Then resolveConsecutiveAssistantMessages merges A1 and A2 = 5 messages.
+	if len(outMsgs) != 5 {
+		t.Fatalf("expected 5 messages, got %d", len(outMsgs))
+	}
+	// The preserved Q1 should be at index 0.
+	if outMsgs[0].Content != "Q1" {
+		t.Errorf("expected preserved Q1 at index 0, got %q", outMsgs[0].Content)
 	}
 	// The two consecutive assistants should be merged.
-	if outMsgs[1].Role != "assistant" {
-		t.Errorf("expected assistant at index 1, got %s", outMsgs[1].Role)
+	if outMsgs[2].Role != "assistant" {
+		t.Errorf("expected assistant at index 2, got %s", outMsgs[2].Role)
 	}
-	if !strings.Contains(outMsgs[1].Content, "A1") || !strings.Contains(outMsgs[1].Content, "A2") {
-		t.Errorf("expected merged content, got %q", outMsgs[1].Content)
+	if !strings.Contains(outMsgs[2].Content, "A1") || !strings.Contains(outMsgs[2].Content, "A2") {
+		t.Errorf("expected merged content, got %q", outMsgs[2].Content)
 	}
 	// Consumed checkpoint is kept for future re-application.
 	if len(outCps) != 1 {
@@ -555,11 +578,15 @@ func TestBuildCheckpointCompactedMessages_UseActionableSummaryWhenShort(t *testi
 
 	outMsgs, _ := BuildCheckpointCompactedMessages(msgs, checkpoints)
 
-	if len(outMsgs) != 1 {
-		t.Fatalf("expected 1 message, got %d", len(outMsgs))
+	// 1 preserved user + 1 summary = 2 messages.
+	if len(outMsgs) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(outMsgs))
 	}
-	if outMsgs[0].Content != actionable {
-		t.Errorf("expected actionable summary, got: %s", outMsgs[0].Content)
+	if outMsgs[0].Content != "Do something" {
+		t.Errorf("expected preserved user query at [0], got: %s", outMsgs[0].Content)
+	}
+	if outMsgs[1].Content != actionable {
+		t.Errorf("expected actionable summary at [1], got: %s", outMsgs[1].Content)
 	}
 }
 
@@ -577,11 +604,15 @@ func TestBuildCheckpointCompactedMessages_FallbackToSummaryWhenActionableTooLong
 
 	outMsgs, _ := BuildCheckpointCompactedMessages(msgs, checkpoints)
 
-	if len(outMsgs) != 1 {
-		t.Fatalf("expected 1 message, got %d", len(outMsgs))
+	// 1 preserved user + 1 summary = 2 messages.
+	if len(outMsgs) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(outMsgs))
 	}
-	if outMsgs[0].Content != fallbackSummary {
-		t.Errorf("expected fallback to summary, got: %s", outMsgs[0].Content)
+	if outMsgs[0].Content != "Do something" {
+		t.Errorf("expected preserved user query at [0], got: %s", outMsgs[0].Content)
+	}
+	if outMsgs[1].Content != fallbackSummary {
+		t.Errorf("expected fallback to summary at [1], got: %s", outMsgs[1].Content)
 	}
 }
 
@@ -598,11 +629,15 @@ func TestBuildCheckpointCompactedMessages_UseActionableSummaryAtExactly500Chars(
 
 	outMsgs, _ := BuildCheckpointCompactedMessages(msgs, checkpoints)
 
-	if len(outMsgs) != 1 {
-		t.Fatalf("expected 1 message, got %d", len(outMsgs))
+	// 1 preserved user + 1 summary = 2 messages.
+	if len(outMsgs) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(outMsgs))
 	}
-	if outMsgs[0].Content != exactly500 {
-		t.Errorf("expected actionable summary at exactly 500 chars, got len %d", len(outMsgs[0].Content))
+	if outMsgs[0].Content != "Do something" {
+		t.Errorf("expected preserved user query at [0], got: %s", outMsgs[0].Content)
+	}
+	if outMsgs[1].Content != exactly500 {
+		t.Errorf("expected actionable summary at exactly 500 chars at [1], got len %d", len(outMsgs[1].Content))
 	}
 }
 
@@ -617,11 +652,15 @@ func TestBuildCheckpointCompactedMessages_EmptyActionableFallsBackToSummary(t *t
 
 	outMsgs, _ := BuildCheckpointCompactedMessages(msgs, checkpoints)
 
-	if len(outMsgs) != 1 {
-		t.Fatalf("expected 1 message, got %d", len(outMsgs))
+	// 1 preserved user + 1 summary = 2 messages.
+	if len(outMsgs) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(outMsgs))
 	}
-	if outMsgs[0].Content != "Fallback summary." {
-		t.Errorf("expected fallback to summary when actionable is empty, got: %s", outMsgs[0].Content)
+	if outMsgs[0].Content != "Do something" {
+		t.Errorf("expected preserved user query at [0], got: %s", outMsgs[0].Content)
+	}
+	if outMsgs[1].Content != "Fallback summary." {
+		t.Errorf("expected fallback to summary at [1] when actionable is empty, got: %s", outMsgs[1].Content)
 	}
 }
 
@@ -1457,12 +1496,11 @@ func TestBuildCheckpointCompactedMessages_consecutive_assistant_boundary(t *test
 
 	outMsgs, outCps := BuildCheckpointCompactedMessages(msgs, checkpoints)
 
-	// Checkpoint [0,0] consumed → 1 summary replaces 1 msg (delta=0).
-	// Result: summary(user), assistant1, assistant2, user, assistant = 5 messages.
-	// resolveConsecutiveAssistantMessages should merge the two assistants.
-	// Final: summary(user), merged_assistant, user, assistant = 4 messages.
-	if len(outMsgs) != 4 {
-		t.Fatalf("expected 4 messages, got %d: %+v", len(outMsgs), outMsgs)
+	// After fix: preserved "initial query" + summary replaces only the user message.
+	// Result before merge: preserved user, summary, A1, A2, user, assistant = 6 messages.
+	// resolveConsecutiveAssistantMessages merges A1 and A2 = 5 messages.
+	if len(outMsgs) != 5 {
+		t.Fatalf("expected 5 messages, got %d: %+v", len(outMsgs), outMsgs)
 	}
 	// No consecutive assistants should remain.
 	for i := 1; i < len(outMsgs); i++ {
@@ -1470,12 +1508,12 @@ func TestBuildCheckpointCompactedMessages_consecutive_assistant_boundary(t *test
 			t.Errorf("consecutive assistants at indices %d and %d", i-1, i)
 		}
 	}
-	// The merged assistant should contain both responses.
-	if !strings.Contains(outMsgs[1].Content, "first assistant response") {
-		t.Errorf("merged content missing 'first assistant response': %q", outMsgs[1].Content)
+	// The merged assistant should contain both responses at index 2.
+	if !strings.Contains(outMsgs[2].Content, "first assistant response") {
+		t.Errorf("merged content missing 'first assistant response': %q", outMsgs[2].Content)
 	}
-	if !strings.Contains(outMsgs[1].Content, "second assistant response") {
-		t.Errorf("merged content missing 'second assistant response': %q", outMsgs[1].Content)
+	if !strings.Contains(outMsgs[2].Content, "second assistant response") {
+		t.Errorf("merged content missing 'second assistant response': %q", outMsgs[2].Content)
 	}
 	// Consumed checkpoint is kept for future re-application.
 	if len(outCps) != 1 {
@@ -1502,12 +1540,12 @@ func TestBuildCheckpointCompactedMessages_normal_compaction_no_consecutive(t *te
 
 	outMsgs, outCps := BuildCheckpointCompactedMessages(msgs, checkpoints)
 
-	// System + 2 summaries + last turn = 5 messages.
-	if len(outMsgs) != 5 {
-		t.Fatalf("expected 5 messages, got %d", len(outMsgs))
+	// System + 2 preserved users + 2 summaries + last turn = 7 messages.
+	if len(outMsgs) != 7 {
+		t.Fatalf("expected 7 messages, got %d", len(outMsgs))
 	}
-	// Verify the structure: system, summary, summary, user3, assistant3
-	expectedRoles := []string{"system", "user", "user", "user", "assistant"}
+	// Verify the structure: system, preserved-Q1, summary1, preserved-Q2, summary2, user3, assistant3
+	expectedRoles := []string{"system", "user", "user", "user", "user", "user", "assistant"}
 	for i, role := range expectedRoles {
 		if outMsgs[i].Role != role {
 			t.Errorf("expected role %s at index %d, got %s", role, i, outMsgs[i].Role)

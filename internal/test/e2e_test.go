@@ -3674,9 +3674,10 @@ func TestE2E_CheckpointCompaction_MultipleTurns(t *testing.T) {
 	// At API call time, state has 7 messages (6 from turns 1-3 + 1 query for turn 4).
 	// The turn 4 assistant response hasn't been added yet.
 	// Without compaction: 7 raw + 1 system = 8 messages in request.
-	// With compaction: 3 checkpoints (indices 0-1, 2-3, 4-5) are all consumable,
-	//   each replaced by 1 summary message. Only the turn 4 query (idx 6) survives.
-	//   1 system + 3 summaries + 1 query = 5 messages.
+	// With compaction (SP-128): 3 checkpoints (indices 0-1, 2-3, 4-5) are all consumable,
+	//   each replaced by 1 summary message, but the leading user message is preserved.
+	//   Only the turn 4 query (idx 6) survives.
+	//   1 system + 3 preserved user queries + 3 summaries + 1 query = 8 messages.
 	lastReq := h.Provider().LastRequest()
 	if lastReq == nil {
 		t.Fatal("expected provider to have been called")
@@ -3685,15 +3686,16 @@ func TestE2E_CheckpointCompaction_MultipleTurns(t *testing.T) {
 	// Calculate no-compaction baseline at API call time (state had finalRawMsgCount - 1 messages).
 	rawAtAPICall := finalRawMsgCount - 1  // = 7
 	noCompactionCount := rawAtAPICall + 1 // = 8 (raw + system)
-	if len(lastReq.Messages) >= noCompactionCount {
-		t.Errorf("expected checkpoint compaction to reduce messages below %d, got %d",
+	// With SP-128, compaction preserves user queries, so compacted count equals no-compaction baseline.
+	if len(lastReq.Messages) > noCompactionCount {
+		t.Errorf("expected checkpoint compaction not to exceed baseline %d, got %d",
 			noCompactionCount, len(lastReq.Messages))
 	}
 
 	// Verify the exact expected message count after compaction:
-	// 1 system + 3 summary messages + 1 query = 5
-	if len(lastReq.Messages) != 5 {
-		t.Errorf("expected 5 messages after compaction, got %d", len(lastReq.Messages))
+	// 1 system + 3 preserved user queries + 3 summaries + 1 query = 8
+	if len(lastReq.Messages) != 8 {
+		t.Errorf("expected 8 messages after compaction, got %d", len(lastReq.Messages))
 	}
 
 	// Verify all 3 checkpoint summaries appear in the request.
@@ -3882,18 +3884,19 @@ func TestE2E_CheckpointIndexShifting_AfterCompaction(t *testing.T) {
 	// Verify the last provider request still had compacted messages.
 	// At API call time, state had 9 messages (10 - 1 for the not-yet-added assistant).
 	// 4 checkpoints cover [0,7], leaving message [8] (turn 5 query) uncovered.
-	// Compacted: 1 system + 4 summaries + 1 uncovered = 6 messages.
+	// Compacted (SP-128): 1 system + 4 preserved user queries + 4 summaries + 1 uncovered = 10 messages.
 	lastReq := h.Provider().LastRequest()
 	if lastReq == nil {
 		t.Fatal("expected provider to have been called")
 	}
-	// Should be fewer than the no-compaction baseline (9 raw + 1 system = 10).
-	if len(lastReq.Messages) >= 10 {
-		t.Errorf("expected compaction to reduce messages below 10, got %d", len(lastReq.Messages))
+	// Should match the no-compaction baseline (9 raw + 1 system = 10).
+	// With SP-128, compaction preserves user queries, so compacted count equals no-compaction baseline.
+	if len(lastReq.Messages) > 10 {
+		t.Errorf("expected compaction not to exceed baseline 10, got %d", len(lastReq.Messages))
 	}
-	// Exact count: 1 system + 4 summaries + 1 uncovered query = 6
-	if len(lastReq.Messages) != 6 {
-		t.Errorf("expected 6 messages after compaction, got %d", len(lastReq.Messages))
+	// Exact count: 1 system + 4 preserved user queries + 4 summaries + 1 uncovered query = 10
+	if len(lastReq.Messages) != 10 {
+		t.Errorf("expected 10 messages after compaction, got %d", len(lastReq.Messages))
 	}
 	// Verify 4 summaries are present.
 	// Summaries use ActionableSummary format (bullet list with "- Question:" prefix)
@@ -5943,13 +5946,14 @@ func TestE2E_Compaction_LongConversation_RecentTurnsIntact(t *testing.T) {
 			lastReq.Messages[len(lastReq.Messages)-1].Content)
 	}
 
-	// Verify message count reduction: raw state has 102 messages, but the
-	// provider request should have significantly fewer due to checkpoint
-	// compaction (50 old turns → 50 summary messages + 1 query + 1 system).
-	// We expect roughly 52 messages (1 system + 50 summaries + 1 new query),
-	// definitely far fewer than 102.
-	if len(lastReq.Messages) >= agent.State().Len() {
-		t.Errorf("expected message count reduction: request has %d messages, raw state has %d",
+	// Verify message count: raw state has 102 messages, but the
+	// provider request should have roughly 102 due to checkpoint
+	// compaction (SP-128 fix preserves the leading user message of each consumed range).
+	// With 50 checkpoints covering [user, asst] pairs, each range collapses to
+	// [user, summary] instead of just [summary], so no net reduction occurs.
+	// We expect roughly 102 messages (1 system + 50 preserved user queries + 50 summaries + 1 new query).
+	if len(lastReq.Messages) > agent.State().Len() {
+		t.Errorf("expected request messages not to exceed raw state: request has %d messages, raw state has %d",
 			len(lastReq.Messages), agent.State().Len())
 	}
 

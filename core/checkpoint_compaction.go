@@ -6,6 +6,25 @@ import (
 	"time"
 )
 
+// isCheckpointSummary reports whether a message was inserted by a prior
+// compaction pass. Synthetic summaries use role "user" so the strict-chat-
+// template guard in BuildCheckpointCompactedMessages doesn't preserve them
+// as if they were original user turns — otherwise re-application would
+// duplicate the summary at the head of the new range.
+func isCheckpointSummary(m Message) bool {
+	return m.Role == "user" && m.Meta != nil && m.Meta[MetaKeyCheckpoint] == "true"
+}
+
+// cloneMessage deep-copies a message including its Meta map, so consumers
+// can append it to their own slice without sharing map references.
+func cloneMessage(m Message) Message {
+	out := m
+	if m.Meta != nil {
+		out.Meta = maps.Clone(m.Meta)
+	}
+	return out
+}
+
 // RecordTurnCheckpointAsync asynchronously builds a checkpoint from the given
 // messages and stores it in state. It spawns a goroutine to compute the summary
 // so it doesn't block the conversation loop. The onCheckpoint callback, if
@@ -190,6 +209,21 @@ func BuildCheckpointCompactedMessages(messages []Message, checkpoints []TurnChec
 	for msgIdx < len(msgs) {
 		if consIdx < len(consumables) && msgIdx == consumables[consIdx].origStart {
 			ri := consumables[consIdx]
+
+			// Preserve the leading user message of the checkpoint range if it's
+			// a real user turn. Strict chat templates (e.g., Qwen3.5) require
+			// every assistant message to be preceded by a real user message —
+			// a synthetic summary at position N is read by the model as the new
+			// query, dropping the original request from its context. We keep
+			// the user's original message and follow it with the summary, so
+			// the model sees: real query → summary of what happened → ...
+			// Skip when the leading message is already a synthetic summary
+			// (role=user but Meta[checkpoint]=true) to avoid duplicating
+			// summaries on re-application of already-consumed checkpoints.
+			head := msgs[ri.origStart]
+			if head.Role == "user" && !isCheckpointSummary(head) {
+				newMsgs = append(newMsgs, cloneMessage(head))
+			}
 
 			// Choose summary content: prefer ActionableSummary if ≤500 bytes;
 			// fall back to Summary otherwise.
