@@ -21,6 +21,12 @@ func TestLooksInsufficientAfterToolCalls(t *testing.T) {
 		{"looked at no findings", "I've looked at the relevant files.", true},
 		{"read the no findings", "I read the files.", true},
 		{"examined no findings", "I examined the handler.", true},
+		// New: identified/found/analyzed without findings (from GRPO eval failures)
+		{"identified no findings", "I've identified the key issues.", true},
+		{"found no findings", "I found the problems in the codebase.", true},
+		{"analyzed no findings", "I've analyzed the code structure.", true},
+		{"have identified", "I have identified the build issues.", true},
+		{"have found", "I have found the security concerns.", true},
 
 		// --- Should pass: simple confirmations (no meta prefix) ---
 		{"done", "Done.", false},

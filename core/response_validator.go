@@ -124,9 +124,11 @@ func (rv *ResponseValidator) hasAbruptEnding(content string) bool {
 		return true
 	}
 
-	// Ends with punctuation — only comma and hyphen are problematic.
-	// (Forward slash, backslash, semicolon, colon, etc. are valid endings.)
-	if lastChar == ',' || lastChar == '-' {
+	// Ends with punctuation — comma, hyphen, and colon are problematic.
+	// A trailing colon means the model intended to introduce content (a
+	// list, a quote, an explanation) that never followed. Semicolons,
+	// periods, etc. are valid endings.
+	if lastChar == ',' || lastChar == '-' || lastChar == ':' {
 		return true
 	}
 
@@ -197,6 +199,12 @@ var tentativePrefixes = []string{
 	"i need to find",
 	"i'll look at",
 	"i'll check",
+	"i'll help",
+	"i'll analyze",
+	"i'll perform",
+	"i'll read",
+	"i'll search",
+	"i'll examine",
 	"let me think",
 	"let me check",
 	"let me look",
@@ -205,6 +213,10 @@ var tentativePrefixes = []string{
 	"let me find",
 	"let me investigate",
 	"let me explore",
+	"let me create",
+	"let me try",
+	"let me get",
+	"let me start",
 	"one moment",
 	"give me",
 }
@@ -311,6 +323,15 @@ var insufficientMetaPrefixes = []string{
 	"i've examined",
 	"i have examined",
 	"i examined",
+	"i've identified",
+	"i have identified",
+	"i identified",
+	"i've found",
+	"i have found",
+	"i found",
+	"i've analyzed",
+	"i have analyzed",
+	"i analyzed",
 }
 
 // LooksInsufficientAfterToolCalls detects when the model returned "stop"

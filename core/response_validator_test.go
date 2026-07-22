@@ -109,7 +109,7 @@ func TestIsIncomplete_AbruptEnding(t *testing.T) {
 		{
 			name:    "ends with colon",
 			content: "Here is the list with enough words to pass the short threshold:",
-			want:    false,
+			want:    true, // trailing colon = incomplete (content was supposed to follow)
 		},
 		{
 			name:    "ends with letter (URL-like)",
@@ -592,6 +592,38 @@ func TestLooksLikeTentativePostToolResponse_AllPrefixes(t *testing.T) {
 		// "let me think" variant
 		{"lowercase let me think", "let me think about this", true},
 		{"uppercase Let me think", "Let me think about this", true},
+
+		// New prefixes (from GRPO eval false-completion failures)
+		// "i'll help" variant
+		{"lowercase i'll help", "i'll help you identify the API", true},
+		{"uppercase I'll help", "I'll help you identify the API", true},
+		// "i'll analyze" variant
+		{"lowercase i'll analyze", "i'll analyze the codebase", true},
+		{"uppercase I'll analyze", "I'll analyze the codebase", true},
+		// "i'll perform" variant
+		{"lowercase i'll perform", "i'll perform a security review", true},
+		{"uppercase I'll perform", "I'll perform a security review", true},
+		// "i'll read" variant
+		{"lowercase i'll read", "i'll read the Dockerfile", true},
+		{"uppercase I'll read", "I'll read the Dockerfile", true},
+		// "i'll search" variant
+		{"lowercase i'll search", "i'll search for the patterns", true},
+		{"uppercase I'll search", "I'll search for the patterns", true},
+		// "i'll examine" variant
+		{"lowercase i'll examine", "i'll examine the sources", true},
+		{"uppercase I'll examine", "I'll examine the sources", true},
+		// "let me create" variant
+		{"lowercase let me create", "let me create the report", true},
+		{"uppercase Let me create", "Let me create the report", true},
+		// "let me try" variant
+		{"lowercase let me try", "let me try building it", true},
+		{"uppercase Let me try", "Let me try building it", true},
+		// "let me get" variant
+		{"lowercase let me get", "let me get the file contents", true},
+		{"uppercase Let me get", "Let me get the file contents", true},
+		// "let me start" variant
+		{"lowercase let me start", "let me start by exploring", true},
+		{"uppercase Let me start", "Let me start by exploring", true},
 
 		// Substantive explanations that should NOT match (false positive prevention)
 		{"i'll explain", "I'll explain the approach", false},
