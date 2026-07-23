@@ -12,6 +12,10 @@ import (
 //	}
 func (fp *FallbackParser) extractNamedToolBlocks(content string) []rawBlock {
 	stripped := fp.stripCodeFences(content)
+	// Precompute matched bracket pairs once (O(N)) instead of calling
+	// matchBrace per identifier candidate, which was O(N^2) when many '{'
+	// candidates were unmatched.
+	matches := fp.computeBraceMatches(stripped)
 	var blocks []rawBlock
 
 	idx := 0
@@ -46,8 +50,8 @@ func (fp *FallbackParser) extractNamedToolBlocks(content string) []rawBlock {
 		}
 
 		braceStart := idx
-		braceEnd, err := fp.matchBrace(stripped, braceStart)
-		if err != nil {
+		braceEnd, ok := matches[braceStart]
+		if !ok {
 			continue
 		}
 

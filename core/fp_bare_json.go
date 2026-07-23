@@ -8,6 +8,11 @@ import (
 // extractBareJSON extracts tool calls from bare JSON segments (not inside code fences).
 func (fp *FallbackParser) extractBareJSON(content string) []rawBlock {
 	stripped := fp.stripCodeFences(content)
+	// Precompute every matched open->close bracket pair in a single O(N) pass.
+	// This replaces a per-candidate matchBrace call, which made this function
+	// O(N^2) on input with many unmatched openers (each unmatched opener
+	// forced a fresh scan of the remaining suffix).
+	matches := fp.computeBraceMatches(stripped)
 	var blocks []rawBlock
 	idx := 0
 	for idx < len(stripped) {
@@ -16,8 +21,8 @@ func (fp *FallbackParser) extractBareJSON(content string) []rawBlock {
 			idx++
 			continue
 		}
-		end, err := fp.matchBrace(stripped, idx)
-		if err != nil {
+		end, ok := matches[idx]
+		if !ok {
 			idx++
 			continue
 		}
@@ -41,8 +46,65 @@ func (fp *FallbackParser) extractBareJSON(content string) []rawBlock {
 	return blocks
 }
 
-// matchBrace finds the index of the matching closing bracket for the open
-// bracket at position pos.
+// computeBraceMatches performs a single left-to-right pass over s and returns a
+// map from the position of each matched opening bracket ('{' or '[') to the
+// position of its matching closing bracket ('}' or ']'). Opening brackets that
+// have no matching closer are simply absent from the map.
+//
+// String-literal and escape handling mirrors matchBrace exactly: bracket bytes
+// that appear inside a JSON string literal (or after a backslash escape within
+// such a literal) are ignored, so they do not affect bracket matching.
+//
+// This is O(N) and replaces the previous pattern of calling matchBrace from
+// every opening-brace candidate, which was O(N^2) on content with many
+// unmatched openers.
+func (fp *FallbackParser) computeBraceMatches(s string) map[int]int {
+	matches := make(map[int]int, 64)
+	// Independent stacks per bracket type preserve matchBrace's per-type
+	// semantics: a '}' closes the most recent unmatched '{' regardless of any
+	// interleaved '[' (and vice versa).
+	var curly, square []int
+	inString, escape := false, false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if escape {
+			escape = false
+			continue
+		}
+		if c == '\\' && inString {
+			escape = true
+			continue
+		}
+		if c == '"' {
+			inString = !inString
+			continue
+		}
+		if inString {
+			continue
+		}
+		switch c {
+		case '{':
+			curly = append(curly, i)
+		case '[':
+			square = append(square, i)
+		case '}':
+			if n := len(curly); n > 0 {
+				matches[curly[n-1]] = i
+				curly = curly[:n-1]
+			}
+		case ']':
+			if n := len(square); n > 0 {
+				matches[square[n-1]] = i
+				square = square[:n-1]
+			}
+		}
+	}
+	return matches
+}
+
+// matchBrace is retained as a reference oracle for tests; production code uses
+// computeBraceMatches. It finds the index of the matching closing bracket for
+// the open bracket at position pos.
 func (fp *FallbackParser) matchBrace(s string, pos int) (int, error) {
 	open := s[pos]
 	close := byte('}')
