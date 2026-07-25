@@ -82,7 +82,18 @@ func validateRequired(registry *ToolRegistry, canonicalName string, args map[str
 	var missing []string
 	for _, p := range entry.config.Parameters {
 		if p.Required {
+			// Case-insensitive lookup — some models (e.g. Gemma-4) send parameter
+			// names with different casing (e.g. "Path" instead of "path").
 			_, found := args[p.Name]
+			if !found {
+				lowerName := strings.ToLower(p.Name)
+				for k := range args {
+					if strings.ToLower(k) == lowerName {
+						found = true
+						break
+					}
+				}
+			}
 			if !found {
 				missing = append(missing, p.Name)
 			}
@@ -116,17 +127,25 @@ func resolveAlternativeNames(registry *ToolRegistry, canonicalName string, args 
 		}
 	}
 
-	if len(altMap) == 0 {
-		return args
+	// Build a set of canonical parameter names (lowercased) for case-insensitive fallback.
+	canonLower := make(map[string]string)
+	for _, p := range entry.config.Parameters {
+		canonLower[strings.ToLower(p.Name)] = p.Name
 	}
 
 	result := make(map[string]interface{})
 	for key, val := range args {
+		// 1. Check explicit alternatives first
 		if resolved, ok := altMap[strings.ToLower(key)]; ok {
 			result[resolved] = val
-		} else {
-			result[key] = val
+			continue
 		}
+		// 2. Case-insensitive canonical name match (e.g. "Path" → "path")
+		if resolved, ok := canonLower[strings.ToLower(key)]; ok && resolved != key {
+			result[resolved] = val
+			continue
+		}
+		result[key] = val
 	}
 	return result
 }
