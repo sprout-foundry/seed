@@ -1013,8 +1013,9 @@ func (ch *ConversationHandler) ProcessQuery(ctx context.Context, query string) (
 func (ch *ConversationHandler) ProcessQueryStream(ctx context.Context, query string) (string, error) {
 	chatFn := func(ctx context.Context, req *ChatRequest, iter int) (*ChatResponse, error) {
 		// Retry loop for transient/rate-limit errors, mirroring ProcessQuery.
-		// Each attempt gets a fresh stream handler so partial output from a
-		// failed attempt never leaks into the retry.
+		// Each attempt gets a fresh stream handler, but the shared streaming
+		// buffers are never rewound — so a retry only proceeds when the
+		// failed attempt streamed nothing (see the fail-fast below).
 		backoff := NewExponentialBackoff(
 			ch.agent.retryConfig.InitialDelayOrDefault(),
 			ch.agent.retryConfig.MaxDelayOrDefault(),
@@ -1111,6 +1112,16 @@ func (ch *ConversationHandler) ProcessQueryStream(ctx context.Context, query str
 						"message": "chat failed",
 						"error":   classifiedErr.Error(),
 					})
+				}
+				// Fail fast when the failed attempt already delivered partial
+				// content: the shared buffers (and the consumer's UI) hold
+				// that output, and retrying would append attempt-2's content
+				// to the same buffers, duplicating text in the final
+				// response. Context-overflow recovery is unaffected — those
+				// errors occur before any streaming begins.
+				if ch.agent.outputMgr.ContentBuffer().Len() > 0 || ch.agent.outputMgr.ReasoningBuffer().Len() > 0 {
+					ch.agent.debugLog("[retry] Stream failed after partial content was already delivered; failing fast to avoid duplicate output\n")
+					return nil, classifiedErr
 				}
 				continue
 			}
@@ -1265,9 +1276,10 @@ func (ch *ConversationHandler) tryContextOverflowRecovery(req *ChatRequest) bool
 	// yields a final target of roughly 0.7 * 0.85 * contextSize estimated tokens.
 	recoveryLimit := int(float64(contextSize) * recoveryCompactionTargetFraction)
 	before := len(req.Messages)
-	// Even the recovery path benefits from substituting summaries before
-	// dropping content — it's less destructive than dropping turns
-	// outright, and we already paid the cost of building the summaries.
+	// Recovery uses the drop-based pipeline only: buildCompactInputs omits
+	// Checkpoints, so no substitution runs here. Phase 0a already ran in
+	// prepareMessages when the proactive trigger fired — this pass only
+	// drops (oldest summaries, then turns, then truncate).
 	result := CompactWith(ch.buildCompactInputs(req.Messages, recoveryLimit))
 	if result.Strategy == "none" || len(result.Messages) >= before {
 		// Nothing was actually dropped — compaction has bottomed out.

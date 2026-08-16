@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -155,6 +156,72 @@ func TestProcessQueryStream_ContextOverflowRecoversWithCompaction(t *testing.T) 
 	}
 	if !hasOverflowRecoveryCompactionEvent(sub) {
 		t.Error("expected a compaction event with trigger 'context_overflow_recovery'")
+	}
+}
+
+// partialThenTransientProvider streams a partial chunk then fails with a
+// transient error, so the streaming retry path must detect that content was
+// already delivered and fail fast instead of retrying — which would append
+// attempt-2's content to the same shared buffers and duplicate the text.
+type partialThenTransientProvider struct {
+	calls     int
+	info      ProviderInfo
+	streamErr error
+}
+
+func (p *partialThenTransientProvider) Chat(_ context.Context, _ *ChatRequest) (*ChatResponse, error) {
+	return nil, errors.New("not used")
+}
+
+func (p *partialThenTransientProvider) ChatStream(_ context.Context, _ *ChatRequest, handler StreamHandler) error {
+	p.calls++
+	handler.OnContent("partial")
+	handler.OnReasoning("thinking")
+	return p.streamErr
+}
+
+func (p *partialThenTransientProvider) Info() ProviderInfo { return p.info }
+
+func (p *partialThenTransientProvider) EstimateTokens(_ *ChatRequest) int { return 100 }
+
+func TestProcessQueryStream_PartialOutputThenTransientFailsFast(t *testing.T) {
+	provider := &partialThenTransientProvider{
+		info:      ProviderInfo{Model: "test", ContextSize: 20000},
+		streamErr: fmt.Errorf("timeout waiting for stream"),
+	}
+	a, err := NewAgent(Options{
+		Provider:    provider,
+		Executor:    &mockExecutor{},
+		RetryConfig: RetryConfig{InitialDelay: time.Millisecond, MaxDelay: time.Millisecond},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = a.RunStream(context.Background(), "query")
+	if err == nil {
+		t.Fatal("expected error when the stream fails after delivering partial content")
+	}
+	if !strings.Contains(err.Error(), "timeout waiting for stream") {
+		t.Errorf("expected the transient error surfaced, got %v", err)
+	}
+	if provider.calls != 1 {
+		t.Errorf("expected exactly 1 provider call (no retry after partial delivery), got %d", provider.calls)
+	}
+	// The partial text must appear exactly once in the streaming buffers — a
+	// retry would have appended it a second time.
+	if got := a.outputMgr.ContentBuffer().String(); got != "partial" {
+		t.Errorf("expected buffer to hold the single partial chunk, got %q", got)
+	}
+	if got := a.outputMgr.ReasoningBuffer().String(); got != "thinking" {
+		t.Errorf("expected reasoning buffer to hold the single partial chunk, got %q", got)
+	}
+	// No assistant message with the partial text may exist in state: the run
+	// failed before an assistant message was recorded.
+	for _, m := range a.State().Messages() {
+		if m.Role == "assistant" && strings.Contains(m.Content, "partial") {
+			t.Errorf("unexpected assistant message with partial content in state: %q", m.Content)
+		}
 	}
 }
 

@@ -305,7 +305,8 @@ func (cp *ConversationPruner) pruneByImportance(messages []Message, provider str
 		return messages
 	}
 
-	scores := cp.scoreMessages(messages, estimateFn)
+	weights := cp.estimateMessageWeights(messages, estimateFn)
+	scores := cp.scoreMessages(messages, weights)
 	keep := make(map[int]bool)
 	keep[0] = true
 
@@ -324,7 +325,7 @@ func (cp *ConversationPruner) pruneByImportance(messages []Message, provider str
 	}
 
 	targetTokens := cp.getTargetTokens(len(messages), maxTokens)
-	currentTokens := cp.estimateTokensForIndices(messages, keep, estimateFn)
+	currentTokens := cp.estimateTokensForIndices(messages, keep, weights)
 
 	for _, s := range scores {
 		if keep[s.Index] || s.ImportanceScore <= importanceKeepThreshold {
@@ -359,6 +360,16 @@ func (cp *ConversationPruner) pruneByImportanceToolCallAware(messages []Message,
 		isToolGroup  bool
 		importance   float64
 		tokens       int
+	}
+
+	// Distributed per-message weights so the estimator's fixed per-call
+	// overhead is counted once, not once per message in each group.
+	weights := cp.estimateMessageWeights(messages, estimateFn)
+	msgTokens := func(i int) int {
+		if weights != nil {
+			return weights[i]
+		}
+		return estimateTextTokens(messages[i].Content)
 	}
 
 	groups := make([]*group, 0, len(messages))
@@ -412,17 +423,17 @@ func (cp *ConversationPruner) pruneByImportanceToolCallAware(messages []Message,
 	for _, g := range groups {
 		if !g.isToolGroup {
 			g.importance = cp.scoreSingleMessage(messages[g.assistantIdx])
-			g.tokens = cp.estimateMessage(messages[g.assistantIdx], estimateFn)
+			g.tokens = msgTokens(g.assistantIdx)
 			continue
 		}
 		maxScore := cp.scoreSingleMessage(messages[g.assistantIdx])
-		tokens := cp.estimateMessage(messages[g.assistantIdx], estimateFn)
+		tokens := msgTokens(g.assistantIdx)
 		for _, idx := range g.toolIndices {
 			s := cp.scoreSingleMessage(messages[idx])
 			if s > maxScore {
 				maxScore = s
 			}
-			tokens += cp.estimateMessage(messages[idx], estimateFn)
+			tokens += msgTokens(idx)
 		}
 		g.importance = maxScore
 		g.tokens = tokens
@@ -553,14 +564,18 @@ func (cp *ConversationPruner) pruneAdaptive(ctx context.Context, messages []Mess
 // scoreMessages produces importance scores for every message. Scoring rules
 // derive from sprout's pruner: system messages are always 1.0, errors and
 // the first user query lift score, recent messages get a small bonus.
-func (cp *ConversationPruner) scoreMessages(messages []Message, estimateFn func([]Message) int) []MessageImportance {
+func (cp *ConversationPruner) scoreMessages(messages []Message, weights []int) []MessageImportance {
 	scores := make([]MessageImportance, 0, len(messages))
 	for i, msg := range messages {
+		tokenEstimate := estimateTextTokens(msg.Content)
+		if weights != nil {
+			tokenEstimate = weights[i]
+		}
 		s := MessageImportance{
 			Index:         i,
 			Role:          msg.Role,
 			ContentLength: len(msg.Content),
-			TokenEstimate: cp.estimateMessage(msg, estimateFn),
+			TokenEstimate: tokenEstimate,
 			Age:           len(messages) - i,
 		}
 
@@ -669,26 +684,63 @@ func (cp *ConversationPruner) estimateFor(msgs []Message, fn func([]Message) int
 	return cp.estimateTokens(msgs)
 }
 
-// estimateMessage estimates a single message's token count, preferring the
-// supplied estimator so per-message budget math stays in the same units as
-// the loop's trigger. Falls back to the internal 4-chars-per-token estimate
-// of the visible content (matching the historical per-message scoring).
-func (cp *ConversationPruner) estimateMessage(m Message, fn func([]Message) int) int {
-	if fn != nil {
-		return fn([]Message{m})
+// estimateMessageWeights returns per-message token weights derived from a
+// single whole-list estimate, or nil when fn is nil (callers then keep the
+// historical per-message estimateTextTokens math). Calling the estimator once
+// on the full slice is accurate; per-message calls would multiply any fixed
+// overhead the estimator adds per call (tool catalog, system buffer), so the
+// whole-list total is distributed across messages proportionally to each
+// message's internal rough size. When every rough size is zero, weights are
+// equal and the rounding remainder goes to the last message.
+func (cp *ConversationPruner) estimateMessageWeights(messages []Message, fn func([]Message) int) []int {
+	if fn == nil || len(messages) == 0 {
+		return nil
 	}
-	return estimateTextTokens(m.Content)
+	total := fn(messages)
+	if total <= 0 {
+		return make([]int, len(messages))
+	}
+	rough := make([]int, len(messages))
+	roughTotal := 0
+	for i, m := range messages {
+		rough[i] = estimateTextTokens(m.Content)
+		if m.ReasoningContent != "" {
+			rough[i] += estimateTextTokens(m.ReasoningContent)
+		}
+		roughTotal += rough[i]
+	}
+	weights := make([]int, len(messages))
+	if roughTotal == 0 {
+		base := total / len(messages)
+		rem := total % len(messages)
+		for i := range weights {
+			weights[i] = base
+		}
+		weights[len(messages)-1] += rem
+		return weights
+	}
+	// Running-accumulation proportional split so the weights sum to exactly
+	// total; each message absorbs its rounding slice of the whole.
+	acc := 0
+	roughAcc := 0
+	for i, r := range rough {
+		roughAcc += r
+		share := total * roughAcc / roughTotal
+		weights[i] = share - acc
+		acc = share
+	}
+	return weights
 }
 
-func (cp *ConversationPruner) estimateTokensForIndices(messages []Message, indices map[int]bool, estimateFn func([]Message) int) int {
-	if estimateFn != nil {
-		kept := make([]Message, 0, len(indices))
-		for i, m := range messages {
+func (cp *ConversationPruner) estimateTokensForIndices(messages []Message, indices map[int]bool, weights []int) int {
+	if weights != nil {
+		total := 0
+		for i := range messages {
 			if indices[i] {
-				kept = append(kept, m)
+				total += weights[i]
 			}
 		}
-		return estimateFn(kept)
+		return total
 	}
 	total := 0
 	for i, m := range messages {

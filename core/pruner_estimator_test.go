@@ -146,6 +146,80 @@ func validToolGroups(msgs []Message) bool {
 	return true
 }
 
+func TestPruneImportance_EstimateFnFixedOverheadNotMultiplied(t *testing.T) {
+	cp := NewConversationPruner(PrunerOptions{Strategy: PruneStrategyImportance})
+	msgs := importanceMessages()
+	ctx := context.Background()
+	const maxTokens = 100000
+	const fixedOverhead = 10000
+
+	// An estimator that charges a large fixed per-call overhead on top of the
+	// rough tokens. Summing per-message calls would multiply that overhead by
+	// the message count; the pruner must treat it as a single whole-list cost.
+	fixedFn := func(msgs []Message) int {
+		return roughTokens(msgs) + fixedOverhead
+	}
+
+	pruned := cp.Prune(ctx, msgs, 90000, maxTokens, PruneCallOptions{EstimateFn: fixedFn})
+
+	target := cp.getTargetTokens(len(msgs), maxTokens)
+
+	// The fixed overhead must be counted once, not once per kept message.
+	if kept := fixedFn(pruned); kept > target+fixedOverhead {
+		t.Errorf("kept fn-tokens %d exceed target %d + one fixed overhead %d", kept, target, fixedOverhead)
+	}
+	// The overhead is a single shared cost, so most messages survive: the old
+	// per-message-sum behavior kept only 31 of 40 here (4 of the 7 budget
+	// candidates), while distributed weights keep all 7 (34).
+	if len(pruned) < 33 {
+		t.Errorf("expected distributed weights to keep materially more than per-message sums, got %d of %d", len(pruned), len(msgs))
+	}
+}
+
+func TestPruneImportanceToolCallAware_EstimateFnFixedOverheadNotMultiplied(t *testing.T) {
+	cp := NewConversationPruner(PrunerOptions{Strategy: PruneStrategyImportance})
+
+	// 10 large tool-call groups + a final assistant message.
+	msgs := []Message{{Role: "system", Content: "sys"}}
+	for i := 0; i < 10; i++ {
+		id := fmt.Sprintf("call-%d", i)
+		msgs = append(msgs,
+			Message{Role: "assistant", ToolCalls: []ToolCall{
+				{ID: id, Function: ToolCallFunction{Name: "read_file", Arguments: `{"path":"a"}`}},
+			}},
+			Message{Role: "tool", ToolCallID: id, Content: strings.Repeat("T", 12000)},
+		)
+	}
+	msgs = append(msgs, Message{Role: "assistant", Content: "done"})
+
+	ctx := context.Background()
+	const maxTokens = 50000
+	const fixedOverhead = 10000
+	fixedFn := func(msgs []Message) int {
+		return roughTokens(msgs) + fixedOverhead
+	}
+
+	pruned := cp.Prune(ctx, msgs, 48000, maxTokens, PruneCallOptions{
+		Provider:   "minimax", // strict tool-call/result pairing
+		EstimateFn: fixedFn,
+	})
+
+	target := cp.getTargetTokens(len(msgs), maxTokens)
+
+	if !validToolGroups(pruned) {
+		t.Error("expected tool groups to stay atomic (no orphaned tool calls/results)")
+	}
+	// The fixed overhead is one shared cost, not one per message in a group:
+	// per-message sums would bill 10000 per group and keep only the 6
+	// always-kept groups (13 messages); distributed weights keep 9 groups (20).
+	if kept := fixedFn(pruned); kept > target+fixedOverhead {
+		t.Errorf("kept fn-tokens %d exceed target %d + one fixed overhead %d", kept, target, fixedOverhead)
+	}
+	if len(pruned) < 18 {
+		t.Errorf("expected distributed weights to keep most groups, got %d of %d", len(pruned), len(msgs))
+	}
+}
+
 func TestPruneImportanceToolCallAware_EstimateFnBudget(t *testing.T) {
 	cp := NewConversationPruner(PrunerOptions{Strategy: PruneStrategyImportance})
 
