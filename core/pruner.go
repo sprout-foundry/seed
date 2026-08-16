@@ -89,6 +89,15 @@ type PruneCallOptions struct {
 	// defaultAgenticRequiredAvailable for the headroom pass. Only consulted
 	// when IsAgenticFlow is true.
 	RequiredAvailableTokens int
+
+	// EstimateFn, when non-nil, replaces the pruner's internal
+	// 4-chars-per-token estimator for all budget math (target sizing,
+	// per-message scoring, headroom checks). Pass the live provider's
+	// EstimateTokens so the pruner and the chat loop's trigger decision use
+	// the same token math — without it they can disagree and oscillate
+	// between "prune" and "already under target". Nil keeps the historical
+	// internal estimator.
+	EstimateFn func([]Message) int
 }
 
 // MessageImportance is the scored representation of a single message. Public
@@ -218,7 +227,7 @@ func (cp *ConversationPruner) Prune(ctx context.Context, messages []Message, cur
 	case PruneStrategySlidingWindow:
 		pruned = cp.pruneSlidingWindow(messages)
 	case PruneStrategyImportance:
-		pruned = cp.pruneByImportance(messages, opts.Provider, maxTokens)
+		pruned = cp.pruneByImportance(messages, opts.Provider, maxTokens, opts.EstimateFn)
 	case PruneStrategyHybrid:
 		pruned = cp.pruneHybrid(ctx, messages, opts, maxTokens)
 	case PruneStrategyAdaptive:
@@ -238,7 +247,7 @@ func (cp *ConversationPruner) Prune(ctx context.Context, messages []Message, cur
 		if required <= 0 {
 			required = defaultAgenticRequiredAvailable
 		}
-		pruned = cp.ensureRequiredHeadroom(pruned, maxTokens, required)
+		pruned = cp.ensureRequiredHeadroom(pruned, maxTokens, required, opts.EstimateFn)
 	}
 
 	return pruned
@@ -287,16 +296,16 @@ func (cp *ConversationPruner) pruneSlidingWindow(messages []Message) []Message {
 // tool-call/result pairing (Minimax, DeepSeek), delegates to the
 // tool-call-aware variant so a kept tool result always has its assistant
 // parent and vice versa.
-func (cp *ConversationPruner) pruneByImportance(messages []Message, provider string, maxTokens int) []Message {
+func (cp *ConversationPruner) pruneByImportance(messages []Message, provider string, maxTokens int, estimateFn func([]Message) int) []Message {
 	if strings.EqualFold(provider, "minimax") || strings.EqualFold(provider, "deepseek") {
-		return cp.pruneByImportanceToolCallAware(messages, provider, maxTokens)
+		return cp.pruneByImportanceToolCallAware(messages, provider, maxTokens, estimateFn)
 	}
 
 	if len(messages) == 0 {
 		return messages
 	}
 
-	scores := cp.scoreMessages(messages)
+	scores := cp.scoreMessages(messages, estimateFn)
 	keep := make(map[int]bool)
 	keep[0] = true
 
@@ -315,7 +324,7 @@ func (cp *ConversationPruner) pruneByImportance(messages []Message, provider str
 	}
 
 	targetTokens := cp.getTargetTokens(len(messages), maxTokens)
-	currentTokens := cp.estimateTokensForIndices(messages, keep)
+	currentTokens := cp.estimateTokensForIndices(messages, keep, estimateFn)
 
 	for _, s := range scores {
 		if keep[s.Index] || s.ImportanceScore <= importanceKeepThreshold {
@@ -342,7 +351,7 @@ func (cp *ConversationPruner) pruneByImportance(messages []Message, provider str
 // downstream tool results into atomic units that are kept or dropped
 // together. Required for providers that reject orphaned tool calls or
 // orphaned tool results.
-func (cp *ConversationPruner) pruneByImportanceToolCallAware(messages []Message, provider string, maxTokens int) []Message {
+func (cp *ConversationPruner) pruneByImportanceToolCallAware(messages []Message, provider string, maxTokens int, estimateFn func([]Message) int) []Message {
 	type group struct {
 		assistantIdx int
 		toolIDs      []string
@@ -403,17 +412,17 @@ func (cp *ConversationPruner) pruneByImportanceToolCallAware(messages []Message,
 	for _, g := range groups {
 		if !g.isToolGroup {
 			g.importance = cp.scoreSingleMessage(messages[g.assistantIdx])
-			g.tokens = estimateTextTokens(messages[g.assistantIdx].Content)
+			g.tokens = cp.estimateMessage(messages[g.assistantIdx], estimateFn)
 			continue
 		}
 		maxScore := cp.scoreSingleMessage(messages[g.assistantIdx])
-		tokens := estimateTextTokens(messages[g.assistantIdx].Content)
+		tokens := cp.estimateMessage(messages[g.assistantIdx], estimateFn)
 		for _, idx := range g.toolIndices {
 			s := cp.scoreSingleMessage(messages[idx])
 			if s > maxScore {
 				maxScore = s
 			}
-			tokens += estimateTextTokens(messages[idx].Content)
+			tokens += cp.estimateMessage(messages[idx], estimateFn)
 		}
 		g.importance = maxScore
 		g.tokens = tokens
@@ -490,7 +499,7 @@ func (cp *ConversationPruner) pruneByImportanceToolCallAware(messages []Message,
 // already-trimmed message list.
 func (cp *ConversationPruner) pruneHybrid(ctx context.Context, messages []Message, opts PruneCallOptions, maxTokens int) []Message {
 	if opts.Optimizer == nil {
-		return cp.pruneByImportance(messages, opts.Provider, maxTokens)
+		return cp.pruneByImportance(messages, opts.Provider, maxTokens, opts.EstimateFn)
 	}
 	optimized := opts.Optimizer.OptimizeConversation(messages)
 	if opts.Summarizer != nil {
@@ -498,7 +507,7 @@ func (cp *ConversationPruner) pruneHybrid(ctx context.Context, messages []Messag
 			optimized = r.Messages
 		}
 	}
-	return cp.pruneByImportance(optimized, opts.Provider, maxTokens)
+	return cp.pruneByImportance(optimized, opts.Provider, maxTokens, opts.EstimateFn)
 }
 
 // pruneAdaptive inspects conversation characteristics and dispatches to the
@@ -506,7 +515,7 @@ func (cp *ConversationPruner) pruneHybrid(ctx context.Context, messages []Messag
 // migrated consumers see identical behavior.
 func (cp *ConversationPruner) pruneAdaptive(ctx context.Context, messages []Message, currentTokens, maxTokens int, opts PruneCallOptions) []Message {
 	if maxTokens <= 0 {
-		return cp.pruneByImportance(messages, opts.Provider, maxTokens)
+		return cp.pruneByImportance(messages, opts.Provider, maxTokens, opts.EstimateFn)
 	}
 	usage := float64(currentTokens) / float64(maxTokens)
 	hasLongHistory := len(messages) > importanceCorpusLongHistory
@@ -516,7 +525,7 @@ func (cp *ConversationPruner) pruneAdaptive(ctx context.Context, messages []Mess
 	switch {
 	case usage > defaultPruningAggressivePercent:
 		// Critical — go straight to importance-based pruning.
-		return cp.pruneByImportance(messages, opts.Provider, maxTokens)
+		return cp.pruneByImportance(messages, opts.Provider, maxTokens, opts.EstimateFn)
 
 	case hasLongHistory && hasManyToolCalls && usage > hybridAdaptiveTriggerFraction:
 		return cp.pruneHybrid(ctx, messages, opts, maxTokens)
@@ -531,27 +540,27 @@ func (cp *ConversationPruner) pruneAdaptive(ctx context.Context, messages []Mess
 				opt = r.Messages
 			}
 		}
-		if cp.estimateTokens(opt) < int(float64(maxTokens)*hybridAdaptiveTriggerFraction) {
+		if cp.estimateFor(opt, opts.EstimateFn) < int(float64(maxTokens)*hybridAdaptiveTriggerFraction) {
 			return opt
 		}
 		return cp.pruneSlidingWindow(opt)
 
 	default:
-		return cp.pruneByImportance(messages, opts.Provider, maxTokens)
+		return cp.pruneByImportance(messages, opts.Provider, maxTokens, opts.EstimateFn)
 	}
 }
 
 // scoreMessages produces importance scores for every message. Scoring rules
 // derive from sprout's pruner: system messages are always 1.0, errors and
 // the first user query lift score, recent messages get a small bonus.
-func (cp *ConversationPruner) scoreMessages(messages []Message) []MessageImportance {
+func (cp *ConversationPruner) scoreMessages(messages []Message, estimateFn func([]Message) int) []MessageImportance {
 	scores := make([]MessageImportance, 0, len(messages))
 	for i, msg := range messages {
 		s := MessageImportance{
 			Index:         i,
 			Role:          msg.Role,
 			ContentLength: len(msg.Content),
-			TokenEstimate: estimateTextTokens(msg.Content),
+			TokenEstimate: cp.estimateMessage(msg, estimateFn),
 			Age:           len(messages) - i,
 		}
 
@@ -649,7 +658,38 @@ func (cp *ConversationPruner) estimateTokens(messages []Message) int {
 	return total
 }
 
-func (cp *ConversationPruner) estimateTokensForIndices(messages []Message, indices map[int]bool) int {
+// estimateFor returns the token estimate for msgs using the caller-supplied
+// estimator when non-nil, falling back to the internal estimateTokens
+// (4 chars/token). Keeps the pruner's budget math consistent with the chat
+// loop's trigger decision, which uses the provider's tokenizer.
+func (cp *ConversationPruner) estimateFor(msgs []Message, fn func([]Message) int) int {
+	if fn != nil {
+		return fn(msgs)
+	}
+	return cp.estimateTokens(msgs)
+}
+
+// estimateMessage estimates a single message's token count, preferring the
+// supplied estimator so per-message budget math stays in the same units as
+// the loop's trigger. Falls back to the internal 4-chars-per-token estimate
+// of the visible content (matching the historical per-message scoring).
+func (cp *ConversationPruner) estimateMessage(m Message, fn func([]Message) int) int {
+	if fn != nil {
+		return fn([]Message{m})
+	}
+	return estimateTextTokens(m.Content)
+}
+
+func (cp *ConversationPruner) estimateTokensForIndices(messages []Message, indices map[int]bool, estimateFn func([]Message) int) int {
+	if estimateFn != nil {
+		kept := make([]Message, 0, len(indices))
+		for i, m := range messages {
+			if indices[i] {
+				kept = append(kept, m)
+			}
+		}
+		return estimateFn(kept)
+	}
 	total := 0
 	for i, m := range messages {
 		if !indices[i] {
@@ -731,13 +771,13 @@ func (cp *ConversationPruner) hasLargeFileReads(messages []Message) bool {
 // remaining headroom (maxTokens - tokens(messages)) is at least
 // requiredAvailable. Used at the tail of an agentic prune to guarantee the
 // model has room for tool outputs and the next response.
-func (cp *ConversationPruner) ensureRequiredHeadroom(messages []Message, maxTokens, requiredAvailable int) []Message {
+func (cp *ConversationPruner) ensureRequiredHeadroom(messages []Message, maxTokens, requiredAvailable int, estimateFn func([]Message) int) []Message {
 	if maxTokens <= 0 || requiredAvailable <= 0 || len(messages) <= cp.minMessagesToKeep {
 		return messages
 	}
 	pruned := messages
 	for len(pruned) > cp.minMessagesToKeep {
-		remaining := maxTokens - cp.estimateTokens(pruned)
+		remaining := maxTokens - cp.estimateFor(pruned, estimateFn)
 		if remaining >= requiredAvailable {
 			return pruned
 		}

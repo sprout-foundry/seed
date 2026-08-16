@@ -202,6 +202,9 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 					Summarizer:    ch.agent.llmSummarizer,
 					Provider:      ch.agent.provider.Info().Model,
 					IsAgenticFlow: true,
+					EstimateFn: func(msgs []Message) int {
+						return ch.agent.provider.EstimateTokens(&ChatRequest{Messages: msgs, Tools: ch.agent.executor.GetTools()})
+					},
 				})
 				strategy = "pruner_" + string(ch.agent.pruner.Strategy())
 
@@ -884,6 +887,11 @@ func (ch *ConversationHandler) ProcessQuery(ctx context.Context, query string) (
 			ch.agent.retryConfig.MaxAttemptsOrDefault(),
 			ch.agent.retryConfig.JitterOrDefault(),
 		)
+		// contextOverflowRecovered tracks whether the recovery compaction has
+		// already run for this invocation. Recovery runs at most once per chat
+		// call: if the provider rejects the retried request again, fail fast
+		// rather than thrash.
+		contextOverflowRecovered := false
 		var lastErr error
 		for backoff.NextAttempt() {
 			if backoff.attempt > 1 {
@@ -940,10 +948,30 @@ func (ch *ConversationHandler) ProcessQuery(ctx context.Context, query string) (
 				return nil, classifiedErr
 			}
 
-			// Fail fast on context overflow — retry won't help
+			// Context overflow — try one round of aggressive recovery compaction
+			// then retry. If we have already recovered once, or compaction had
+			// nothing left to drop, fail fast: thrashing on the same error helps
+			// nobody.
 			if IsContextOverflow(classifiedErr) {
-				ch.agent.debugLog("[!!] Context overflow, failing fast: %v\n", classifiedErr)
-				return nil, classifiedErr
+				if contextOverflowRecovered {
+					ch.agent.debugLog("[!!] Context overflow persisted after recovery compaction, failing fast: %v\n", classifiedErr)
+					return nil, classifiedErr
+				}
+				if !ch.tryContextOverflowRecovery(req) {
+					ch.agent.debugLog("[!!] Context overflow — compaction could not reduce further, failing fast: %v\n", classifiedErr)
+					return nil, classifiedErr
+				}
+				contextOverflowRecovered = true
+				// Publish an error event mirroring the transient-retry event
+				// shape so consumers observe the recovery attempt.
+				if ch.agent.eventPublisher != nil {
+					ch.agent.eventPublisher.Publish(EventTypeError, map[string]interface{}{
+						"message": "chat failed",
+						"error":   classifiedErr.Error(),
+					})
+				}
+				ch.agent.debugLog("[retry] Context overflow — compacted prompt, retrying\n")
+				continue
 			}
 
 			// Fail fast on tool-threading errors — retrying the identical
@@ -984,27 +1012,112 @@ func (ch *ConversationHandler) ProcessQuery(ctx context.Context, query string) (
 // content extracted from conversation state, just like ProcessQuery.
 func (ch *ConversationHandler) ProcessQueryStream(ctx context.Context, query string) (string, error) {
 	chatFn := func(ctx context.Context, req *ChatRequest, iter int) (*ChatResponse, error) {
-		streamHandler := NewAgentStreamHandler(ch.agent, ch.agent.state)
-		streamErr := ch.agent.provider.ChatStream(ctx, req, streamHandler)
-		if streamErr != nil {
-			// Classify and capture diagnostics for threading violations, mirroring
-			// the non-streaming ProcessQuery path. Streaming requests can hit the
-			// same MiniMax 2013 rejection; without this, failures escape unclassified
-			// and no diagnostic transcript is saved. Unlike the non-streaming path,
-			// there is no retry loop here — streaming errors are terminal.
+		// Retry loop for transient/rate-limit errors, mirroring ProcessQuery.
+		// Each attempt gets a fresh stream handler so partial output from a
+		// failed attempt never leaks into the retry.
+		backoff := NewExponentialBackoff(
+			ch.agent.retryConfig.InitialDelayOrDefault(),
+			ch.agent.retryConfig.MaxDelayOrDefault(),
+			ch.agent.retryConfig.MultiplierOrDefault(),
+			ch.agent.retryConfig.MaxAttemptsOrDefault(),
+			ch.agent.retryConfig.JitterOrDefault(),
+		)
+		// contextOverflowRecovered tracks whether the recovery compaction has
+		// already run for this invocation. Recovery runs at most once per chat
+		// call: if the provider rejects the retried request again, fail fast
+		// rather than thrash.
+		contextOverflowRecovered := false
+		var lastErr error
+		for backoff.NextAttempt() {
+			if backoff.attempt > 1 {
+				ch.agent.debugLog("[retry] Attempt %d, waiting %v\n", backoff.attempt, backoff.Delay())
+				select {
+				case <-time.After(backoff.Delay()):
+				case <-ctx.Done():
+					return nil, fmt.Errorf("%w: %w", ErrInterrupted, ctx.Err())
+				}
+			}
+
+			streamHandler := NewAgentStreamHandler(ch.agent, ch.agent.state)
+			streamErr := ch.agent.provider.ChatStream(ctx, req, streamHandler)
+			if streamErr == nil {
+				resp := streamHandler.Response()
+				if resp == nil {
+					return nil, fmt.Errorf("chat stream returned no response")
+				}
+				// Token tracking is done in OnDone; assistant message is added by runLoop.
+				return resp, nil
+			}
+
+			// Classify the error.
 			classifiedErr := ClassifyError(streamErr, ch.agent.provider.Info().Model)
+			lastErr = classifiedErr
+
+			// Reactive diagnostic capture: snapshot the exact messages we sent
+			// when the provider rejects the request for tool-call threading
+			// violations (MiniMax 2013). Unlike the non-streaming path, there
+			// is no point retrying the identical malformed list.
 			if IsToolThreadingError(classifiedErr) {
 				ch.maybeCaptureThreadingDiagnostics(req.Messages, iter, DiagnosticTriggerProviderRejection, classifiedErr)
+				ch.agent.debugLog("[!!] Tool threading error, failing fast: %v\n", classifiedErr)
+				return nil, classifiedErr
 			}
-			return nil, classifiedErr
+
+			// Fail fast on auth errors — retry won't help.
+			if IsAuthError(classifiedErr) {
+				ch.agent.debugLog("[!!] Auth error, failing fast: %v\n", classifiedErr)
+				return nil, classifiedErr
+			}
+
+			// Context overflow — try one round of aggressive recovery compaction
+			// then retry. If we have already recovered once, or compaction had
+			// nothing left to drop, fail fast.
+			if IsContextOverflow(classifiedErr) {
+				if contextOverflowRecovered {
+					ch.agent.debugLog("[!!] Context overflow persisted after recovery compaction, failing fast: %v\n", classifiedErr)
+					return nil, classifiedErr
+				}
+				if !ch.tryContextOverflowRecovery(req) {
+					ch.agent.debugLog("[!!] Context overflow — compaction could not reduce further, failing fast: %v\n", classifiedErr)
+					return nil, classifiedErr
+				}
+				contextOverflowRecovered = true
+				// Publish an error event mirroring the transient-retry event
+				// shape so consumers observe the recovery attempt.
+				if ch.agent.eventPublisher != nil {
+					ch.agent.eventPublisher.Publish(EventTypeError, map[string]interface{}{
+						"message": "chat failed",
+						"error":   classifiedErr.Error(),
+					})
+				}
+				ch.agent.debugLog("[retry] Context overflow — compacted prompt, retrying\n")
+				continue
+			}
+
+			// Fail fast on client errors — retry won't help.
+			if IsClientError(classifiedErr) {
+				ch.agent.debugLog("[!!] Client error, failing fast: %v\n", classifiedErr)
+				return nil, classifiedErr
+			}
+
+			// Retry on transient/rate-limit errors.
+			// (ClassifyError defaults to TransientError for unknown errors, so this
+			// path always matches after auth/context-overflow/client errors are handled above.)
+			if IsTransient(classifiedErr) || IsRateLimit(classifiedErr) {
+				ch.agent.debugLog("[retry] Retryable error: %v\n", classifiedErr)
+				// Publish error event for each retry attempt (observability).
+				if ch.agent.eventPublisher != nil {
+					ch.agent.eventPublisher.Publish(EventTypeError, map[string]interface{}{
+						"message": "chat failed",
+						"error":   classifiedErr.Error(),
+					})
+				}
+				continue
+			}
 		}
 
-		resp := streamHandler.Response()
-		if resp == nil {
-			return nil, fmt.Errorf("chat stream returned no response")
-		}
-		// Token tracking is done in OnDone; assistant message is added by runLoop.
-		return resp, nil
+		// All retries exhausted — return the last classified error.
+		return nil, lastErr
 	}
 
 	return ch.runLoop(ctx, query, "ProcessQueryStream", chatFn)
@@ -1130,8 +1243,9 @@ func (ch *ConversationHandler) buildCompactInputs(messages []Message, tokenLimit
 
 // tryContextOverflowRecovery runs an aggressive recovery compaction pass on
 // req.Messages and returns true if the message list shrunk. Called from the
-// retry loop after a ContextOverflowError to give the next attempt a chance
-// to fit inside the model's context window.
+// ProcessQuery and ProcessQueryStream chat functions (and doChatWithRetry)
+// after a ContextOverflowError to give the next attempt a chance to fit
+// inside the model's context window.
 //
 // The recovery target is tighter than the proactive trigger
 // (recoveryCompactionTargetFraction, default 0.70) so the retried request has

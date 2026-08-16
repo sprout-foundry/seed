@@ -288,8 +288,10 @@ func (ch *ConversationHandler) runIterativeCompactionPhase0(rawMessages []Messag
 
 	// Phase 0a: iterative checkpoint substitution.
 	checkpoints := ch.agent.state.GetCheckpoints()
+	substituted := false
 	if len(checkpoints) > 0 {
-		newMsgs, _, under := IterativelySubstituteCheckpoints(rawMessages, checkpoints, target, estimate)
+		newMsgs, applied, under := IterativelySubstituteCheckpoints(rawMessages, checkpoints, target, estimate)
+		substituted = applied > 0
 		rawMessages = newMsgs
 		if under {
 			return rawMessages
@@ -316,7 +318,16 @@ func (ch *ConversationHandler) runIterativeCompactionPhase0(rawMessages []Messag
 			}
 			return "tool"
 		}
-		newMsgs, _, _ := IterativelyMaskOldestConsumedToolResults(rawMessages, nameFn, target, estimate)
+		newMsgs, masked, _ := IterativelyMaskOldestConsumedToolResults(rawMessages, nameFn, target, estimate)
+		// Masking is index-stable (same message count, content rewritten in
+		// place) and ran on a slice derived directly from state, so persist it
+		// — otherwise every iteration re-masks the same results. Only persist
+		// when Phase 0a did not substitute: substitution changes the message
+		// structure and is re-applied per-request from checkpoint indices by
+		// design.
+		if masked > 0 && !substituted {
+			ch.agent.state.SetMessages(newMsgs)
+		}
 		rawMessages = newMsgs
 	}
 
