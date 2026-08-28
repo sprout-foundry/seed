@@ -131,9 +131,9 @@ func (fp *FallbackParser) parseXMLParameters(body string) string {
 		closeTag := strings.Index(body[attrEnd:], "</"+"parameter>")
 		var value string
 		if closeTag != -1 {
-			value = strings.TrimSpace(body[attrEnd : attrEnd+closeTag])
+			value = strings.TrimSpace(body[attrEnd+1 : attrEnd+closeTag])
 		} else {
-			value = strings.TrimSpace(body[attrEnd:])
+			value = strings.TrimSpace(body[attrEnd+1:])
 		}
 		params[name] = value
 		if closeTag != -1 {
@@ -170,6 +170,10 @@ func (fp *FallbackParser) xmlGetAttr(attrs string, name string) string {
 		}
 		attrName := attrs[start:idx]
 		if attrName != name {
+			// Skip this attribute's value so the scan advances past it. If idx
+			// already points at the delimiters ('=', or whitespace), the inner
+			// loops below leave idx where it is and the outer loop would spin.
+			idx = fp.skipAttrValue(attrs, idx)
 			continue
 		}
 		// Expect '='
@@ -205,4 +209,37 @@ func (fp *FallbackParser) xmlGetAttr(attrs string, name string) string {
 		return attrs[idx:end]
 	}
 	return ""
+}
+
+// skipAttrValue consumes an attribute's "=value" suffix starting at attrs[idx]
+// and returns the index just past the value. idx must point at '=' or
+// whitespace preceding it; both cases leave idx at or before the '='. Used to
+// advance past a non-matching attribute so xmlGetAttr's scan cannot stall.
+func (fp *FallbackParser) skipAttrValue(attrs string, idx int) int {
+	for idx < len(attrs) && (attrs[idx] == ' ' || attrs[idx] == '\t' || attrs[idx] == '\n' || attrs[idx] == '\r') {
+		idx++
+	}
+	if idx >= len(attrs) || attrs[idx] != '=' {
+		return idx
+	}
+	idx++
+	for idx < len(attrs) && (attrs[idx] == ' ' || attrs[idx] == '\t') {
+		idx++
+	}
+	if idx >= len(attrs) {
+		return idx
+	}
+	if attrs[idx] == '"' || attrs[idx] == '\'' {
+		delim := attrs[idx]
+		idx++
+		for idx < len(attrs) && attrs[idx] != delim {
+			idx++
+		}
+		// Land one past the closing delimiter (or len, if unterminated).
+		return idx + 1
+	}
+	for idx < len(attrs) && attrs[idx] != ' ' && attrs[idx] != '\t' {
+		idx++
+	}
+	return idx
 }
