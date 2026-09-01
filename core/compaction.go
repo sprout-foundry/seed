@@ -18,16 +18,15 @@ const (
 
 	// defaultSubstitutionTargetFraction is the context share that Phase 0a
 	// (iterative checkpoint substitution) targets when pressure fires.
-	// Defaults to emergencyTargetFraction (0.85) to preserve the historical
-	// behavior for existing consumers — substitution gets just barely under
-	// the pressure zone. Consumers who want each substitution pass to buy
-	// substantial headroom (e.g. sprout) should set
-	// Options.SubstitutionTargetFraction to a lower value like 0.50: paying
-	// the one-way information-loss cost of substitution should clear the
-	// pressure zone for many turns rather than re-substituting one checkpoint
-	// every turn. The emergency drop/truncate cascade (Phase 1+) always
-	// targets emergencyTargetFraction regardless of this setting.
-	defaultSubstitutionTargetFraction = emergencyTargetFraction
+	// Phase 0a substitutes checkpoint summaries one at a time (oldest first)
+	// until the estimate falls to this fraction. It needs to sit well below
+	// the compaction trigger (default 0.70) so each substitution pass buys
+	// real headroom — not a marginal reduction that forces the pruner or
+	// drop-pipeline to clean up on the next iteration. At 0.50, a single
+	// substitution pass clears enough tokens for several turns of work.
+	// The emergency drop/truncate cascade (Phase 1+) always targets
+	// emergencyTargetFraction regardless of this setting.
+	defaultSubstitutionTargetFraction = 0.50
 
 	// recoveryCompactionTargetFraction is the more aggressive target used when
 	// the provider has already returned a ContextOverflowError. Compaction

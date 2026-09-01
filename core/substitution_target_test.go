@@ -13,10 +13,11 @@ import (
 
 // ─── Agent-level defaults ─────────────────────────────────────────────────
 
-// TestSubstitutionTargetOrDefault_DefaultPreservesOldBehavior verifies that
-// an Agent constructed without SubstitutionTargetFraction gets the historical
-// 0.85 target, so existing consumers see no behavior change.
-func TestSubstitutionTargetOrDefault_DefaultPreservesOldBehavior(t *testing.T) {
+// TestSubstitutionTargetOrDefault_Default verifies that an Agent constructed
+// without SubstitutionTargetFraction gets the 0.50 default, so each
+// substitution pass buys substantial headroom rather than barely clearing
+// the compaction trigger.
+func TestSubstitutionTargetOrDefault_Default(t *testing.T) {
 	a, err := NewAgent(Options{
 		Provider: &mockProvider{},
 		Executor: NoopExecutor,
@@ -25,8 +26,8 @@ func TestSubstitutionTargetOrDefault_DefaultPreservesOldBehavior(t *testing.T) {
 		t.Fatalf("NewAgent: %v", err)
 	}
 	got := a.substitutionTargetOrDefault()
-	if got != emergencyTargetFraction {
-		t.Errorf("default substitution target = %v, want %v (emergencyTargetFraction) for backward compat", got, emergencyTargetFraction)
+	if got != defaultSubstitutionTargetFraction {
+		t.Errorf("default substitution target = %v, want %v (defaultSubstitutionTargetFraction)", got, defaultSubstitutionTargetFraction)
 	}
 }
 
@@ -60,8 +61,8 @@ func TestSubstitutionTargetOrDefault_OutOfRangeFallsBack(t *testing.T) {
 			t.Fatalf("NewAgent for %v: %v", bad, err)
 		}
 		got := a.substitutionTargetOrDefault()
-		if got != emergencyTargetFraction {
-			t.Errorf("for out-of-range %v: substitution target = %v, want default %v", bad, got, emergencyTargetFraction)
+		if got != defaultSubstitutionTargetFraction {
+			t.Errorf("for out-of-range %v: substitution target = %v, want default %v", bad, got, defaultSubstitutionTargetFraction)
 		}
 	}
 }

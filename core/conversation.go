@@ -1247,6 +1247,7 @@ func (ch *ConversationHandler) buildCompactInputs(messages []Message, tokenLimit
 		EstimateFn: func(msgs []Message) int {
 			return provider.EstimateTokens(&ChatRequest{Messages: msgs, Tools: tools})
 		},
+		SubstitutionTargetFraction: ch.agent.substitutionTargetOrDefault(),
 		// Checkpoints / MaskNameFn intentionally omitted — Phase 0 ran
 		// in prepareMessages on the raw slice.
 	}
