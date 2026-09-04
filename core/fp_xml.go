@@ -37,21 +37,43 @@ func (fp *FallbackParser) extractXMLBlocks(content string) []rawBlock {
 			continue
 		}
 
-		// Search for closing tag: </function=web_search> or </tool=web_search>
-		closeTagPrefix := "</" + tagName + "="
-		closeTagIdx := strings.Index(content[afterPrefix+closeAngle+1:], closeTagPrefix)
+		// Search for closing tag: </function=web_search> or </tool=web_search>.
+		// Some Qwen-family checkpoints emit the bare form </function> or
+		// </tool> without repeating the name — accept both spellings, taking
+		// the earliest match. Matching "</tool" alone would false-positive on
+		// </tool_call> wrappers, so both spellings are probed exactly.
+		searchFrom := afterPrefix + closeAngle + 1
+		bareClose := "</" + tagName + ">"
+		namedClose := "</" + tagName + "="
+		closeBare := strings.Index(content[searchFrom:], bareClose)
+		closeNamed := strings.Index(content[searchFrom:], namedClose)
+		closeTagIdx := -1
+		namedCloser := false
+		switch {
+		case closeBare != -1 && (closeNamed == -1 || closeBare <= closeNamed):
+			closeTagIdx = closeBare
+		case closeNamed != -1:
+			closeTagIdx = closeNamed
+			namedCloser = true
+		}
 		var bodyStart, bodyEnd, blockEnd int
 		if closeTagIdx != -1 {
-			bodyStart = afterPrefix + closeAngle + 1
-			bodyEnd = bodyStart + closeTagIdx // end of body content only
+			bodyStart = searchFrom
+			bodyEnd = searchFrom + closeTagIdx // end of body content only
 			// blockEnd includes the full closing tag so cleanContent removes it
-			blockEnd = bodyEnd + len(closeTagPrefix)
-			closer := strings.Index(content[blockEnd:], ">")
-			if closer != -1 {
-				blockEnd += closer + 1
+			if namedCloser {
+				// A named closer carries the tool name (</function=name>) —
+				// skip past it to the terminating '>'.
+				blockEnd = bodyEnd + len(namedClose)
+				closer := strings.Index(content[blockEnd:], ">")
+				if closer != -1 {
+					blockEnd += closer + 1
+				}
+			} else {
+				blockEnd = bodyEnd + len(bareClose)
 			}
 		} else {
-			bodyStart = afterPrefix + closeAngle + 1
+			bodyStart = searchFrom
 			bodyEnd = len(content)
 			blockEnd = len(content)
 		}
@@ -78,18 +100,34 @@ func (fp *FallbackParser) extractXMLBlocks(content string) []rawBlock {
 			Type:     "function",
 			Function: ToolCallFunction{Name: name, Arguments: argsStr},
 		}
+		// Qwen-family checkpoints wrap the block in <tool_call>…</tool_call>.
+		// When the wrapper hugs the block (modulo whitespace), extend the
+		// removed interval over it so cleanContent doesn't leave residue.
+		blockStart := openTag
+		if trimmedStart := strings.TrimRight(content[:openTag], " \t\r\n"); strings.HasSuffix(trimmedStart, "<tool_call>") {
+			blockStart = len(trimmedStart) - len("<tool_call>")
+		}
+		blockFinal := blockEnd
+		rest := strings.TrimLeft(content[blockEnd:], " \t\r\n")
+		if ws := len(content[blockEnd:]) - len(rest); strings.HasPrefix(rest, "</tool_call>") {
+			blockFinal = blockEnd + ws + len("</tool_call>")
+		}
 		blocks = append(blocks, rawBlock{
-			start:  openTag,
-			end:    blockEnd,
+			start:  blockStart,
+			end:    blockFinal,
 			parsed: []ToolCall{tc},
 		})
-		idx = blockEnd
+		idx = blockFinal
 	}
 	return blocks
 }
 
-// parseXMLParameters parses XML <parameter name="..." value> children and returns
-// a JSON-encoded object string. Returns empty string if no <parameter> elements are found.
+// parseXMLParameters parses XML <parameter ...> children and returns a
+// JSON-encoded object string. Returns empty string if no <parameter> elements
+// are found. Two name spellings are accepted:
+//
+//	<parameter name="query">...  (quoted XML attribute)
+//	<parameter=query>...         (name as tag suffix — Qwen-family checkpoints)
 func (fp *FallbackParser) parseXMLParameters(body string) string {
 	params := make(map[string]string)
 	idx := 0
@@ -119,10 +157,14 @@ func (fp *FallbackParser) parseXMLParameters(body string) string {
 		}
 		attrEnd += openTag
 
-		// Extract attributes from the opening tag
+		// Extract the name from the opening tag: either a quoted/xmlGetAttr
+		// attribute or a tag-suffix value (<parameter=name>).
 		attrs := body[openTag+10 : attrEnd] // skip "<parameter"
 		name := fp.xmlGetAttr(attrs, "name")
 		if name == "" {
+			name = strings.Trim(strings.TrimSpace(attrs), "=")
+		}
+		if name == "" || strings.ContainsAny(name, " \t\n\r\"'<>=") {
 			idx = attrEnd + 1
 			continue
 		}
