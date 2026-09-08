@@ -311,6 +311,16 @@ func TestHandlerWithImages(t *testing.T) {
 	if results[0].Content != "text result" {
 		t.Errorf("expected 'text result', got: %q", results[0].Content)
 	}
+	// Images must ride on the tool-result Message, not be discarded.
+	// Regression: runWithTimeout historically executed HandlerWithImages as
+	// `_, text, err := ...`, dropping the images — the tool promised
+	// multimodal results (read_file on a PDF) that never reached the model.
+	if len(results[0].Images) != 1 || results[0].Images[0].Base64 != "abc" {
+		t.Errorf("expected 1 image (base64 'abc') on the result message, got %+v", results[0].Images)
+	}
+	if results[0].Status != ToolStatusCompleted {
+		t.Errorf("expected completed status, got %q", results[0].Status)
+	}
 	// Error
 	reg2 := NewToolRegistry(ToolRegistryOptions{})
 	reg2.Register(ToolConfig{

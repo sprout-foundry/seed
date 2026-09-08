@@ -303,7 +303,7 @@ func (r *ToolRegistry) executeSingle(ctx context.Context, call ToolCall, callIdx
 			return ToolErrorMessage(call.ID, name, result)
 		}
 	}
-	result, handlerErr := r.runWithTimeout(ctx, name, args)
+	result, images, handlerErr := r.runWithTimeout(ctx, name, args)
 	if handlerErr != nil {
 		result = handlerErr.Error()
 	}
@@ -322,16 +322,19 @@ func (r *ToolRegistry) executeSingle(ctx context.Context, call ToolCall, callIdx
 		cb.RecordSuccess()
 	}
 	r.recordEnd(name, call.ID, "success", result, start)
-	return ToolResultMessage(call.ID, name, result)
+	return ToolResultMessageWithImages(call.ID, name, result, images)
 }
 
 // runWithTimeout executes the tool handler with a per-tool timeout.
-func (r *ToolRegistry) runWithTimeout(ctx context.Context, name string, args map[string]interface{}) (string, error) {
+// Handlers registered with HandlerWithImages may return image data; it is
+// preserved in the second return value so tool results for vision-capable
+// models can carry images (see ToolResultMessageWithImages).
+func (r *ToolRegistry) runWithTimeout(ctx context.Context, name string, args map[string]interface{}) (string, []ImageData, error) {
 	r.mu.RLock()
 	entry, exists := r.tools[name]
 	r.mu.RUnlock()
 	if !exists {
-		return "", fmt.Errorf("unknown tool: %s", name)
+		return "", nil, fmt.Errorf("unknown tool: %s", name)
 	}
 	timeout := r.defaultTimeout
 	if entry.config.Timeout > 0 {
@@ -339,24 +342,24 @@ func (r *ToolRegistry) runWithTimeout(ctx context.Context, name string, args map
 	}
 	execCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	ch := make(chan stringResult, 1)
+	ch := make(chan imageResult, 1)
 	go func() {
 		if entry.config.HandlerWithImages != nil {
-			_, text, err := entry.config.HandlerWithImages(execCtx, args)
-			ch <- stringResult{text: text, err: err}
+			images, text, err := entry.config.HandlerWithImages(execCtx, args)
+			ch <- imageResult{text: text, images: images, err: err}
 		} else {
 			text, err := entry.config.Handler(execCtx, args)
-			ch <- stringResult{text: text, err: err}
+			ch <- imageResult{text: text, err: err}
 		}
 	}()
 	select {
 	case res := <-ch:
 		if res.err != nil {
-			return "", fmt.Errorf("tool execution failed: %w", res.err)
+			return "", nil, fmt.Errorf("tool execution failed: %w", res.err)
 		}
-		return res.text, nil
+		return res.text, res.images, nil
 	case <-execCtx.Done():
-		return "", fmt.Errorf("tool execution timed out after %v", timeout)
+		return "", nil, fmt.Errorf("tool execution timed out after %v", timeout)
 	}
 }
 

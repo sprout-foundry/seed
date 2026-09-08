@@ -13,6 +13,15 @@ type stringResult struct {
 	err  error
 }
 
+// imageResult holds the result of a HandlerWithImages execution. The images
+// ride alongside the text so executeSingle can attach them to the tool-result
+// Message instead of discarding them.
+type imageResult struct {
+	text   string
+	images []ImageData
+	err    error
+}
+
 // toolCallSlot holds a tool call with its original index for ordering.
 type toolCallSlot struct {
 	idx  int
@@ -261,6 +270,23 @@ func ToolResultMessage(toolCallID, toolName string, content string) Message {
 		ToolCallID: toolCallID,
 		Status:     ToolStatusCompleted,
 	}
+}
+
+// ToolResultMessageWithImages creates a Message for a successful tool
+// result that also carries image data. Providers that support multimodal
+// tool results (vision-capable models) embed the images into the request;
+// ConversationHandler.prepareMessages strips them for non-vision models
+// via stripImages, so callers don't need to gate on provider capability.
+// toolName is accepted for symmetry with ToolResultMessage; the provider
+// conversion layer keys off Role/ToolCallID, not the name.
+func ToolResultMessageWithImages(toolCallID, toolName string, content string, images []ImageData) Message {
+	msg := ToolResultMessage(toolCallID, toolName, content)
+	if len(images) > 0 {
+		imgCopy := make([]ImageData, len(images))
+		copy(imgCopy, images)
+		msg.Images = imgCopy
+	}
+	return msg
 }
 
 // ToolErrorMessage creates a Message for a failed tool result. Status is
