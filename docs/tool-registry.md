@@ -37,14 +37,15 @@ SafeForParallel   bool                // eligible for concurrent execution
 
 1. **Name resolution** — strips `<|channel|>N` suffix, resolves aliases (case-insensitive)
 2. **Argument parsing** — `parseAndValidateArgs()`: JSON parse with repair (trailing commas, single quotes, bare content), alternative name resolution, type coercion (string→number/boolean), required parameter validation
-3. **Circuit breaker check** — if open and timeout elapsed, allows one probe request (half-open); otherwise rejects immediately
-4. **PreExecuteHook** — if set, called with `(name, args)`; can return error to block execution
-5. **Timeout context** — `context.WithTimeout` using per-tool or default (5 min) timeout
-6. **Handler call** — runs in goroutine; result delivered via channel (supports both `Handler` and `HandlerWithImages`)
-7. **Result truncation** — truncated to `MaxResultSize` (per-tool or global 50KB default) with `(truncated, N chars total)` marker
-8. **PostExecuteHook** — if set, called with `(name, result)`; return value replaces result
-9. **Circuit breaker update** — `RecordSuccess()` or `RecordFailure()` on outcome
-10. **Event publishing** — `tool_start` before execution, `tool_end` after with status/duration
+3. **Call metadata context** — `WithToolCallMetadata()` attaches the call ID, resolved name, and call index so handlers can correlate their own events back to this call (`ToolCallIDFromContext()` et al.)
+4. **Circuit breaker check** — if open and timeout elapsed, allows one probe request (half-open); otherwise rejects immediately
+5. **PreExecuteHook** — if set, called with `(name, args)`; can return error to block execution
+6. **Timeout context** — `context.WithTimeout` using per-tool or default (5 min) timeout
+7. **Handler call** — runs in goroutine; result delivered via channel (supports both `Handler` and `HandlerWithImages`)
+8. **Result truncation** — truncated to `MaxResultSize` (per-tool or global 50KB default) with `(truncated, N chars total)` marker
+9. **PostExecuteHook** — if set, called with `(name, result)`; return value replaces result
+10. **Circuit breaker update** — `RecordSuccess()` or `RecordFailure()` on outcome
+11. **Event publishing** — `tool_start` before execution, `tool_end` after with status/duration
 
 ## Parallel Execution
 

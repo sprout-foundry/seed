@@ -278,6 +278,10 @@ func (r *ToolRegistry) Execute(ctx context.Context, calls []ToolCall) []Message 
 func (r *ToolRegistry) executeSingle(ctx context.Context, call ToolCall, callIdx int) Message {
 	start := time.Now()
 	name := r.resolveName(stripChannelSuffix(call.Function.Name))
+	// Attach the call's metadata so handlers can correlate their activity
+	// (streaming output, progress events) back to this specific tool call.
+	// Applied before the timeout wrapper so values survive runWithTimeout.
+	ctx = WithToolCallMetadata(ctx, call.ID, name, callIdx)
 	args, parseErr := parseAndValidateArgs(r, name, call.Function.Name, call.Function.Arguments)
 	// Note: tool_start and tool_end events are published by the chat loop
 	// (see conversation.go around executor.Execute), not here. Publishing
