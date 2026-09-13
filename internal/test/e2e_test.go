@@ -2909,20 +2909,23 @@ func TestE2E_Optimizer_Integration_FileReadDedup(t *testing.T) {
 	// Second (latest) read should retain original content
 	h.AssertEquals(toolMsgs[1].Content, "file content here")
 
-	// Verify state messages are NOT mutated — the optimizer works on ephemeral copies
+	// Verify state messages ARE persisted with the dedup placeholders. The
+	// dedup pass runs on the raw state slice and writes back when it masks
+	// an earlier duplicate — a stable wire prefix keeps the provider's
+	// prompt cache and any prefix-anchored token accounting valid across
+	// iterations. The LATEST read must retain its original content.
 	stateMsgs := agent.State().Messages()
-	var stateToolCount int
+	var stateToolMsgs []core.Message
 	for _, m := range stateMsgs {
 		if m.Role == "tool" {
-			stateToolCount++
-			if m.Content != "file content here" {
-				t.Errorf("expected state tool message %d to retain original content, got %q", stateToolCount, m.Content)
-			}
+			stateToolMsgs = append(stateToolMsgs, m)
 		}
 	}
-	if stateToolCount != 2 {
-		t.Errorf("expected 2 tool messages in state, got %d", stateToolCount)
+	if len(stateToolMsgs) != 2 {
+		t.Fatalf("expected 2 tool messages in state, got %d", len(stateToolMsgs))
 	}
+	h.AssertEquals(stateToolMsgs[0].Content, "[Earlier file read: test.txt]")
+	h.AssertEquals(stateToolMsgs[1].Content, "file content here")
 }
 
 // --- Steer Message Tests ---

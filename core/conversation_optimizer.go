@@ -91,15 +91,29 @@ func (opt *ConversationOptimizer) OptimizeConversation(messages []Message) []Mes
 	return opt.OptimizeConversationWithOptions(messages, OptimizeOptions{MaskConsumedToolResults: true})
 }
 
+// OptimizeConversationWithReport is OptimizeConversationWithOptions that
+// additionally reports whether the dedup pass replaced any tool-result
+// content with a placeholder. Callers that persist the result (see
+// prepareMessages) use the flag to skip a state write when nothing changed.
+func (opt *ConversationOptimizer) OptimizeConversationWithReport(messages []Message, opts OptimizeOptions) ([]Message, bool) {
+	return opt.optimize(messages, opts)
+}
+
 // OptimizeConversationWithOptions is OptimizeConversation with explicit per-pass
 // gates. The deduplication pass (redundant file reads / shell command outputs)
 // always runs; only the observation-masking pass is gated, because dedup is
 // always strictly beneficial while masking trades information density for
 // token savings.
 func (opt *ConversationOptimizer) OptimizeConversationWithOptions(messages []Message, opts OptimizeOptions) []Message {
+	msgs, _ := opt.optimize(messages, opts)
+	return msgs
+}
+
+func (opt *ConversationOptimizer) optimize(messages []Message, opts OptimizeOptions) ([]Message, bool) {
 	if !opt.enabled || opt.knownToolFn == nil {
-		return messages
+		return messages, false
 	}
+	dedupChanged := false
 
 	// Build a map of tool-call ID → metadata extracted from the assistant message.
 	// Used by both the dedup pass below and the observation-masking pass at the
@@ -172,7 +186,10 @@ func (opt *ConversationOptimizer) OptimizeConversationWithOptions(messages []Mes
 			records, ok := byFile[contentHash]
 			if ok {
 				for _, rec := range records {
-					messages[rec.index].Content = fmt.Sprintf("[Earlier file read: %s]", m.filePath)
+					if messages[rec.index].Content != fmt.Sprintf("[Earlier file read: %s]", m.filePath) {
+						messages[rec.index].Content = fmt.Sprintf("[Earlier file read: %s]", m.filePath)
+						dedupChanged = true
+					}
 				}
 			}
 
@@ -205,7 +222,11 @@ func (opt *ConversationOptimizer) OptimizeConversationWithOptions(messages []Mes
 
 			// If there's a previous output with the same content, replace it.
 			if prevIdx, exists := byCmd[contentHash]; exists {
-				messages[prevIdx].Content = fmt.Sprintf("[Earlier command output: %s]", m.command)
+				placeholder := fmt.Sprintf("[Earlier command output: %s]", m.command)
+				if messages[prevIdx].Content != placeholder {
+					messages[prevIdx].Content = placeholder
+					dedupChanged = true
+				}
 			}
 			// Record this output as the latest for its content.
 			byCmd[contentHash] = i
@@ -249,7 +270,7 @@ func (opt *ConversationOptimizer) OptimizeConversationWithOptions(messages []Mes
 		})
 	}
 
-	return messages
+	return messages, dedupChanged
 }
 
 // maskConsumedToolResults walks the message list and replaces the content of

@@ -26,6 +26,22 @@ func (ch *ConversationHandler) prepareMessages() []Message {
 	// Get current messages
 	messages := ch.agent.state.Messages()
 
+	// Persistent dedup pass: mask earlier duplicate file reads / transient
+	// command outputs in STATE, not just in the request. The request-only
+	// variant rewrote the wire prefix between iterations as new duplicates
+	// appeared (a re-read masks the earlier read), which both invalidated the
+	// provider's prompt cache and left state carrying content the model never
+	// sees again — inflating every fallback token estimate. Dedup is
+	// content-in-place and index-stable, so checkpoint indices remain valid.
+	if ch.agent.optimizer != nil {
+		if deduped, changed := ch.agent.optimizer.OptimizeConversationWithReport(messages, OptimizeOptions{
+			MaskConsumedToolResults: false,
+		}); changed {
+			ch.agent.state.SetMessages(deduped)
+			messages = deduped
+		}
+	}
+
 	// Phase 0 (iterative, loss-minimizing) — operate on the RAW slice so
 	// checkpoint indices remain valid. Only fires when raw history exceeds
 	// the trigger × context_size threshold; below that, raw flows through.
@@ -72,16 +88,10 @@ func (ch *ConversationHandler) prepareMessages() []Message {
 	// terminal formatting codes from polluting LLM context.
 	allMessages = sanitizeMessages(allMessages)
 
-	// Optimize: dedupe-only pass. Observation masking is *not* run here —
+	// Optimize: dedup-only pass already ran at the top of prepareMessages on
+	// the raw state slice (persisted). Observation masking is NOT run here —
 	// it's part of Compact()'s iterative Phase 0b, gated on pressure.
-	// Dedup of redundant file reads / shell command outputs is always
-	// strictly beneficial (it only replaces tool-result content when an
-	// IDENTICAL earlier content exists) so it runs unconditionally.
-	if ch.agent.optimizer != nil {
-		allMessages = ch.agent.optimizer.OptimizeConversationWithOptions(allMessages, OptimizeOptions{
-			MaskConsumedToolResults: false,
-		})
-	}
+	// nothing else to do for the request slice.
 
 	return allMessages
 }
