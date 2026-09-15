@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/sprout-foundry/seed/events"
@@ -18,7 +19,7 @@ type finishReasonProvider struct {
 
 func (m *finishReasonProvider) Chat(_ context.Context, _ *ChatRequest) (*ChatResponse, error) {
 	if m.idx >= len(m.responses) {
-		return nil, ErrNoProvider
+		return nil, fmt.Errorf("provider exhausted: %w", ErrNoProvider)
 	}
 	resp := m.responses[m.idx]
 	m.idx++
@@ -27,7 +28,7 @@ func (m *finishReasonProvider) Chat(_ context.Context, _ *ChatRequest) (*ChatRes
 
 func (m *finishReasonProvider) ChatStream(_ context.Context, _ *ChatRequest, h StreamHandler) error {
 	if m.idx >= len(m.responses) {
-		return ErrNoProvider
+		return fmt.Errorf("provider exhausted: %w", ErrNoProvider)
 	}
 	resp := m.responses[m.idx]
 	m.idx++

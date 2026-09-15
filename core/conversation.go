@@ -56,6 +56,26 @@ type ConversationHandler struct {
 	// accepted to avoid infinite loops. Resets when tool calls are executed.
 	substanceRejectionCount int
 
+	// intentNarrationRejectionCount tracks consecutive rejections of
+	// intent-narration responses — text that describes an action the model
+	// was about to take without the tool call itself (dropped tool-call
+	// delta). Mirrors the tentativeRejectionCount pattern: after 2
+	// rejections, the response is accepted to avoid infinite loops. Resets
+	// when tool calls are executed.
+	intentNarrationRejectionCount int
+
+	// pendingIntentNarration holds the content of the narration that the
+	// intent-narration guard rejected, so an exact "DONE" reply to the
+	// guard's nudge can restore it as the final message instead of leaking
+	// the sentinel into the transcript. Cleared when tool calls execute or
+	// the query completes.
+	pendingIntentNarration string
+
+	// intentNarrationRestored suppresses one evaluation of the
+	// intent-narration guard: the guard must not re-reject the content it
+	// just restored from a "DONE" reply.
+	intentNarrationRestored bool
+
 	// reasoningOnlyRejectionCount tracks consecutive rejections of
 	// reasoning-only responses — assistant turns where the visible Content
 	// is essentially empty but ReasoningContent carries the model's
@@ -117,6 +137,9 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 	ch.tentativeRejectionCount = 0
 	ch.substanceRejectionCount = 0
 	ch.reasoningOnlyRejectionCount = 0
+	ch.intentNarrationRejectionCount = 0
+	ch.pendingIntentNarration = ""
+	ch.intentNarrationRestored = false
 	ch.consecutiveBlank = 0
 	ch.turnCompleted = false
 
@@ -367,6 +390,15 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 		if assistantMsg.Role == "" {
 			assistantMsg.Role = "assistant"
 		}
+		// DONE-restore: an exact "DONE" reply to the intent-narration nudge
+		// means the task was in fact complete — surface the original
+		// narration as the final message instead of the sentinel.
+		if ch.pendingIntentNarration != "" && isExactDone(assistantMsg.Content) {
+			assistantMsg.Content = ch.pendingIntentNarration
+			ch.pendingIntentNarration = ""
+			ch.intentNarrationRestored = true
+			a.debugLog("[finish] stop — DONE after intent-narration nudge, restoring original narration\n")
+		}
 		a.state.AddMessage(assistantMsg)
 
 		// Dispatch on finish reason from the first choice.
@@ -432,8 +464,17 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 
 		case "stop":
 			// "stop" — model completed normally.
+			// A DONE-restored narration has already been evaluated by the
+			// post-tool guards during its original turn; suppress the guard
+			// chain for this one message (the blank/repetitive check would
+			// otherwise reject it as a duplicate of the stall it restores).
+			suppressGuards := false
+			if ch.intentNarrationRestored {
+				ch.intentNarrationRestored = false
+				suppressGuards = true
+			}
 			// Check for blank or repetitive content when there are no tool calls.
-			if len(assistantMsg.ToolCalls) == 0 {
+			if len(assistantMsg.ToolCalls) == 0 && !suppressGuards {
 				// Reasoning-only-after-tool-results: a reasoning-capable model
 				// (minimax, deepseek-r1, glm, etc.) sent "stop" with essentially
 				// empty visible Content but non-empty ReasoningContent. The
@@ -476,7 +517,16 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 					}
 				} else {
 					isBlank := ch.isBlankIteration(assistantMsg.Content)
-					isRepetitive := !isBlank && a.validator != nil && ch.isRepetitiveContent(assistantMsg.Content)
+					// A post-tool guard mid-rejection means the previous
+					// nudge asked the model to restate or redo its turn; a
+					// model that repeats itself is exactly the stuck case
+					// those guards own. Let them run their accept-after-2
+					// policy instead of erroring out as "repetitive".
+					postToolGuardActive := ch.tentativeRejectionCount > 0 ||
+						ch.substanceRejectionCount > 0 ||
+						ch.intentNarrationRejectionCount > 0
+					isRepetitive := !isBlank && !postToolGuardActive &&
+						a.validator != nil && ch.isRepetitiveContent(assistantMsg.Content)
 
 					if isBlank || isRepetitive {
 						ch.consecutiveBlank++
@@ -528,7 +578,7 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 			// tentative/planning content, reject it and ask for real action.
 			// After 2 rejections, accept the response to avoid infinite loops.
 			if a.validator != nil && len(assistantMsg.ToolCalls) == 0 &&
-				ch.followsRecentToolResults() &&
+				ch.followsRecentToolResultsIgnoringContinuations() &&
 				a.validator.LooksLikeTentativePostToolResponse(assistantMsg.Content) {
 				ch.tentativeRejectionCount++
 				if ch.tentativeRejectionCount >= 2 {
@@ -558,7 +608,7 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 			// conveys no findings and leaves the caller with nothing useful.
 			if a.validator != nil && !a.disableSubstanceGuard &&
 				len(assistantMsg.ToolCalls) == 0 &&
-				ch.followsRecentToolResults() &&
+				ch.followsRecentToolResultsIgnoringContinuations() &&
 				a.validator.LooksInsufficientAfterToolCalls(assistantMsg.Content) {
 				ch.substanceRejectionCount++
 				if ch.substanceRejectionCount >= 2 {
@@ -575,6 +625,41 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 							"error messages, or relevant code snippets from the tool results.",
 					})
 					continue
+				}
+			}
+			// Intent-narration guard: when the model returns "stop" with no
+			// tool calls and the content narrates an action it was about to
+			// take, the tool call it described was likely never emitted (a
+			// corrupted stream can deliver the narration while dropping the
+			// structured tool_calls deltas). Unlike the tentative check this
+			// matches intent mid-text and fires on verbatim sentence
+			// repetition — the signature of a stream re-narrating the same
+			// plan. After 2 rejections, accept to avoid loops. A reply of
+			// exactly "DONE" to the nudge restores the original narration.
+			if a.validator != nil && !a.disableSubstanceGuard &&
+				len(assistantMsg.ToolCalls) == 0 &&
+				ch.followsRecentToolResultsIgnoringContinuations() &&
+				a.validator.LooksLikeIntentNarration(assistantMsg.Content) {
+				if ch.intentNarrationRestored {
+					ch.intentNarrationRestored = false
+				} else {
+					ch.intentNarrationRejectionCount++
+					if ch.intentNarrationRejectionCount >= 2 {
+						ch.intentNarrationRejectionCount = 0
+						ch.agent.debugLog("[finish] stop — intent-narration rejection limit reached, accepting response\n")
+						// Fall through to the existing tool-call / completion logic below.
+					} else {
+						ch.pendingIntentNarration = assistantMsg.Content
+						ch.agent.debugLog("[finish] stop — intent narration after tool results (rejection %d/2), looping again\n",
+							ch.intentNarrationRejectionCount)
+						ch.enqueueTransientMessage(Message{
+							Role: "user",
+							Content: "Your previous message described actions but no tool call was recorded. " +
+								"Re-emit the tool call you intended — do not re-describe your plan. " +
+								"If the task is in fact complete, reply with exactly DONE.",
+						})
+						continue
+					}
 				}
 			}
 			// Fall through to the existing tool-call / completion logic below.
@@ -717,6 +802,9 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 		ch.continuationCount = 0
 		ch.tentativeRejectionCount = 0
 		ch.substanceRejectionCount = 0
+		ch.intentNarrationRejectionCount = 0
+		ch.pendingIntentNarration = ""
+		ch.intentNarrationRestored = false
 		ch.consecutiveBlank = 0
 
 		ch.agent.debugLog("[tool] Executing %d tool calls\n", len(assistantMsg.ToolCalls))
@@ -1462,6 +1550,81 @@ func (ch *ConversationHandler) followsRecentToolResults() bool {
 		foundTool = true
 	}
 	return foundTool
+}
+
+// bareContinuationPrompts are whole-message user replies that only ask the
+// loop to keep going. Matched after lowercasing and stripping trailing
+// punctuation. Anything longer or different is substantive input and breaks
+// tool-result proximity.
+var bareContinuationPrompts = map[string]bool{
+	"continue":        true,
+	"please continue": true,
+	"continue please": true,
+	"go on":           true,
+	"go ahead":        true,
+	"keep going":      true,
+	"carry on":        true,
+	"proceed":         true,
+	"keep working":    true,
+}
+
+// isBareContinuationPrompt reports whether the message is nothing but a
+// keep-going instruction.
+func isBareContinuationPrompt(content string) bool {
+	trimmed := strings.TrimSpace(content)
+	trimmed = strings.ToLower(trimmed)
+	trimmed = strings.TrimRight(trimmed, ".!?,:; \t\n-—~")
+	return bareContinuationPrompts[trimmed]
+}
+
+// followsRecentToolResultsIgnoringContinuations is followsRecentToolResults
+// with one widening: a bare continuation prompt from the user ("continue",
+// "go on") between the tool results and the assistant response does not
+// break proximity. A human "continue" after a stall is the manual version
+// of this loop's own nudge — it must not disable the post-tool guards for
+// the very retry it produced. Substantive user input still breaks proximity.
+func (ch *ConversationHandler) followsRecentToolResultsIgnoringContinuations() bool {
+	msgs := ch.agent.state.Messages()
+	if len(msgs) == 0 {
+		return false
+	}
+
+	i := len(msgs) - 1
+	// Skip the current assistant message (already in state from runLoop).
+	if msgs[i].Role == "assistant" {
+		i--
+	}
+
+	foundTool := false
+	for ; i >= 0; i-- {
+		switch msgs[i].Role {
+		case "tool":
+			foundTool = true
+		case "user":
+			if !isBareContinuationPrompt(msgs[i].Content) {
+				return false
+			}
+		case "assistant":
+			if foundTool {
+				return true
+			}
+			// Narration from an earlier stall episode sits between the
+			// tool results and the current response — keep walking past it.
+		default:
+			// system or other roles — skip
+		}
+	}
+	return foundTool
+}
+
+// isExactDone reports whether content is exactly the DONE sentinel the
+// intent-narration nudge offers as a completion exit (case-insensitive,
+// trailing punctuation tolerated).
+func isExactDone(content string) bool {
+	trimmed := strings.TrimSpace(content)
+	trimmed = strings.ToLower(trimmed)
+	trimmed = strings.TrimRight(trimmed, ".!?,:; \t\n")
+	return trimmed == "done"
 }
 
 // ansiRegex matches common ANSI escape sequences:

@@ -393,6 +393,169 @@ func (rv *ResponseValidator) LooksInsufficientAfterToolCalls(content string) boo
 	return true
 }
 
+// intentNarrationOpeners are first-person intent phrases that indicate the
+// model is narrating a future action ("Now let me commit using the commit
+// tool") rather than reporting a completed one. Matched anywhere in the
+// content, not just as a prefix: a corrupted streaming response routinely
+// buries the intent sentence after a factual preamble, which defeats a
+// prefix-only check.
+var intentNarrationOpeners = []string{
+	"let me ",
+	"i'll ",
+	"i will ",
+	"i'm going to ",
+	"im going to ",
+	"i need to ",
+	"i'm about to ",
+	"let's ",
+}
+
+// intentNarrationNonActionWords are the words that directly follow an opener
+// in rhetorical usage — "let me know if you need anything else", "let me be
+// clear", "let me explain the design". Those are completed answers, not plans
+// to act, so the opener does not indicate a missing tool call.
+var intentNarrationNonActionWords = []string{
+	"know", "if", "be", "clear", "explain", "say", "tell", "describe",
+	"outline", "summarize", "summarise", "highlight", "note", "add",
+}
+
+// intentNarrationWordThreshold bounds the no-repetition path of
+// LooksLikeIntentNarration: short narration that leads with intent gets one
+// nudge; longer single-pass prose with an embedded intent phrase is more
+// likely a completed answer with a rhetorical tail (already exempted above
+// when it carries substance markers).
+const intentNarrationWordThreshold = 30
+
+// LooksLikeIntentNarration detects when the model returned text that
+// narrates an action it was about to take, without the tool call itself —
+// the signature of a dropped tool-call delta: the narration survives the
+// stream, the structured tool_calls field does not.
+//
+// Unlike LooksLikeTentativePostToolResponse (leading prefix, under 40
+// words), this matches intent mid-text and also fires on verbatim sentence
+// repetition, because corrupted streams re-narrate the same plan two or
+// three times, producing long repetitive messages that defeat a word-count
+// gate. Substance markers (file refs, code blocks, lists, test language)
+// exempt the response.
+//
+// Callers gate this on the response following recent tool results; the
+// validator itself is content-only.
+func (rv *ResponseValidator) LooksLikeIntentNarration(content string) bool {
+	if len(content) == 0 {
+		return false
+	}
+
+	lower := strings.ToLower(content)
+
+	// Substance gate: an answer that cites files, code, or findings is
+	// useful even if it also contains a plan sentence.
+	for _, signal := range insufficientSignals {
+		if strings.Contains(lower, signal) {
+			rv.log("[validate] LooksLikeIntentNarration: false (substance signal %q)", signal)
+			return false
+		}
+	}
+
+	if !containsMidTextIntent(lower) {
+		rv.log("[validate] LooksLikeIntentNarration: false (no intent opener)")
+		return false
+	}
+
+	// Verbatim repetition of a sentence is a stream-corruption signature
+	// and fires the guard regardless of length.
+	if hasRepeatedSentence(content) {
+		rv.log("[validate] LooksLikeIntentNarration: true (repeated sentence + intent)")
+		return true
+	}
+
+	wordCount := len(strings.Fields(content))
+	if wordCount < intentNarrationWordThreshold {
+		rv.log("[validate] LooksLikeIntentNarration: true (%d words, no repetition)", wordCount)
+		return true
+	}
+
+	rv.log("[validate] LooksLikeIntentNarration: false (%d words, no repetition)", wordCount)
+	return false
+}
+
+// containsMidTextIntent reports whether any intent opener appears at a word
+// boundary followed by a word that is not a known non-action (rhetorical)
+// continuation.
+func containsMidTextIntent(lower string) bool {
+	for _, opener := range intentNarrationOpeners {
+		from := 0
+		for {
+			idx := strings.Index(lower[from:], opener)
+			if idx < 0 {
+				break
+			}
+			idx += from
+
+			atBoundary := idx == 0 || !isWordRune(rune(lower[idx-1]))
+			if atBoundary {
+				if follow, ok := wordAfter(lower, idx+len(opener)); ok && !isIntentNonActionWord(follow) {
+					return true
+				}
+			}
+			from = idx + 1
+		}
+	}
+	return false
+}
+
+func isWordRune(r rune) bool {
+	return r == '\'' || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
+}
+
+// wordAfter extracts the next lowercase word starting at or after i,
+// skipping non-letter characters.
+func wordAfter(lower string, i int) (string, bool) {
+	for i < len(lower) && !isWordRune(rune(lower[i])) {
+		i++
+	}
+	start := i
+	for i < len(lower) && isWordRune(rune(lower[i])) {
+		i++
+	}
+	if start == i {
+		return "", false
+	}
+	return lower[start:i], true
+}
+
+func isIntentNonActionWord(w string) bool {
+	for _, nw := range intentNarrationNonActionWords {
+		if w == nw {
+			return true
+		}
+	}
+	return false
+}
+
+// hasRepeatedSentence reports whether any sentence of three or more words
+// appears more than once in the content. Verbatim repetition of a full
+// sentence is a stream-corruption signature (the same plan narrated two or
+// three times), not a considered answer.
+func hasRepeatedSentence(content string) bool {
+	normalized := strings.ReplaceAll(content, "\n", " ")
+	parts := strings.FieldsFunc(normalized, func(r rune) bool {
+		return r == '.' || r == '!' || r == '?' || r == ';' || r == ':'
+	})
+	counts := make(map[string]int, len(parts))
+	for _, p := range parts {
+		p = strings.ToLower(strings.TrimSpace(p))
+		words := strings.Fields(p)
+		if len(words) < 3 {
+			continue
+		}
+		counts[p]++
+		if counts[p] >= 2 {
+			return true
+		}
+	}
+	return false
+}
+
 // reasoningOnlyContentMaxLen is the maximum length of Content (after trim)
 // for which a post-tool response is treated as empty-from-the-user's-perspective.
 // One or two words — even with proper punctuation — is not enough to convey
