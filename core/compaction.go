@@ -103,6 +103,15 @@ type CompactInputs struct {
 	// substitution pass buy more headroom. Only affects Phase 0a; Phase 1+
 	// drops always use emergencyTargetFraction.
 	SubstitutionTargetFraction float64
+	// TargetTokens, when non-zero, overrides the internally-derived compaction
+	// target (emergencyTargetFraction × TokenLimit) for every phase — early
+	// exit, Phase 0a/0b stop conditions, and the Phase 1+ drop/truncate
+	// targets. The chat loop passes its compaction trigger (with margin) so a
+	// proactive pass settles BELOW the trigger; without this, the derived
+	// 0.85 × TokenLimit target can sit above the trigger and the loop
+	// re-fires compaction every iteration (thrash). Zero keeps the historical
+	// behavior for external callers and the recovery path.
+	TargetTokens int
 }
 
 // Compact reduces messages to fit within the token limit using the
@@ -151,6 +160,15 @@ func CompactWith(in CompactInputs) CompactionResult {
 	}
 	tokensBefore := estimate(messages)
 	targetTokens := int(float64(tokenLimit) * emergencyTargetFraction)
+	// Explicit target override (chat loop passes its trigger minus margin
+	// when the configured trigger sits below the derived target) wins over
+	// the derived one. The guard keeps default configurations byte-identical
+	// to the historical behavior — the override exists to tighten, and the
+	// loop only sets it when the derived target would settle over the
+	// trigger.
+	if in.TargetTokens > 0 && in.TargetTokens < targetTokens {
+		targetTokens = in.TargetTokens
+	}
 
 	// Early exit: nothing to compact if there are too few messages OR we're
 	// already under the target. Compare against target (not tokenLimit) so
@@ -240,7 +258,7 @@ func CompactWith(in CompactInputs) CompactionResult {
 	}
 
 	// Phase 2: Emergency truncation on the already-dropped messages.
-	result, droppedMsgs := emergencyTruncate(turnDropped, tokenLimit)
+	result, droppedMsgs := emergencyTruncateWithTarget(turnDropped, tokenLimit, targetTokens)
 	if droppedMsgs {
 		strategies = append(strategies, "emergency")
 	} else {
@@ -484,6 +502,16 @@ func dropOldestCheckpointSummaries(messages []Message, recentToKeep int, targetT
 // were dropped (true = "emergency", false = "truncation" only).
 func emergencyTruncate(messages []Message, tokenLimit int) ([]Message, bool) {
 	targetTokens := int(float64(tokenLimit) * emergencyTargetFraction)
+	return emergencyTruncateWithTarget(messages, tokenLimit, targetTokens)
+}
+
+// emergencyTruncateWithTarget is emergencyTruncate with an explicit target
+// override (from CompactInputs.TargetTokens). It tightens every internal
+// phase; the caller-supplied tokenLimit remains the outer bound.
+func emergencyTruncateWithTarget(messages []Message, tokenLimit, targetTokens int) ([]Message, bool) {
+	if targetTokens <= 0 {
+		targetTokens = int(float64(tokenLimit) * emergencyTargetFraction)
+	}
 	currentTokens := roughTokens(messages)
 
 	if currentTokens <= targetTokens {

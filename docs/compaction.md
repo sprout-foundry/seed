@@ -162,6 +162,48 @@ help shrink it.
   (`emergencyTargetFraction`).
 - **Phase 0a/0b inside `CompactWith`**: only fire when the caller
   supplies Checkpoints / MaskNameFn. Used by the recovery path.
+- **`TargetTokens` override**: when non-zero and below the derived
+  target, every phase — early exit, Phase 0a/0b stop conditions, and
+  the Phase 1+ drop/truncate targets — uses it instead of the derived
+  85%. The conversation loop sets it on proactive passes when the
+  configured trigger sits below the derived target (see
+  [Settle-below-trigger](#settle-below-trigger)); the recovery path and
+  default configurations (trigger 0.85 = derived target) never set it.
+
+### Settle-below-trigger
+
+A proactive compaction pass must land the estimate BELOW the loop's
+trigger. Without that guarantee the pass settles over the trigger and
+the loop re-fires compaction every iteration — thrash (observed as
+several auto-compactions within seconds). Two mechanisms enforce it:
+
+- **Pruner branch** (`PruneCallOptions.TargetTokens`): after the
+  strategy's own keep-set is built, a final `settleBelowTarget` pass
+  drops whole turns (turn-aware, same `findOldestCompleteTurn` machinery
+  as Phase 1.5 — an assistant-with-tool-calls is never orphaned from
+  its results) outside the protected recent window until the estimate is
+  at or below the target. Best effort: `MinMessagesToKeep` and the
+  recent window always bind.
+- **Compact branches** (`CompactInputs.TargetTokens`): set only when
+  the configured trigger sits below the derived 0.85 target — the only
+  configuration where those branches can settle over the trigger. At the
+  default trigger the derived target already equals the trigger and
+  behavior is byte-identical to the historical pipeline.
+
+The settle target is `trigger − 5%` of the window: enough growth room
+for a few tool-heavy iterations, no more — drop-based settling is lossy,
+so tighten only as far as the thrash fix requires. The overflow-recovery
+path keeps its own more aggressive target (`recoveryCompactionTargetFraction`)
+unchanged.
+
+**Known corner — short-but-fat histories.** Settle can only drop outside
+the protected recent window. A conversation with ≤ `recentMessagesToKeep+1`
+messages whose overage lives inside that window (e.g. 15 messages
+carrying hundreds of thousands of tokens of tool output) can never
+settle; the trigger re-fires each iteration. That is inherent to "don't
+eat the live causal chain" — the consumer's output-budget floor and the
+overflow-recovery path are the mitigations for that corner, not further
+drops.
 
 ### Phase 1 — Drop Checkpoint Summaries
 - Removes oldest checkpoint summary messages

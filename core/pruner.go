@@ -90,6 +90,18 @@ type PruneCallOptions struct {
 	// when IsAgenticFlow is true.
 	RequiredAvailableTokens int
 
+	// TargetTokens, when non-zero, is a ceiling on the post-prune token
+	// estimate. The strategies size their keep-sets from their own targets
+	// (0.85 / 0.77 / 0.70 × window by message count), which can sit ABOVE
+	// the chat loop's compaction trigger — the pruner then "settles" over
+	// the trigger and the loop re-fires compaction every iteration
+	// (thrash: several auto-compactions within seconds). When set, a final
+	// settle pass drops oldest non-system messages until the estimate is at
+	// or below TargetTokens (best effort: never below MinMessagesToKeep).
+	// The chat loop passes its trigger minus a margin so each firing buys
+	// growth room for a few tool-heavy iterations.
+	TargetTokens int
+
 	// EstimateFn, when non-nil, replaces the pruner's internal
 	// 4-chars-per-token estimator for all budget math (target sizing,
 	// per-message scoring, headroom checks). Pass the live provider's
@@ -248,6 +260,15 @@ func (cp *ConversationPruner) Prune(ctx context.Context, messages []Message, cur
 			required = defaultAgenticRequiredAvailable
 		}
 		pruned = cp.ensureRequiredHeadroom(pruned, maxTokens, required, opts.EstimateFn)
+	}
+
+	// Settle below the caller's target when provided. Strategy targets can
+	// sit above the loop's compaction trigger (see PruneCallOptions.TargetTokens);
+	// without this pass the estimate lands over the trigger and the loop
+	// re-fires compaction every iteration. Best effort: the minMessagesToKeep
+	// floor still binds, and every drop keeps the system message.
+	if opts.TargetTokens > 0 {
+		pruned = cp.settleBelowTarget(pruned, opts.TargetTokens, opts.EstimateFn)
 	}
 
 	return pruned
@@ -817,6 +838,53 @@ func (cp *ConversationPruner) hasLargeFileReads(messages []Message) bool {
 		}
 	}
 	return false
+}
+
+// settleBelowTarget drops the oldest non-system messages until the token
+// estimate is at or below targetTokens, respecting the minimum-keep floor.
+// Unlike ensureRequiredHeadroom it is not restricted to agentic flows and
+// takes its target directly (an absolute token count, not a headroom delta),
+// so the chat loop can pass its compaction trigger and guarantee the
+// post-compaction estimate actually lands below it.
+//
+// Drops are oldest-first outside a protected recent window (recentMessagesToKeep),
+// mirroring ensureRequiredHeadroom's shape but bounded by recency as well:
+// losing the last few messages of the current causal chain mid-turn costs
+// far more than a summary pass later recovers.
+func (cp *ConversationPruner) settleBelowTarget(messages []Message, targetTokens int, estimateFn func([]Message) int) []Message {
+	if targetTokens <= 0 || len(messages) <= cp.minMessagesToKeep {
+		return messages
+	}
+	if cp.estimateFor(messages, estimateFn) <= targetTokens {
+		return messages
+	}
+	// Copy: the in-place drops below shift elements in the backing array,
+	// and a strategy that returned the input unchanged would otherwise
+	// corrupt the caller's slice.
+	pruned := make([]Message, len(messages))
+	copy(pruned, messages)
+	for len(pruned) > cp.minMessagesToKeep && cp.estimateFor(pruned, estimateFn) > targetTokens {
+		recentStart := len(pruned) - cp.recentMessagesToKeep
+		if recentStart < 2 {
+			return pruned // the protected window already covers everything
+		}
+		// Turn-aware dropping, identical semantics to the Phase 1.5 drop
+		// pipeline: whole turns (user → assistant → tool chain) leave
+		// atomically so no tool call is orphaned from its result. Naive
+		// index-1 dropping would split them and strict providers
+		// (MiniMax/DeepSeek) reject the request outright.
+		turnStart, turnEnd, spanningEnd := findOldestCompleteTurn(pruned, recentStart)
+		if turnStart < 0 {
+			dropIdx := findDropableMessage(pruned, recentStart, spanningEnd)
+			if dropIdx < 0 {
+				return pruned
+			}
+			pruned = append(pruned[:dropIdx], pruned[dropIdx+1:]...)
+			continue
+		}
+		pruned = append(pruned[:turnStart], pruned[turnEnd:]...)
+	}
+	return pruned
 }
 
 // ensureRequiredHeadroom drops oldest non-system messages until the

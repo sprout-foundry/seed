@@ -218,6 +218,29 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 			tokensBefore := tokenEstimate
 			strategy := "none"
 
+			// Settle target: a proactive compaction pass must land BELOW the
+			// trigger, or the estimate sits over it and the loop re-fires
+			// compaction every iteration (thrash: several auto-compactions
+			// within seconds). A small margin below the trigger — enough room
+			// for a few tool-heavy iterations of growth, no more: drop-based
+			// settling is lossy, so tighten only as far as the thrash fix
+			// requires. The pruner branch always passes it: the pruner's
+			// greedy keep-set has no built-in under-trigger guarantee. The
+			// Compact branches pass it only when the configured trigger sits
+			// below the pipeline's own derived target (0.85 × window) — the
+			// only configuration where those branches can settle over the
+			// trigger; at the default trigger the derived target already
+			// equals the trigger and behavior stays historical.
+			derivedTarget := int(float64(contextSize) * emergencyTargetFraction)
+			prunerSettleTarget := triggerLimit - int(float64(contextSize)*0.05)
+			if prunerSettleTarget < 1 {
+				prunerSettleTarget = 1
+			}
+			compactSettleTarget := 0
+			if triggerLimit < derivedTarget {
+				compactSettleTarget = prunerSettleTarget
+			}
+
 			switch {
 			case ch.agent.pruner != nil:
 				messages = ch.agent.pruner.Prune(ctx, messages, tokenEstimate, contextSize, PruneCallOptions{
@@ -228,6 +251,7 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 					EstimateFn: func(msgs []Message) int {
 						return ch.agent.provider.EstimateTokens(&ChatRequest{Messages: msgs, Tools: ch.agent.executor.GetTools()})
 					},
+					TargetTokens: prunerSettleTarget,
 				})
 				strategy = "pruner_" + string(ch.agent.pruner.Strategy())
 
@@ -240,7 +264,7 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 				// If LLM summary didn't trigger or didn't reduce enough, fall
 				// back to the progressive rule-based pipeline.
 				if roughTokens(messages) > triggerLimit {
-					cr := CompactWith(ch.buildCompactInputs(messages, contextSize))
+					cr := CompactWith(ch.buildCompactInputsWithTarget(messages, contextSize, compactSettleTarget))
 					messages = cr.Messages
 					if cr.Strategy != "none" {
 						if strategy == "none" {
@@ -254,7 +278,7 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 			default:
 				// Progressive pipeline — substitute then mask before drops.
 				// See docs/compaction.md.
-				cr := CompactWith(ch.buildCompactInputs(messages, contextSize))
+				cr := CompactWith(ch.buildCompactInputsWithTarget(messages, contextSize, compactSettleTarget))
 				messages = cr.Messages
 				strategy = cr.Strategy
 			}
@@ -1325,6 +1349,14 @@ func (ch *ConversationHandler) compactMessages(messages []Message, limit int) Co
 // Phase 1+ drops the resulting summary messages (which DO live in the
 // prepared slice) directly.
 func (ch *ConversationHandler) buildCompactInputs(messages []Message, tokenLimit int) CompactInputs {
+	return ch.buildCompactInputsWithTarget(messages, tokenLimit, 0)
+}
+
+// buildCompactInputsWithTarget is buildCompactInputs with an explicit
+// compaction target override. The proactive loop passes its settle target
+// (below the trigger) so a pass actually settles; the recovery path passes 0
+// and keeps the historical derived target.
+func (ch *ConversationHandler) buildCompactInputsWithTarget(messages []Message, tokenLimit, targetTokens int) CompactInputs {
 	provider := ch.agent.provider
 	tools := ch.agent.executor.GetTools()
 	return CompactInputs{
@@ -1336,6 +1368,7 @@ func (ch *ConversationHandler) buildCompactInputs(messages []Message, tokenLimit
 			return provider.EstimateTokens(&ChatRequest{Messages: msgs, Tools: tools})
 		},
 		SubstitutionTargetFraction: ch.agent.substitutionTargetOrDefault(),
+		TargetTokens:               targetTokens,
 		// Checkpoints / MaskNameFn intentionally omitted — Phase 0 ran
 		// in prepareMessages on the raw slice.
 	}
