@@ -248,6 +248,79 @@ done:
 	}
 }
 
+// TestLoopExhaustedCornerEmitsNoCompactionEvents covers the exhausted
+// corner: a short history whose overage lives entirely inside the protected
+// recent window can never settle (see docs/compaction.md "Known corner").
+// Before the fix, the pruner branch labeled its strategy unconditionally,
+// so the re-firing loop emitted one zero-drop compaction event per
+// iteration — UI spam with no signal.
+func TestLoopExhaustedCornerEmitsNoCompactionEvents(t *testing.T) {
+	provider := &settleTestProvider{
+		info: ProviderInfo{Model: "test", ContextSize: 80000},
+		resp: &ChatResponse{
+			Choices: []ChatChoice{{Message: Message{Role: "assistant", Content: "done"}, FinishReason: "stop"}},
+			Usage:   ChatUsage{PromptTokens: 100, CompletionTokens: 5, TotalTokens: 105},
+		},
+	}
+
+	// 10 messages, ~65K rough tokens on an 80K window: every message sits
+	// inside the 24-message recent window, so settleBelowTarget's
+	// recentStart < 2 guard no-ops the pass and the estimate stays over
+	// the 0.70 trigger (56000) for every iteration. The window is sized
+	// so ensureRequiredHeadroom is already satisfied (remaining 15K >= its
+	// 12K default) — otherwise that pass drops to the min-keep floor and
+	// the event it publishes is a REAL compaction, not the zero-drop spam
+	// under test.
+	fat := []Message{{Role: "system", Content: "system prompt"}}
+	for i := 0; i < 4; i++ {
+		u, a := makeTextTurn(i)
+		u.Content += strings.Repeat("F", 32000)
+		a.Content += strings.Repeat("F", 32000)
+		fat = append(fat, u, a)
+	}
+
+	bus := events.NewEventBus()
+	a, err := NewAgent(Options{
+		Provider:                  provider,
+		Executor:                  NoopExecutor,
+		EventPublisher:            bus,
+		Pruner:                    NewConversationPruner(PrunerOptions{Strategy: PruneStrategyAdaptive}),
+		InitialMessages:           fat,
+		CompactionTriggerFraction: 0.70,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before := roughTokens(fat); before <= 56000 {
+		t.Fatalf("fixture must start over the trigger, got %d tokens", before)
+	}
+
+	sub := bus.Subscribe("exhausted-corner")
+	if _, err := a.Run(context.Background(), "go"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	compactions := 0
+	for {
+		select {
+		case ev := <-sub:
+			if ev.Type == events.EventTypeCompaction {
+				compactions++
+			}
+		default:
+			goto drained
+		}
+	}
+drained:
+	if compactions != 0 {
+		t.Errorf("exhausted corner must emit zero zero-drop compaction events, got %d", compactions)
+	}
+}
+
+// trigger math matches the fixtures' arithmetic, and records the last
+// request so tests can assert on what the provider actually received
+// (the loop settles the prepared request slice — state keeps raw history).
+// settleTestProvider reports roughTokens-based estimates so the loop's
 // settleTestProvider reports roughTokens-based estimates so the loop's
 // trigger math matches the fixtures' arithmetic, and records the last
 // request so tests can assert on what the provider actually received

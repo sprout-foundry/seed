@@ -283,20 +283,26 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 				strategy = cr.Strategy
 			}
 
-			// Publish a compaction event whenever we actually changed something.
+			// Publish a compaction event only when something actually changed.
+			// The pruner branch labels its strategy unconditionally, so a
+			// zero-drop pass (exhausted corner: overage lives inside the
+			// protected recent window) would otherwise emit one event per
+			// iteration — spam on the UI's compaction feed with no signal.
 			if ch.agent.eventPublisher != nil && strategy != "none" {
 				tokensAfter := roughTokens(messages)
 				tokensSaved := 0
 				if tokensBefore > tokensAfter {
 					tokensSaved = tokensBefore - tokensAfter
 				}
-				ch.agent.eventPublisher.Publish(EventTypeCompaction, map[string]interface{}{
-					"strategy":            strategy,
-					"messages_before":     beforeCount,
-					"messages_after":      len(messages),
-					"message_count_delta": beforeCount - len(messages),
-					"tokens_saved":        tokensSaved,
-				})
+				if len(messages) != beforeCount || tokensSaved > 0 {
+					ch.agent.eventPublisher.Publish(EventTypeCompaction, map[string]interface{}{
+						"strategy":            strategy,
+						"messages_before":     beforeCount,
+						"messages_after":      len(messages),
+						"message_count_delta": beforeCount - len(messages),
+						"tokens_saved":        tokensSaved,
+					})
+				}
 			}
 			// Re-estimate after compaction to get accurate prompt size.
 			tokenEstimate = ch.agent.provider.EstimateTokens(&ChatRequest{
