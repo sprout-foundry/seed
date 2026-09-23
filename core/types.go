@@ -4,6 +4,15 @@ package core
 // compaction so they can be identified without string matching.
 const MetaKeyCheckpoint = "checkpoint"
 
+// MetaKeyMsgID is the Meta key carrying a stable per-state identity for a
+// message. AddMessage stamps every appended message with a monotonically
+// increasing ID so consumers can match messages across list rebuilds
+// (compaction persists, index rebases) without relying on position or
+// content equality — duplicate contents are common in long agent sessions
+// (identical nudge texts, repeated file reads) and positional indices
+// shift under compaction. Never serialized (Meta is json:"-").
+const MetaKeyMsgID = "msg.id"
+
 // Tool status values for the Message.Status field. Set by an Executor on
 // the Message returned for a tool call; read by the chat loop when it
 // publishes the EventTypeToolEnd event so consumers (CLI tool log, WebUI

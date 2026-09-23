@@ -333,7 +333,14 @@ func NewAgent(opts Options) (*Agent, error) {
 	// Create state, seeding with initial messages if provided.
 	st := NewState()
 	if len(opts.InitialMessages) > 0 {
-		st.SetMessages(opts.InitialMessages)
+		// AddMessage (not SetMessages) so every seeded message carries a
+		// MetaKeyMsgID identity — the compaction survivor map matches on
+		// it, and restored/imported histories (identical nudge texts,
+		// repeated file reads) are exactly the duplicate-content case
+		// positional/content matching cannot disambiguate.
+		for _, m := range opts.InitialMessages {
+			st.AddMessage(m)
+		}
 	}
 	if len(opts.InitialCheckpoints) > 0 {
 		st.SetCheckpoints(opts.InitialCheckpoints)

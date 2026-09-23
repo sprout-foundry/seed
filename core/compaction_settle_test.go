@@ -329,11 +329,27 @@ type settleTestProvider struct {
 	info        ProviderInfo
 	resp        *ChatResponse
 	lastReqMsgs []Message
+
+	// Optional hooks for tests that need multi-request turns.
+	flipToFinal func() // called after the first request completes
+	record      func([]Message)
 }
 
 func (p *settleTestProvider) Chat(_ context.Context, req *ChatRequest) (*ChatResponse, error) {
+	// Capture the scripted response BEFORE the hooks run — hooks advance
+	// the script for the NEXT request; this request must return the head
+	// it came in with.
+	resp := p.resp
 	p.lastReqMsgs = req.Messages
-	return p.resp, nil
+	if p.record != nil {
+		p.record(req.Messages)
+	}
+	if p.flipToFinal != nil {
+		flip := p.flipToFinal
+		p.flipToFinal = nil
+		flip()
+	}
+	return resp, nil
 }
 func (p *settleTestProvider) ChatStream(_ context.Context, req *ChatRequest, h StreamHandler) error {
 	p.lastReqMsgs = req.Messages

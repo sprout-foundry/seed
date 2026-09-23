@@ -309,6 +309,19 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 				Messages: messages,
 				Tools:    ch.agent.executor.GetTools(),
 			})
+
+			// Persist the compacted history so the NEXT iteration appends to
+			// it instead of re-deriving the whole cascade from grown raw
+			// state. Re-derivation was the compaction-churn root cause: the
+			// pruner re-scored against a longer tail every iteration (keep
+			// boundary drifting → oscillating request sizes), the LLM-summary
+			// path regenerated different summary text each pass (new bytes
+			// spliced mid-history → zero provider prompt-cache hits), and
+			// every over-trigger iteration paid the full cascade again.
+			// Persistence happens once per trigger crossing: once state
+			// holds the compacted list, the estimate falls under the trigger
+			// and this block does not re-fire.
+			ch.persistCompactedState(messages)
 		}
 
 		// Tool-threading cleanup: run every iteration as a safety net. The
@@ -1356,6 +1369,222 @@ func (ch *ConversationHandler) compactMessages(messages []Message, limit int) Co
 // prepared slice) directly.
 func (ch *ConversationHandler) buildCompactInputs(messages []Message, tokenLimit int) CompactInputs {
 	return ch.buildCompactInputsWithTarget(messages, tokenLimit, 0)
+}
+
+// persistCompactedState writes a compacted request-view message list back
+// into conversation state so subsequent iterations append to it instead of
+// re-deriving the compaction cascade from raw (growing) history.
+//
+// The request view differs from state in two ways: prepareMessages strips
+// state's own system messages (the wire system prompt is prepended fresh)
+// and the request may carry transient one-shot messages. This function
+// reconstructs a state-shaped list from the compacted wire view:
+//
+//   - State system messages (e.g. session-name markers) are re-inserted at
+//     the front — the wire view never carries them, and the system block,
+//     when present in state, always leads.
+//   - Wire transients (seed continuation nudges, the special-token guard
+//     hint) are excluded: they are one-shot by contract and never enter
+//     state through the normal path either.
+//   - Everything else on the wire persists verbatim — including summary
+//     messages inserted by the LLM-summary cascade (they carry the
+//     MetaKeyCheckpoint meta tag) and in-place rewrites (dedup/masking
+//     placeholders, demoted anchor stubs). Persisting the exact wire bytes
+//     is what makes the next request replay them byte-identically; trying
+//     to reverse-map to the pre-compaction state text would regenerate the
+//     churn this exists to fix.
+//
+// Checkpoints are rebased through the same survivor map (RebaseCheckpoints)
+// so StartIndex/EndIndex stay valid against the new state layout. The write
+// is skipped entirely when nothing actually shrank.
+func (ch *ConversationHandler) persistCompactedState(messages []Message) {
+	// The wire view's leading system message is the prepended agent prompt
+	// — state never carries it. Drop it (and any collapsed system pieces)
+	// before comparing against state; state's own system messages are
+	// re-inserted below from state itself.
+	//
+	// Transient one-shot messages (continuation nudges, guard hints) never
+	// entered state, so they carry no MetaKeyMsgID — filter them by that
+	// signature, NOT by content alone: a user who literally types
+	// "Please continue." DID enter state with an ID, and dropping their
+	// message would be data loss.
+	stateIDs := make(map[string]bool)
+	for _, sm := range ch.agent.state.Messages() {
+		if id := sm.Meta[MetaKeyMsgID]; id != "" {
+			stateIDs[id] = true
+		}
+	}
+	wire := make([]Message, 0, len(messages))
+	for _, m := range messages {
+		if m.Role == "system" {
+			continue
+		}
+		if m.Role == "user" && m.Meta[MetaKeyMsgID] == "" && IsTransientUserMessage(m) {
+			continue
+		}
+		wire = append(wire, m)
+	}
+
+	stateMsgs := ch.agent.state.Messages()
+	if len(wire) >= len(stateMsgs) {
+		// The cascade didn't shrink the conversation relative to state —
+		// nothing to persist. (A summary splice replaces N middle messages
+		// with 1, so a real compaction always shrinks.)
+		return
+	}
+
+	// Rebuild a state-shaped list: state's front system messages (e.g.
+	// session-name markers), then the compacted wire view.
+	var frontSystem []Message
+	for _, sm := range stateMsgs {
+		if sm.Role != "system" {
+			break
+		}
+		frontSystem = append(frontSystem, sm)
+	}
+
+	persisted := make([]Message, 0, len(wire)+len(frontSystem))
+	persisted = append(persisted, frontSystem...)
+	persisted = append(persisted, wire...)
+
+	if len(persisted) >= len(stateMsgs) {
+		return // nothing actually dropped
+	}
+
+	// Survivor map: old state index -> new persisted index. Match state
+	// messages to the persisted tail by MetaKeyMsgID (stamped at AddMessage,
+	// carried through the pipeline and the compaction cascade by value) —
+	// content equality is only a fallback for messages that entered state
+	// through SetMessages (InitialMessages etc.) and carry no ID. In-place
+	// rewrites (masking placeholders, demoted anchor stubs) change content
+	// but keep the ID, so the survivor still maps correctly.
+	survivorOf := make(map[int]int, len(stateMsgs))
+	pi := len(frontSystem)
+	for si, sm := range stateMsgs {
+		if sm.Role == "system" && si < len(frontSystem) {
+			survivorOf[si] = si
+			continue
+		}
+		for wi := pi; wi < len(persisted); wi++ {
+			idMatch := sm.Meta[MetaKeyMsgID] != "" && persisted[wi].Meta[MetaKeyMsgID] == sm.Meta[MetaKeyMsgID]
+			contentMatch := sm.Meta[MetaKeyMsgID] == "" &&
+				persisted[wi].Role == sm.Role && persisted[wi].Content == sm.Content && persisted[wi].ToolCallID == sm.ToolCallID
+			if idMatch || contentMatch {
+				survivorOf[si] = wi
+				pi = wi + 1
+				break
+			}
+		}
+	}
+
+	// Restore Images from the pre-compaction state: prepareMessages strips
+	// them on the wire for non-vision providers, but the wire view IS what
+	// persists — writing the stripped form back would silently drop images
+	// the user pasted (data loss on model switch to a vision model, or on
+	// any consumer reading state). Match by MsgID; content-matched
+	// fallbacks (restored histories without IDs) rarely carry images.
+	stateByID := make(map[string]Message, len(stateMsgs))
+	for _, sm := range stateMsgs {
+		if id := sm.Meta[MetaKeyMsgID]; id != "" {
+			stateByID[id] = sm
+		}
+	}
+	needsImageRestore := false
+	for i := range persisted {
+		if len(stateByID[persisted[i].Meta[MetaKeyMsgID]].Images) > 0 {
+			needsImageRestore = true
+			break
+		}
+	}
+	if needsImageRestore {
+		for i := range persisted {
+			if sm, ok := stateByID[persisted[i].Meta[MetaKeyMsgID]]; ok && len(sm.Images) > 0 {
+				persisted[i].Images = sm.Images
+			}
+		}
+	}
+
+	ch.agent.state.SetMessages(persisted)
+	RebaseCheckpoints(ch.agent.state, survivorOf)
+	// Compose into the cumulative run map: sprout's mirrored structures
+	// were built against the pre-run layout, so a second compaction's
+	// old-indices (post-first-compaction) must chain through the first
+	// map, not replace it.
+	if prev := ch.agent.state.LastCompactionRebase(); prev != nil {
+		cumulative := make(map[int]int, len(prev))
+		for old, mid := range prev {
+			if nw, ok := survivorOf[mid]; ok {
+				cumulative[old] = nw
+			}
+		}
+		ch.agent.state.setLastCompactionRebase(cumulative)
+	} else {
+		ch.agent.state.setLastCompactionRebase(survivorOf)
+	}
+
+	// Rebase the current turn's start index into the new layout. It was
+	// captured at loop start against the old state; finalize records the
+	// turn checkpoint from it against state.Messages(), which just
+	// shrank. An unrebased index would either skip the checkpoint
+	// (beyond the new length) or span the wrong messages. The current
+	// turn lives inside the protected recent window, so it normally
+	// survives intact; if its start was dropped anyway, anchor at the
+	// first persisted non-system message.
+	if newStart, ok := survivorOf[ch.queryStartIndex]; ok {
+		ch.queryStartIndex = newStart
+	} else {
+		ch.queryStartIndex = len(frontSystem)
+	}
+}
+
+// IsTransientUserMessage reports whether a user message is one of seed's
+// one-shot loop messages: continuation nudges, filter/reasoning retries,
+// intent-narration sentinel replies, or provider-guard corrective hints.
+// These never enter state through the normal path; persistCompactedState
+// must exclude them when rebuilding state from a wire view. Matching is by
+// exact trimmed content or the guard's stable prefix.
+func IsTransientUserMessage(m Message) bool {
+	if m.Role != "user" {
+		return false
+	}
+	switch strings.TrimSpace(m.Content) {
+	case "Please continue your response from where you left off.",
+		"Please continue.",
+		"Your previous response was filtered. Please rephrase your response.",
+		"Your previous response appears incomplete. Please provide your final answer.",
+		"Your previous response had reasoning but no visible text. Call the next tool or state the final answer explicitly — do not end with only thinking.",
+		"DONE":
+		return true
+	}
+	return strings.HasPrefix(m.Content, "IMPORTANT: Do not emit the literal byte sequence")
+}
+
+// RebaseCheckpoints shifts every checkpoint's StartIndex/EndIndex through a
+// survivor map (old state index -> new state index) and drops checkpoints
+// whose range no longer has a valid span. Exported so consumers that keep a
+// parallel checkpoint list in their own state (sprout's richer TurnCheckpoint
+// carries ID/FileChanges/RevisionID metadata seed doesn't know about) can
+// rebase through the same rule when they import a compacted history.
+func RebaseCheckpoints(state *State, survivorOf map[int]int) {
+	if state == nil || len(survivorOf) == 0 {
+		return
+	}
+	cps := state.GetCheckpoints()
+	if len(cps) == 0 {
+		return
+	}
+	out := make([]TurnCheckpoint, 0, len(cps))
+	for _, cp := range cps {
+		newStart, okS := survivorOf[cp.StartIndex]
+		newEnd, okE := survivorOf[cp.EndIndex]
+		if !okS || !okE || newEnd < newStart {
+			continue // range fully or partially dropped
+		}
+		cp.StartIndex = newStart
+		cp.EndIndex = newEnd
+		out = append(out, cp)
+	}
+	state.SetCheckpoints(out)
 }
 
 // buildCompactInputsWithTarget is buildCompactInputs with an explicit

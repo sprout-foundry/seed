@@ -22,6 +22,47 @@ type State struct {
 
 	// Turn checkpoints for context compaction
 	checkpoints []TurnCheckpoint
+
+	// msgIDSeq stamps MetaKeyMsgID on AddMessage so messages survive list
+	// rebuilds (compaction persists) with a stable identity.
+	msgIDSeq int64
+
+	// lastCompactionRebase records the survivor map (old state index ->
+	// new state index) of the most recent mid-turn compaction persist, if
+	// any. Consumers that mirror state.Messages() into their own richer
+	// structures (sprout's TurnCheckpoint carries metadata seed doesn't
+	// know about) read it once after the run and rebase through the same
+	// rule. Nil when no compaction persisted during the run.
+	lastCompactionRebase map[int]int
+}
+
+// LastCompactionRebase returns a copy of the most recent compaction
+// survivor map (old state index -> new state index), or nil when no
+// compaction has persisted since state creation.
+func (s *State) LastCompactionRebase() map[int]int {
+	if s == nil {
+		return nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.lastCompactionRebase == nil {
+		return nil
+	}
+	out := make(map[int]int, len(s.lastCompactionRebase))
+	for k, v := range s.lastCompactionRebase {
+		out[k] = v
+	}
+	return out
+}
+
+// setLastCompactionRebase records the survivor map of a compaction persist.
+func (s *State) setLastCompactionRebase(m map[int]int) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lastCompactionRebase = m
 }
 
 // NewState creates a new State.
@@ -51,6 +92,13 @@ func (s *State) SetMessages(msgs []Message) {
 func (s *State) AddMessage(msg Message) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.msgIDSeq++
+	if msg.Meta == nil {
+		msg.Meta = make(map[string]string, 1)
+	}
+	if msg.Meta[MetaKeyMsgID] == "" {
+		msg.Meta[MetaKeyMsgID] = fmt.Sprintf("%d", s.msgIDSeq)
+	}
 	s.messages = append(s.messages, msg)
 }
 
