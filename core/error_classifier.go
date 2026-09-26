@@ -71,10 +71,10 @@ func ClassifyError(err error, provider string) error {
 
 	// Client error patterns (4xx).
 	if containsAny(msg, "bad request", "invalid parameter", "invalid api parameter",
-		"not found", "unprocessable", "method not allowed", "conflict",
+		"payment required", "not found", "unprocessable", "method not allowed", "conflict",
 		"payload too large", "uri too long", "unsupported media type",
 		"too many fields exceeded", "request entity too large") ||
-		containsStatusCode(msg, "400") || containsStatusCode(msg, "403") ||
+		containsStatusCode(msg, "400") || containsStatusCode(msg, "402") || containsStatusCode(msg, "403") ||
 		containsStatusCode(msg, "404") || containsStatusCode(msg, "405") ||
 		containsStatusCode(msg, "409") || containsStatusCode(msg, "410") ||
 		containsStatusCode(msg, "413") || containsStatusCode(msg, "414") ||

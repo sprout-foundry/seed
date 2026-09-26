@@ -1127,6 +1127,12 @@ func (ch *ConversationHandler) ProcessQuery(ctx context.Context, query string) (
 				}
 				continue
 			}
+
+			// Anything else (client errors such as 400/402/404, and any
+			// future non-retryable type) fails fast: resending the same
+			// request cannot change the answer.
+			ch.agent.debugLog("[!!] Non-retryable error, failing fast: %v\n", classifiedErr)
+			return nil, classifiedErr
 		}
 
 		// All retries exhausted — return the last classified error
