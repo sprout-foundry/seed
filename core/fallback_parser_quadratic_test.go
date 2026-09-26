@@ -66,13 +66,20 @@ func TestParse_BareJSON_NotQuadratic(t *testing.T) {
 
 	// Warm up both sizes once before measuring. This primes the allocator and
 	// grows the parser's internal structures (and the Go runtime) to their
-	// steady-state, reducing cold-start / first-allocation noise that can skew
-	// the 2N/N ratio on CI.
+	// steady-state, reducing cold-start / first-allocation noise.
 	_ = measure(n)
 	_ = measure(2 * n)
 
-	tN := measure(n)
-	t2N := measure(2 * n)
+	// Noise (GC pauses, a descheduled CI runner) only ever adds time, so the
+	// fastest of several interleaved samples is the stable estimate of each
+	// size's real cost. A single sample let one stall push a linear ratio
+	// past the threshold.
+	const samples = 7
+	tN, t2N := time.Duration(1<<62), time.Duration(1<<62)
+	for i := 0; i < samples; i++ {
+		tN = min(tN, measure(n))
+		t2N = min(t2N, measure(2*n))
+	}
 	t.Logf("N=%d: %s, 2N=%d: %s (ratio %.2f)", n, tN, 2*n, t2N, float64(t2N)/float64(tN))
 
 	if tN > 0 {
