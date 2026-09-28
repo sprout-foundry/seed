@@ -173,6 +173,28 @@ func TestReasoningOnlyGuard_DoneAloneIsRejected(t *testing.T) {
 	}
 }
 
+// TestReasoningOnlyGuard_OneWordAnswerWithoutTools verifies a reasoning
+// model's one-word answer to a plain question is accepted as-is. Rejecting it
+// makes the model repeat the answer, which the user then sees twice.
+func TestReasoningOnlyGuard_OneWordAnswerWithoutTools(t *testing.T) {
+	provider := newFRProvider(
+		frReasoningResponse("PLUM", "The user asks me to reply with just the word PLUM."),
+		frTextResponse("PLUM", "stop"),
+	)
+	agent, _ := NewAgent(Options{Provider: provider, Executor: &mockExecutor{}})
+
+	result, err := agent.Run(context.Background(), "Reply with just the word PLUM.")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != "PLUM" {
+		t.Errorf("expected the one-word answer, got: %q", result)
+	}
+	if provider.idx != 1 {
+		t.Errorf("expected 1 provider call, got %d", provider.idx)
+	}
+}
+
 // TestReasoningOnlyGuard_NoReasoning_NoTrigger verifies the guard does
 // NOT fire when ReasoningContent is empty. A simple empty Content after
 // tool results is the blank guard's job — reasoning-only detection is

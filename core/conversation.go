@@ -536,11 +536,16 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 				// Fires only when:
 				//   1. finish_reason is "stop" (not "length", not a tool call).
 				//   2. There are no tool calls in this response.
-				//   3. The validator reports LooksLikeReasoningOnlyAfterToolResults.
+				//   3. The turn follows tool results. A reasoning model answering
+				//      a plain question with one word ("PLUM") is a finished
+				//      answer, not a stall; rejecting it makes the model repeat
+				//      itself.
+				//   4. The validator reports LooksLikeReasoningOnlyAfterToolResults.
 				//
 				// Capped at 2 rejections to avoid infinite loops on a model that
 				// keeps thinking without acting.
 				if a.validator != nil && !a.disableSubstanceGuard &&
+					ch.followsRecentToolResultsIgnoringContinuations() &&
 					a.validator.LooksLikeReasoningOnlyAfterToolResults(assistantMsg.Content, assistantMsg.ReasoningContent) {
 					ch.reasoningOnlyRejectionCount++
 					if ch.reasoningOnlyRejectionCount >= 2 {
