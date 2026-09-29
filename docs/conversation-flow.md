@@ -149,7 +149,7 @@ After individual normalization, deduplicates by `ID + arguments` (first occurren
 ## Blank / Repetitive Iteration Detection
 
 - **Blank:** Content is empty or whitespace-only.
-- **Repetitive:** Content is highly similar to the previous assistant message (exact match after normalization, or ≥80% word overlap with ≥10 overlapping words).
+- **Repetitive:** Content is highly similar to the previous assistant message of the same run (exact match after normalization, or ≥80% word overlap with ≥10 overlapping words). Earlier turns do not count — a turn may rightly repeat an earlier answer.
 - **Counter:** `consecutiveBlank` tracks consecutive blank/repetitive responses. Threshold is 2.
 - **First occurrence:** Send reminder message, loop again.
 - **Second occurrence:** Return `BlankResponseError`.

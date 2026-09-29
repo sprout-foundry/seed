@@ -1705,8 +1705,15 @@ func (ch *ConversationHandler) isRepetitiveContent(content string) bool {
 // current one in the message history. The current assistant message is
 // already in state (added by runLoop before finish-reason dispatch), so we
 // skip it and look back for the prior assistant message.
+//
+// Only this run's messages count: an earlier turn's answer can rightly be
+// word-for-word what this turn answers (asked "reply with exactly X" twice),
+// and rejecting it as repetition made the model invent a second reply.
 func (ch *ConversationHandler) previousAssistantMessage() *Message {
 	msgs := ch.agent.state.Messages()
+	if start := ch.queryStartIndex; start > 0 && start <= len(msgs) {
+		msgs = msgs[start:]
+	}
 	return findPreviousRole(msgs, "assistant", "assistant")
 }
 
