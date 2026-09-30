@@ -556,14 +556,6 @@ func hasRepeatedSentence(content string) bool {
 	return false
 }
 
-// reasoningOnlyContentMaxLen is the maximum length of Content (after trim)
-// for which a post-tool response is treated as empty-from-the-user's-perspective.
-// One or two words — even with proper punctuation — is not enough to convey
-// findings after a tool call. A response like "Done." or "Looks good." still
-// counts as essentially empty for the purpose of detecting reasoning-only turns,
-// which is what this guard is for.
-const reasoningOnlyContentMaxLen = 2
-
 // reasoningOnlyReasoningMinLen is the minimum length of ReasoningContent
 // required to count as a real reasoning stream rather than empty reasoning
 // metadata. A response with no reasoning at all (ReasoningContent == "") is
@@ -582,21 +574,17 @@ const reasoningOnlyReasoningMinLen = 5
 // exits the run, leaving the caller with tool results but no synthesis.
 //
 // A response is "reasoning only" when ALL of these hold:
-//   - Trimmed Content has fewer than reasoningOnlyContentMaxLen whitespace-separated tokens.
+//   - Content has no visible text: no letter or digit (empty, whitespace,
+//     or stray punctuation).
 //   - ReasoningContent is non-empty and at least reasoningOnlyReasoningMinLen runes.
 //   - Content has no tool calls (otherwise the model genuinely picked a tool).
 //
-// Returns false for genuine short answers ("Done.", "Yes.") and for responses
-// that pair reasoning with a one- or two-word acknowledgment that the model
-// might reasonably intend as the final answer — those go through the existing
-// blank / repetition guard which handles them appropriately.
+// Any visible text is the model's answer, however short: "Done." or "Yes."
+// after a tool call is a finished turn, and rejecting it makes the model
+// repeat itself or redo work it already did.
 func (rv *ResponseValidator) LooksLikeReasoningOnlyAfterToolResults(content, reasoningContent string) bool {
-	// Visible content must be essentially empty. Count whitespace-separated
-	// tokens after trim; the guard fires on zero or one token. We use
-	// Fields not len() so "Done." (1 token) is treated as empty for this
-	// purpose — the goal is to push the model toward a real sentence.
 	trimmedContent := strings.TrimSpace(content)
-	if len(strings.Fields(trimmedContent)) >= reasoningOnlyContentMaxLen {
+	if hasVisibleText(trimmedContent) {
 		return false
 	}
 
@@ -611,6 +599,11 @@ func (rv *ResponseValidator) LooksLikeReasoningOnlyAfterToolResults(content, rea
 	rv.log("[validate] LooksLikeReasoningOnlyAfterToolResults: true (content=%q, reasoning_len=%d)",
 		trimmedContent, utf8.RuneCountInString(trimmedReasoning))
 	return true
+}
+
+// hasVisibleText reports whether s carries any letter or digit.
+func hasVisibleText(s string) bool {
+	return strings.IndexFunc(s, func(r rune) bool { return unicode.IsLetter(r) || unicode.IsNumber(r) }) >= 0
 }
 
 // insufficientSignals are substrings that, when present, indicate the

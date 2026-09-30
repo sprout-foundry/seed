@@ -7,7 +7,7 @@ import "testing"
 // ---------------------------------------------------------------------------
 
 // TestLooksLikeReasoningOnlyAfterToolResults_CoreCases covers the primary
-// detection surface: empty/very-short content paired with non-empty reasoning
+// detection surface: content with no visible text paired with non-empty reasoning
 // is the exact case we want to surface as "reasoning-only" so the runLoop
 // can inject the nudge.
 func TestLooksLikeReasoningOnlyAfterToolResults_CoreCases(t *testing.T) {
@@ -32,22 +32,19 @@ func TestLooksLikeReasoningOnlyAfterToolResults_CoreCases(t *testing.T) {
 			want:             true,
 		},
 		{
-			name:             "single token content + non-empty reasoning",
+			name:             "one-word answer + non-empty reasoning",
 			content:          "Done.",
 			reasoningContent: "I have decided to stop the conversation here since the user's task is complete.",
+			want:             false,
+		},
+		{
+			name:             "punctuation only + non-empty reasoning",
+			content:          " … ",
+			reasoningContent: "I will summarize the findings and then end the response without taking further action.",
 			want:             true,
 		},
 		{
-			name:             "two-token content + non-empty reasoning",
-			content:          "Looks good.",
-			reasoningContent: "I will summarize the findings and then end the response without taking further action.",
-			// Two whitespace-separated tokens is the boundary where the
-			// guard stops firing — a real short summary should be at
-			// least three tokens. See boundary-tokens test below.
-			want: false,
-		},
-		{
-			name:             "real answer (≥3 tokens) + reasoning",
+			name:             "real answer + reasoning",
 			content:          "The WASM build errors are gone.",
 			reasoningContent: "Let me note this for the user.",
 			want:             false,
@@ -89,16 +86,14 @@ func TestLooksLikeReasoningOnlyAfterToolResults_CoreCases(t *testing.T) {
 	}
 }
 
-// TestLooksLikeReasoningOnlyAfterToolResults_BoundaryTokens covers the
-// boundary between "one token" (fires the guard) and "two tokens" (does NOT
-// fire the guard because two tokens might be a real attempt at a short answer
-// the model intends as final). Note the guard uses Fields() not rune count,
-// so punctuation doesn't multiply tokens.
-func TestLooksLikeReasoningOnlyAfterToolResults_BoundaryTokens(t *testing.T) {
+// TestLooksLikeReasoningOnlyAfterToolResults_VisibleText covers the boundary:
+// content without a letter or digit fires the guard; any word, however
+// short, is an answer.
+func TestLooksLikeReasoningOnlyAfterToolResults_VisibleText(t *testing.T) {
 	rv := newTestValidator(t)
 
 	// Reasoning must always be ≥5 runes (the min len) but the
-	// substance of this test is content length.
+	// substance of this test is the content.
 	const reasoning = "I should consider whether to continue or call the next tool."
 
 	tests := []struct {
@@ -108,12 +103,12 @@ func TestLooksLikeReasoningOnlyAfterToolResults_BoundaryTokens(t *testing.T) {
 	}{
 		{"empty content", "", true},
 		{"only punctuation", ".", true},
-		{"one trailing word", "Done", true},
-		{"one trailing word with period", "Done.", true},
-		{"two tokens", "Done now", false},
-		{"two tokens with period", "Done now.", false},
-		{"three tokens", "Done now please", false},
-		{"three tokens embedded with multi-space", "Done   now   please", false},
+		{"only symbols", "--- …", true},
+		{"one word", "DONE", false},
+		{"one word with period", "Done.", false},
+		{"a number", "42", false},
+		{"non-latin word", "完成", false},
+		{"a sentence", "Done now, the file is written.", false},
 	}
 
 	for _, tt := range tests {
@@ -127,23 +122,9 @@ func TestLooksLikeReasoningOnlyAfterToolResults_BoundaryTokens(t *testing.T) {
 	}
 }
 
-// TestLooksLikeReasoningOnlyAfterToolResults_DoesNotInterfereWithDone verifies
-// that "Done." with reasoning content is detected as reasoning-only (it is
-// — the guard treats it as empty because it has only one whitespace-
-// separated token). This is intentional: "Done." alone does not convey
-// findings after a tool call; the model should either continue or write a
-// real final sentence.
-func TestLooksLikeReasoningOnlyAfterToolResults_DoesNotInterfereWithDone(t *testing.T) {
-	rv := newTestValidator(t)
-	if !rv.LooksLikeReasoningOnlyAfterToolResults("Done.", "I am wrapping up now.") {
-		t.Error("expected 'Done.' + reasoning to fire guard; it forces the loop to ask for substance")
-	}
-}
-
 // TestLooksLikeReasoningOnlyAfterToolResults_RealAnswersPreserved protects
 // the regression case this guard must NOT cause: a real short summary that
-// follows tool results, paired with reasoning, should not be re-nudged. The
-// 3+ token rule guarantees any three-word natural answer is safe.
+// follows tool results, paired with reasoning, should not be re-nudged.
 func TestLooksLikeReasoningOnlyAfterToolResults_RealAnswersPreserved(t *testing.T) {
 	rv := newTestValidator(t)
 
@@ -162,6 +143,10 @@ func TestLooksLikeReasoningOnlyAfterToolResults_RealAnswersPreserved(t *testing.
 		{
 			content:          "Tests pass.",
 			reasoningContent: "All checks done.",
+		},
+		{
+			content:          "DONE",
+			reasoningContent: "The file is written; the user asked me to reply DONE.",
 		},
 		{
 			content:          "WASM build errors gone.",

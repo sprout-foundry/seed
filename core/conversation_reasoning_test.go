@@ -59,30 +59,18 @@ func TestReasoningOnlyGuard_RejectsEmptyContentAfterToolCalls(t *testing.T) {
 }
 
 // TestReasoningOnlyGuard_AcceptsAfterOneRejection is the cap test: after
-// 1 rejection (counter=2 hits the limit), the next reasoning-only response
-// is accepted to break the loop. The accepted response must have non-empty
-// Content — otherwise finalize returns "" (the validator stops reasoning-
-// only when Content is <2 tokens, but finalize will return whatever the
-// last assistant message has, which can be empty).
+// one rejection, a second reasoning-only response reaches the limit and is
+// accepted to break the loop.
 //
 // Flow:
 //  1. Tool call → result
-//  2. Reasoning-only #1 (empty content, non-empty reasoning) → rejected (counter=1, nudge)
-//  3. Two-token content + reasoning → counter=2, hits limit, accepted (NOT a reasoning-
-//     only response because Content has 2 tokens — guards fires only on 0/1 tokens,
-//     so this is the second "good" answer from the validator's perspective)
-//
-// The cap test exercises that the guard doesn't fire again on a 3rd hit
-// that the loop has decided to accept.
+//  2. Reasoning-only #1 (empty content) → rejected, nudge
+//  3. Reasoning-only #2 (punctuation only) → limit reached, accepted
 func TestReasoningOnlyGuard_AcceptsAfterOneRejection(t *testing.T) {
 	provider := newFRProvider(
-		// 1. Tool call
 		frToolCallOnlyResponse("call_1", "echo", `{"message":"test"}`),
-		// 2. Reasoning-only #1 → rejected (counter=1)
 		frReasoningResponse("", "I should think about whether to continue or call another tool here now."),
-		// 3. Reasoning-only #2 → counter=2, hits limit, accepted (Content is here 1 token though;
-		// finalize returns this 1-token string as the final result).
-		frReasoningResponse("Done.", "I will summarize the findings now and conclude the run here."),
+		frReasoningResponse("…", "I will summarize the findings now and conclude the run here."),
 	)
 	executor := &mockExecutor{
 		results: []Message{{Role: "tool", Content: "result", ToolCallID: "call_1"}},
@@ -96,20 +84,16 @@ func TestReasoningOnlyGuard_AcceptsAfterOneRejection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// After cap reached, the loop accepts the 2nd reasoning-only response,
-	// whose Content is "Done." — single token but with non-empty text, so
-	// finalize returns it as the final result.
-	if result != "Done." {
-		t.Errorf("expected accepted 'Done.' response after cap, got: %q", result)
+	if result != "…" {
+		t.Errorf("expected the response accepted at the cap, got: %q", result)
 	}
-	// 3 calls: tool + 2 reasoning-only (1 rejected, 1 accepted).
 	if provider.idx != 3 {
 		t.Errorf("expected 3 provider calls, got %d", provider.idx)
 	}
 }
 
 // TestReasoningOnlyGuard_PassesShortSubstantiveResponse verifies a
-// short real answer (≥3 tokens) is not caught by the guard, even when
+// short real answer is not caught by the guard, even when
 // ReasoningContent is non-empty. This is the regression case we must
 // NOT introduce — the user's bug report is specifically about content
 // being essentially empty, not about content being short.
@@ -117,7 +101,7 @@ func TestReasoningOnlyGuard_PassesShortSubstantiveResponse(t *testing.T) {
 	provider := newFRProvider(
 		// 1. Tool call
 		frToolCallOnlyResponse("call_1", "echo", `{"message":"test"}`),
-		// 2. Real short answer (3 tokens) → accepted
+		// 2. Real short answer → accepted
 		frReasoningResponse("Build is green.", "Verify was the main thing the user asked for."),
 	)
 	executor := &mockExecutor{
@@ -141,17 +125,13 @@ func TestReasoningOnlyGuard_PassesShortSubstantiveResponse(t *testing.T) {
 	}
 }
 
-// TestReasoningOnlyGuard_DoneAloneIsRejected guards the specific phrasing
-// from the user's bug report: the model emits "Done." (one token) after
-// tool calls. With reasoning content present, "Done." is not enough to
-// convey findings, so the loop should ask the model to act or answer.
-func TestReasoningOnlyGuard_DoneAloneIsRejected(t *testing.T) {
+// TestReasoningOnlyGuard_DoneAloneIsAccepted verifies a one-word final
+// answer after tool calls ends the turn: it is the model's answer, and
+// rejecting it made the model repeat itself or redo finished work.
+func TestReasoningOnlyGuard_DoneAloneIsAccepted(t *testing.T) {
 	provider := newFRProvider(
 		frToolCallOnlyResponse("call_1", "echo", `{"message":"test"}`),
-		// "Done." with reasoning → reasoning-only, rejected (#1)
 		frReasoningResponse("Done.", "I have decided to stop the run here since the user's intent is satisfied."),
-		// Concrete answer → accepted
-		frTextResponse("All five tests pass and the WASM build errors are gone.", "stop"),
 	)
 	executor := &mockExecutor{
 		results: []Message{{Role: "tool", Content: "result", ToolCallID: "call_1"}},
@@ -165,11 +145,11 @@ func TestReasoningOnlyGuard_DoneAloneIsRejected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !contains(result, "five tests pass") {
-		t.Errorf("expected expanded answer after 'Done.' rejection, got: %q", result)
+	if result != "Done." {
+		t.Errorf("expected the one-word answer, got: %q", result)
 	}
-	if provider.idx != 3 {
-		t.Errorf("expected 3 provider calls (tool + rejected 'Done.' + real answer), got %d", provider.idx)
+	if provider.idx != 2 {
+		t.Errorf("expected 2 provider calls (tool + answer), got %d", provider.idx)
 	}
 }
 
