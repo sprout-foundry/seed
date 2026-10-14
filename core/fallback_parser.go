@@ -96,6 +96,13 @@ var strongPatternMarkers = []string{
 	"<tool=",
 	"<tool>",
 	"<tool_use>",
+	// Anthropic-namespaced tags. Some checkpoints (observed: qwen3.8-27b via
+	// NInfer) emit tool calls as "<antml:parameter name=\"tool\">…" with the
+	// "antml:" prefix on every tag, and no <function=/<tool= opener. These are
+	// unambiguous tool-call markup, so a single match triggers Tier 1.
+	"<antml:parameter",
+	"<antml:function_calls",
+	"<antml:invoke",
 	// call: prefix (e.g., "call:calculator{...}")
 	"call:",
 	// JSON keys — quoted so they only match actual JSON key occurrences
@@ -196,6 +203,7 @@ func (fp *FallbackParser) extractAll(content string) []rawBlock {
 	var blocks []rawBlock
 	blocks = append(blocks, fp.extractJSONFences(content)...)
 	blocks = append(blocks, fp.extractXMLBlocks(content)...)
+	blocks = append(blocks, fp.extractAntmlBlocks(content)...)
 	blocks = append(blocks, fp.extractToolBlocks(content)...)
 	blocks = append(blocks, fp.extractToolUseBlocks(content)...)
 	blocks = append(blocks, fp.extractFunctionNamePatterns(content)...)
