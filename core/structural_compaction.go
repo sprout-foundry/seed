@@ -74,7 +74,7 @@ func CompactWithLLMSummary(ctx context.Context, messages []Message, summarizer L
 	}
 
 	anchorEnd := compactionAnchorEnd(messages)
-	recentStart := len(messages) - StructuralRecentToKeep
+	recentStart := recentTailStart(messages, opt.RecentTailTokens, opt.EstimateFn, anchorEnd)
 	if recentStart <= anchorEnd {
 		return noChange
 	}

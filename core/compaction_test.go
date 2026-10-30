@@ -341,7 +341,7 @@ func TestDropCheckpoints_DropsOldestFirst(t *testing.T) {
 	// After 2 drops: tokensBefore - 24. Set target just above that.
 	targetTokens := tokensBefore - 24
 
-	result := dropOldestCheckpointSummaries(messages, defaultRecentToKeep, targetTokens)
+	result := dropOldestCheckpointSummaries(messages, 0, nil, targetTokens)
 
 	// At least 2 checkpoints should be dropped (the oldest ones)
 	dropped := len(messages) - len(result)
@@ -398,7 +398,7 @@ func TestDropCheckpoints_NoCheckpointsPresent(t *testing.T) {
 		messages = append(messages, Message{Role: "assistant", Content: strings.Repeat("y", 100)})
 	}
 
-	result := dropOldestCheckpointSummaries(messages, defaultRecentToKeep, 0)
+	result := dropOldestCheckpointSummaries(messages, 0, nil, 0)
 
 	if len(result) != len(messages) {
 		t.Errorf("expected no messages dropped, got %d (was %d)", len(result), len(messages))
@@ -423,7 +423,7 @@ func TestDropCheckpoints_StopsAtTarget(t *testing.T) {
 	tokensBefore := roughTokens(messages)
 	targetTokens := tokensBefore - 500 // enough to drop ~2 checkpoints
 
-	result := dropOldestCheckpointSummaries(messages, defaultRecentToKeep, targetTokens)
+	result := dropOldestCheckpointSummaries(messages, 0, nil, targetTokens)
 
 	dropped := len(messages) - len(result)
 	if dropped < 2 {
@@ -443,7 +443,7 @@ func TestDropCheckpoints_DoesNotMutateOriginal(t *testing.T) {
 
 	origLen := len(messages)
 	origContent := messages[1].Content
-	_ = dropOldestCheckpointSummaries(messages, defaultRecentToKeep, 0)
+	_ = dropOldestCheckpointSummaries(messages, 0, nil, 0)
 
 	if len(messages) != origLen {
 		t.Errorf("original slice mutated: was %d, now %d", origLen, len(messages))
@@ -476,7 +476,7 @@ func TestDropCheckpoints_EdgeCases(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := dropOldestCheckpointSummaries(tt.messages, defaultRecentToKeep, 0)
+			result := dropOldestCheckpointSummaries(tt.messages, 0, nil, 0)
 			if result == nil {
 				t.Error("expected non-nil result")
 			}
@@ -679,6 +679,54 @@ func TestEmergencyTruncate_Phase3_MessageDropping(t *testing.T) {
 	}
 }
 
+func TestEmergencyTruncate_Phase3_NeverSplitsToolPairs(t *testing.T) {
+	// The oldest non-anchor messages outside the recent zone are a tool pair:
+	// an assistant carrying tool calls plus its tool result. Phase 3 never
+	// splits them — it drops the plain filler behind them first, and takes the
+	// pair as a unit only once nothing else is left. recentStart is 30, so
+	// indices 2 and 3 are the first candidates.
+	messages := []Message{
+		{Role: "system", Content: "You are helpful."},
+		{Role: "user", Content: "task"},
+		{Role: "assistant", Content: "calling", ToolCalls: []ToolCall{
+			{ID: "tc1", Type: "function", Function: ToolCallFunction{Name: "search", Arguments: "{}"}},
+		}},
+		{Role: "tool", Content: strings.Repeat("x", 3000), ToolCallID: "tc1"},
+	}
+	// 25 recent pairs push the tool pair outside the recent zone.
+	for i := 0; i < 25; i++ {
+		messages = append(messages, Message{Role: "user", Content: "recent u " + string(rune('a'+i))})
+		messages = append(messages, Message{Role: "assistant", Content: "recent a " + string(rune('a'+i))})
+	}
+
+	result, msgsDropped := emergencyTruncate(messages, 100)
+
+	if !msgsDropped {
+		t.Fatal("expected some messages dropped: plain filler outside the recent zone is droppable")
+	}
+	// The invariant is that the pair is never SPLIT: dropping the call while
+	// keeping its result (or the reverse) produces a request strict providers
+	// reject. Dropping both is legitimate once the loop has consumed
+	// everything else outside the recent zone.
+	var hasCall, hasResult bool
+	for _, m := range result {
+		if m.Role == "assistant" && len(m.ToolCalls) > 0 {
+			hasCall = true
+		}
+		if m.Role == "tool" && m.ToolCallID == "tc1" {
+			hasResult = true
+		}
+	}
+	if hasCall != hasResult {
+		t.Errorf("tool pair split: call present=%v, result present=%v", hasCall, hasResult)
+	}
+	// Filler before the surviving recent zone must have been dropped, proving
+	// the loop made progress by skipping the pair rather than stopping early.
+	if len(result) >= len(messages) {
+		t.Errorf("expected message reduction, got %d (was %d)", len(result), len(messages))
+	}
+}
+
 func TestEmergencyTruncate_RecentMessagesNotTruncated(t *testing.T) {
 	// Only recent messages (no old messages to truncate, no tool results).
 	// Emergency truncation should only touch old messages (Phase 2), not recent ones.
@@ -735,7 +783,7 @@ func TestDropTurns_DropsCompleteTurns(t *testing.T) {
 	}
 
 	targetTokens := roughTokens(messages) - roughTokens(messages[3:5]) // Turn2's own size
-	result := dropOldestTurns(messages, defaultRecentToKeep, targetTokens)
+	result := dropOldestTurns(messages, 0, nil, targetTokens)
 
 	if len(result) >= len(messages)-1 {
 		t.Errorf("expected at least 1 turn dropped, got %d (was %d)", len(result), len(messages))
@@ -779,7 +827,7 @@ func TestDropTurns_WithToolChains(t *testing.T) {
 	}
 
 	targetTokens := roughTokens(messages) - roughTokens(messages[5:7]) // turn2's own size
-	result := dropOldestTurns(messages, defaultRecentToKeep, targetTokens)
+	result := dropOldestTurns(messages, 0, nil, targetTokens)
 
 	// The anchor is the opening user message; its tool chain stays attached
 	// to it, so a protected anchor can never orphan a tool result.
@@ -818,7 +866,7 @@ func TestDropTurns_RespectsRecentBoundary(t *testing.T) {
 	}
 
 	totalMsgs := len(messages)
-	result := dropOldestTurns(messages, defaultRecentToKeep, 0)
+	result := dropOldestTurns(messages, 0, nil, 0)
 
 	if len(result) >= totalMsgs-1 {
 		t.Errorf("expected at least 1 turn dropped, got %d (was %d)", len(result), totalMsgs)
@@ -861,7 +909,7 @@ func TestDropTurns_BoundarySpanningTurnProtected(t *testing.T) {
 		messages = append(messages, Message{Role: "assistant", Content: "recent a " + string(rune('A'+i))})
 	}
 
-	result := dropOldestTurns(messages, defaultRecentToKeep, 0)
+	result := dropOldestTurns(messages, 0, nil, 0)
 
 	boundaryPresent := 0
 	for _, m := range result {
@@ -885,7 +933,7 @@ func TestDropTurns_FallbackToIndividualDrop(t *testing.T) {
 	tokensBefore := roughTokens(messages)
 	targetTokens := tokensBefore - 50
 
-	result := dropOldestTurns(messages, defaultRecentToKeep, targetTokens)
+	result := dropOldestTurns(messages, 0, nil, targetTokens)
 
 	droppedCount := len(messages) - len(result)
 	if droppedCount < 1 {
@@ -911,7 +959,7 @@ func TestDropTurns_DoesNotMutateOriginal(t *testing.T) {
 
 	origLen := len(messages)
 	origContent := messages[1].Content
-	_ = dropOldestTurns(messages, defaultRecentToKeep, 0)
+	_ = dropOldestTurns(messages, 0, nil, 0)
 
 	if len(messages) != origLen {
 		t.Errorf("original slice mutated: was %d, now %d", origLen, len(messages))
@@ -956,7 +1004,7 @@ func TestDropTurns_EdgeCases(t *testing.T) {
 			if tt.name == "few messages" {
 				target = 0
 			}
-			result := dropOldestTurns(tt.messages, defaultRecentToKeep, target)
+			result := dropOldestTurns(tt.messages, 0, nil, target)
 			if result == nil {
 				if tt.messages == nil {
 					// nil input → may return nil or empty
@@ -1225,6 +1273,19 @@ func TestFindDropableMessage(t *testing.T) {
 			protectedEnd: 5,
 			wantIdx:      -1,
 		},
+		{
+			name: "skips leading tool messages",
+			msgs: []Message{
+				{Role: "system", Content: "sys"},
+				{Role: "tool", Content: "t1", ToolCallID: "tc1"},
+				{Role: "tool", Content: "t2", ToolCallID: "tc2"},
+				{Role: "user", Content: "u1"},
+				{Role: "assistant", Content: "a1"},
+			},
+			recentStart:  5,
+			protectedEnd: 0,
+			wantIdx:      3,
+		},
 	}
 
 	for _, tt := range tests {
@@ -1271,5 +1332,116 @@ func TestRoughTokens_Empty(t *testing.T) {
 	}
 	if roughTokens([]Message{}) != 0 {
 		t.Error("expected 0 tokens for empty slice")
+	}
+}
+
+// ==============================================================================
+// recentTailStart — token-sized verbatim tail
+// ==============================================================================
+
+// uniformMessages builds n messages of equal size so a token budget maps
+// predictably onto a message count.
+func uniformMessages(n, chars int) []Message {
+	msgs := make([]Message, n)
+	for i := range msgs {
+		role := "user"
+		if i%2 == 1 {
+			role = "assistant"
+		}
+		msgs[i] = Message{Role: role, Content: strings.Repeat("x", chars)}
+	}
+	return msgs
+}
+
+func TestRecentTailStart_ScalesWithTokenBudget(t *testing.T) {
+	// 100 messages of 400 chars each: 100 content tokens + 10 overhead = 110
+	// estimated tokens per message. The slice is long enough that the token
+	// walk, not the historical count, decides the boundary.
+	msgs := uniformMessages(100, 400)
+	perMsg := roughTokens(msgs[0:1])
+
+	small := recentTailStart(msgs, 30*perMsg, nil, 0)
+	large := recentTailStart(msgs, 60*perMsg, nil, 0)
+
+	// A small budget keeps more messages than a large one.
+	if small <= large {
+		t.Fatalf("small budget kept %d messages, large budget kept %d — want small > large", len(msgs)-small, len(msgs)-large)
+	}
+	if got := len(msgs) - small; got != 30 {
+		t.Errorf("small budget (30 messages' worth) kept %d messages, want 30", got)
+	}
+	if got := len(msgs) - large; got != 60 {
+		t.Errorf("large budget (60 messages' worth) kept %d messages, want 60", got)
+	}
+
+	// budget <= 0 reproduces the historical 24-message count exactly.
+	historical := recentTailStart(msgs, 0, nil, 0)
+	if got := len(msgs) - historical; got != defaultRecentToKeep {
+		t.Errorf("zero budget kept %d messages, want defaultRecentToKeep = %d", got, defaultRecentToKeep)
+	}
+	if historical != len(msgs)-defaultRecentToKeep {
+		t.Errorf("zero budget start = %d, want %d", historical, len(msgs)-defaultRecentToKeep)
+	}
+	negative := recentTailStart(msgs, -5, nil, 0)
+	if negative != historical {
+		t.Errorf("negative budget start = %d, want %d (same as zero budget)", negative, historical)
+	}
+
+	// A budget too small to cover the historical count keeps at least the
+	// historical count: a budgeted pass is never more destructive than the
+	// unbudgeted one it replaces.
+	tiny := recentTailStart(msgs, 1, nil, 0)
+	if tiny != historical {
+		t.Errorf("tiny budget start = %d, want %d (historical count is the floor)", tiny, historical)
+	}
+	if kept := len(msgs) - tiny; kept < defaultRecentToKeep {
+		t.Errorf("tiny budget kept %d messages, want at least %d", kept, defaultRecentToKeep)
+	}
+}
+
+func TestRecentTailStart_RespectsFloors(t *testing.T) {
+	// A single enormous newest message: priced alone it blows any budget, so
+	// the token walk would start the tail past the end. The floor must keep
+	// at least minRecentTailMessages messages.
+	msgs := uniformMessages(50, 100)
+	msgs[len(msgs)-1].Content = strings.Repeat("y", 400_000)
+
+	start := recentTailStart(msgs, 10, nil, 0)
+	if kept := len(msgs) - start; kept < minRecentTailMessages {
+		t.Errorf("huge newest message left %d messages, want at least %d", kept, minRecentTailMessages)
+	}
+	// The historical count boundary is itself above the floor here, so it wins.
+	if want := len(msgs) - defaultRecentToKeep; start != want {
+		t.Errorf("start = %d, want %d (historical count floor)", start, want)
+	}
+
+	// The result never precedes anchorEnd.
+	const anchorEnd = 40
+	anchored := recentTailStart(msgs, 1, nil, anchorEnd)
+	if anchored < anchorEnd {
+		t.Errorf("start = %d, want >= anchorEnd = %d", anchored, anchorEnd)
+	}
+
+	// A budget large enough to cover the whole slice still cannot reach back
+	// past the anchor.
+	hugeBudget := recentTailStart(msgs, 1_000_000, nil, anchorEnd)
+	if hugeBudget != anchorEnd {
+		t.Errorf("whole-slice budget start = %d, want anchorEnd = %d", hugeBudget, anchorEnd)
+	}
+
+	// A caller-supplied estimator is honored over roughTokens: at 1000 tokens
+	// per message a 1-token budget is exhausted by the newest message alone,
+	// so the historical count is the binding floor.
+	counting := func(m []Message) int { return 1000 }
+	if got := recentTailStart(msgs, 1, counting, 0); got != len(msgs)-defaultRecentToKeep {
+		t.Errorf("with custom estimator start = %d, want %d", got, len(msgs)-defaultRecentToKeep)
+	}
+
+	// The minRecentTailMessages floor binds when the historical count would
+	// reach past it — i.e. on a slice shorter than defaultRecentToKeep.
+	short := uniformMessages(6, 100)
+	short[5].Content = strings.Repeat("z", 400_000)
+	if got := recentTailStart(short, 1, nil, 0); got != 0 {
+		t.Errorf("short slice start = %d, want 0 (whole slice retained)", got)
 	}
 }

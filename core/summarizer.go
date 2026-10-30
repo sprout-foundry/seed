@@ -59,6 +59,13 @@ type StructuralOptions struct {
 	// ArtifactBlock, when non-nil, appends a deterministic artifact record to
 	// the summary body, once per pass.
 	ArtifactBlock ArtifactBlockFunc
+	// RecentTailTokens, when > 0, sizes the retained tail by estimated tokens
+	// instead of StructuralRecentToKeep messages. A message count cannot
+	// express a context budget: 24 messages can be 2K tokens of chat or 200K
+	// of tool output. Zero keeps the historical count-based boundary.
+	RecentTailTokens int
+	// EstimateFn prices the tail when RecentTailTokens > 0. nil → roughTokens.
+	EstimateFn func([]Message) int
 }
 
 // withArtifactBlock appends the artifact record for span to body. Returns body

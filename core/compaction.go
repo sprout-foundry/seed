@@ -112,6 +112,11 @@ type CompactInputs struct {
 	// re-fires compaction every iteration (thrash). Zero keeps the historical
 	// behavior for external callers and the recovery path.
 	TargetTokens int
+	// RecentTailTokens, when > 0, sizes the retained tail by estimated tokens
+	// instead of the fixed RecentToKeep message count. A message count cannot
+	// express a context budget: 24 messages can be 2K tokens of chat or 200K
+	// of tool output. Zero keeps the historical count-based boundary.
+	RecentTailTokens int
 }
 
 // Compact reduces messages to fit within the token limit using the
@@ -232,7 +237,7 @@ func CompactWith(in CompactInputs) CompactionResult {
 	// for consistency — otherwise a wildly-different provider estimate (e.g.
 	// a mock pinned to ContextSize+) would prevent the early exit even
 	// after drops succeeded.
-	dropped := dropOldestCheckpointSummaries(messages, defaultRecentToKeep, targetTokens)
+	dropped := dropOldestCheckpointSummaries(messages, in.RecentTailTokens, estimate, targetTokens)
 
 	if roughTokens(dropped) <= targetTokens {
 		strategies = append(strategies, "checkpoint_drop")
@@ -245,7 +250,7 @@ func CompactWith(in CompactInputs) CompactionResult {
 	}
 
 	// Phase 1.5: Try dropping oldest turns to free space.
-	turnDropped := dropOldestTurns(dropped, defaultRecentToKeep, targetTokens)
+	turnDropped := dropOldestTurns(dropped, in.RecentTailTokens, estimate, targetTokens)
 
 	if roughTokens(turnDropped) <= targetTokens {
 		strategies = append(strategies, "tool_trim")
@@ -258,7 +263,7 @@ func CompactWith(in CompactInputs) CompactionResult {
 	}
 
 	// Phase 2: Emergency truncation on the already-dropped messages.
-	result, droppedMsgs := emergencyTruncateWithTarget(turnDropped, tokenLimit, targetTokens)
+	result, droppedMsgs := emergencyTruncateWithTarget(turnDropped, tokenLimit, targetTokens, in.RecentTailTokens, estimate)
 	if droppedMsgs {
 		strategies = append(strategies, "emergency")
 	} else {
@@ -298,10 +303,12 @@ func joinStrategies(s []string) string {
 // dropping individual messages oldest first.
 //
 // It uses recentToKeep as the recent boundary: messages within the
-// last recentToKeep positions are never dropped.
+// last recentToKeep positions are never dropped. When recentToKeep is <= 0
+// the boundary is the historical defaultRecentToKeep count; when it is > 0 it
+// is a token budget for recentTailStart, which prices the tail with estimate.
 //
 // This function works on a copy and never mutates the original slice.
-func dropOldestTurns(messages []Message, recentToKeep int, targetTokens int) []Message {
+func dropOldestTurns(messages []Message, recentToKeep int, estimate func([]Message) int, targetTokens int) []Message {
 	// Work on a copy so we never mutate the original.
 	msgs := make([]Message, len(messages))
 	copy(msgs, messages)
@@ -318,7 +325,7 @@ func dropOldestTurns(messages []Message, recentToKeep int, targetTokens int) []M
 
 	// Repeatedly drop the oldest complete turn outside the recent zone.
 	for roughTokens(msgs) > targetTokens && len(msgs) > defaultMinMessages {
-		recentStart := len(msgs) - recentToKeep
+		recentStart := recentTailStart(msgs, recentToKeep, estimate, anchorEnd)
 		if recentStart < 1 {
 			recentStart = 1
 		}
@@ -435,6 +442,12 @@ func identifyTurnEnd(msgs []Message, startIdx int) int {
 // must not be touched; 0 means no protection needed.
 // anchorStart/anchorEnd bound the opening task anchor, which is never
 // droppable.
+//
+// A tool result and the assistant message carrying its tool call are one
+// indivisible unit: dropping either alone leaves an orphaned call or an
+// orphaned result, which strict providers (DeepSeek, MiniMax) reject outright.
+// Both roles are therefore skipped here, and -1 is returned when nothing else
+// qualifies.
 func findDropableMessage(msgs []Message, recentStart int, protectedEnd int, anchorStart, anchorEnd int) int {
 	for i := 1; i < recentStart && i < len(msgs); i++ {
 		// Don't drop messages that belong to a boundary-spanning turn.
@@ -444,11 +457,57 @@ func findDropableMessage(msgs []Message, recentStart int, protectedEnd int, anch
 		if anchorProtects(i, anchorStart, anchorEnd) {
 			continue
 		}
-		if msgs[i].Role != "system" {
-			return i
+		if msgs[i].Role == "system" {
+			continue
 		}
+		if participatesInToolPair(msgs[i]) {
+			continue
+		}
+		return i
 	}
 	return -1
+}
+
+// participatesInToolPair reports whether a message is one half of a tool
+// call/result pair: a tool result, or an assistant message carrying tool
+// calls. Such a message is only removable together with its counterpart, so
+// the single-message drop paths leave it alone.
+func participatesInToolPair(m Message) bool {
+	return m.Role == "tool" || (m.Role == "assistant" && len(m.ToolCalls) > 0)
+}
+
+// findDropSpan returns the [start, end) span that Phase 3 should remove. It
+// prefers a single standalone message. When the only candidates before the
+// tail are tool pairs, it returns one complete pair — the assistant message
+// carrying the calls plus the tool results that follow it — so the pair is
+// removable as a unit instead of being an obstruction that leaves history over
+// budget. Returns (-1, -1) when nothing can be dropped.
+func findDropSpan(msgs []Message, recentStart, anchorStart, anchorEnd int) (int, int) {
+	for i := 1; i < recentStart && i < len(msgs); i++ {
+		if anchorProtects(i, anchorStart, anchorEnd) || msgs[i].Role == "system" {
+			continue
+		}
+		if participatesInToolPair(msgs[i]) {
+			continue
+		}
+		return i, i + 1
+	}
+	for i := 1; i < recentStart && i < len(msgs); i++ {
+		if anchorProtects(i, anchorStart, anchorEnd) || msgs[i].Role != "assistant" || len(msgs[i].ToolCalls) == 0 {
+			continue
+		}
+		end := i + 1
+		for end < len(msgs) && msgs[end].Role == "tool" {
+			end++
+		}
+		// Only drop a pair that ends before the tail, or the drop would eat
+		// into the recent causal chain.
+		if end > recentStart {
+			continue
+		}
+		return i, end
+	}
+	return -1, -1
 }
 
 // DropOldestTurns drops complete turns (user + assistant + tool chain) oldest
@@ -458,7 +517,7 @@ func findDropableMessage(msgs []Message, recentStart int, protectedEnd int, anch
 // of the input slice. Falls back to individual message dropping when no
 // complete turns remain.
 func DropOldestTurns(messages []Message, targetTokens int) []Message {
-	return dropOldestTurns(messages, defaultRecentToKeep, targetTokens)
+	return dropOldestTurns(messages, 0, nil, targetTokens)
 }
 
 // DropOldestCheckpointSummaries drops checkpoint summary messages (oldest first)
@@ -470,11 +529,13 @@ func DropOldestTurns(messages []Message, targetTokens int) []Message {
 //
 // This function works on a copy and never mutates the original slice.
 func DropOldestCheckpointSummaries(messages []Message, targetTokens int) []Message {
-	return dropOldestCheckpointSummaries(messages, defaultRecentToKeep, targetTokens)
+	return dropOldestCheckpointSummaries(messages, 0, nil, targetTokens)
 }
 
 // dropOldestCheckpointSummaries is the unexported implementation that accepts
-// a custom recentToKeep boundary.
+// a custom recentToKeep boundary: <= 0 means the historical
+// defaultRecentToKeep count, > 0 is a token budget for recentTailStart priced
+// with estimate.
 // compactionAnchorRange returns the [start, end) span of the opening task
 // anchor: the first genuine user message, plus the assistant reply that made no
 // tool calls when it immediately follows.
@@ -512,7 +573,75 @@ func anchorProtects(i, anchorStart, anchorEnd int) bool {
 	return anchorStart < anchorEnd && i >= anchorStart && i < anchorEnd
 }
 
-func dropOldestCheckpointSummaries(messages []Message, recentToKeep int, targetTokens int) []Message {
+// minRecentTailMessages is the floor on the verbatim tail: however large the
+// newest messages are, at least this many of them survive a drop. Without the
+// floor a single enormous newest message could push the token-sized boundary
+// to the very end, leaving the model with no verbatim causal chain to continue
+// from.
+const minRecentTailMessages = 4
+
+// recentTailStart returns the index where the verbatim recent tail begins.
+//
+// With budget <= 0 it returns the historical message-count boundary
+// (len(msgs) - defaultRecentToKeep), so callers that supply no budget stay
+// byte-identical. With budget > 0 the tail is sized by estimated tokens
+// instead: it walks backward from the newest message, summing the estimate of
+// each message individually, and starts the tail at the first index whose
+// running total exceeds budget. A token-sized tail is what makes the retained
+// span meaningful — 24 messages is 2K tokens of chat and 200K of tool output,
+// so a count alone cannot express "keep the most recent N tokens of context".
+//
+// The result is clamped so the tail never shrinks below minRecentTailMessages
+// and never begins before anchorEnd: the opening task anchor is preserved
+// verbatim by every phase, so a tail that reaches into it would be describing
+// history the caller is not allowed to drop anyway.
+//
+// A token budget is also never allowed to retain LESS than the historical
+// message count would. The count boundary is the caller-visible floor for a
+// short history: with fewer than defaultRecentToKeep messages it protects the
+// whole slice, and a budget that prices those few messages above its own
+// limit must not start dropping the oldest of them — that would make a
+// budgeted pass strictly more destructive than the unbudgeted one it
+// replaces, on exactly the short histories where compaction has least to gain.
+//
+// estimate may be nil, in which case roughTokens prices the messages.
+func recentTailStart(msgs []Message, budget int, estimate func([]Message) int, anchorEnd int) int {
+	if estimate == nil {
+		estimate = roughTokens
+	}
+
+	start := len(msgs) - defaultRecentToKeep
+	if budget > 0 {
+		total := 0
+		start = 0
+		for i := len(msgs) - 1; i >= 0; i-- {
+			total += estimate([]Message{msgs[i]})
+			if total > budget {
+				start = i + 1
+				break
+			}
+		}
+		// A budget never retains less than the historical message count.
+		if countStart := len(msgs) - defaultRecentToKeep; start > countStart {
+			start = countStart
+		}
+	}
+
+	// Floor: keep at least minRecentTailMessages messages.
+	if floor := len(msgs) - minRecentTailMessages; start > floor {
+		start = floor
+	}
+	// The tail never reaches back into the anchor.
+	if start < anchorEnd {
+		start = anchorEnd
+	}
+	if start < 0 {
+		start = 0
+	}
+	return start
+}
+
+func dropOldestCheckpointSummaries(messages []Message, recentToKeep int, estimate func([]Message) int, targetTokens int) []Message {
 	// Work on a copy so we never mutate the original.
 	msgs := make([]Message, len(messages))
 	copy(msgs, messages)
@@ -534,7 +663,7 @@ func dropOldestCheckpointSummaries(messages []Message, recentToKeep int, targetT
 	// until we're under targetTokens.
 	for roughTokens(msgs) > targetTokens && len(msgs) > defaultMinMessages {
 		dropIdx := -1
-		recentStart := len(msgs) - recentToKeep
+		recentStart := recentTailStart(msgs, recentToKeep, estimate, anchorEnd)
 		if recentStart < 1 {
 			recentStart = 1
 		}
@@ -568,13 +697,17 @@ func dropOldestCheckpointSummaries(messages []Message, recentToKeep int, targetT
 // were dropped (true = "emergency", false = "truncation" only).
 func emergencyTruncate(messages []Message, tokenLimit int) ([]Message, bool) {
 	targetTokens := int(float64(tokenLimit) * emergencyTargetFraction)
-	return emergencyTruncateWithTarget(messages, tokenLimit, targetTokens)
+	return emergencyTruncateWithTarget(messages, tokenLimit, targetTokens, 0, nil)
 }
 
 // emergencyTruncateWithTarget is emergencyTruncate with an explicit target
 // override (from CompactInputs.TargetTokens). It tightens every internal
 // phase; the caller-supplied tokenLimit remains the outer bound.
-func emergencyTruncateWithTarget(messages []Message, tokenLimit, targetTokens int) ([]Message, bool) {
+//
+// recentTail carries CompactInputs.RecentTailTokens: <= 0 keeps the historical
+// defaultRecentToKeep count, > 0 sizes the protected recent zone by tokens via
+// recentTailStart, priced with estimate.
+func emergencyTruncateWithTarget(messages []Message, tokenLimit, targetTokens, recentTail int, estimate func([]Message) int) ([]Message, bool) {
 	if targetTokens <= 0 {
 		targetTokens = int(float64(tokenLimit) * emergencyTargetFraction)
 	}
@@ -609,7 +742,7 @@ func emergencyTruncateWithTarget(messages []Message, tokenLimit, targetTokens in
 	anchorStart, anchorEnd := compactionAnchorRange(trimmed)
 
 	// Phase 2: Trim older user/assistant messages
-	recentStart := len(trimmed) - defaultRecentToKeep
+	recentStart := recentTailStart(trimmed, recentTail, estimate, anchorEnd)
 	if recentStart < 1 {
 		recentStart = 1
 	}
@@ -630,24 +763,22 @@ func emergencyTruncateWithTarget(messages []Message, tokenLimit, targetTokens in
 	}
 
 	// Phase 3: Drop oldest non-system, non-recent, non-anchor messages until
-	// under limit
+	// under limit. A tool call and its results are one indivisible unit: half
+	// of a pair is never dropped, but the pair as a whole is droppable.
 	for len(trimmed) > defaultMinMessages+1 && roughTokens(trimmed) > targetTokens {
-		// Find first non-system message that's neither in the recent section
-		// nor part of the anchor.
-		dropIdx := -1
-		for i := 1; i < recentStart && i < len(trimmed); i++ {
-			if anchorProtects(i, anchorStart, anchorEnd) || trimmed[i].Role == "system" {
-				continue
-			}
-			dropIdx = i
+		// Recompute per iteration: a token-budgeted boundary moves by the
+		// weight of what was removed, not by one message.
+		recentStart = recentTailStart(trimmed, recentTail, estimate, anchorEnd)
+		if recentStart < 1 {
+			recentStart = 1
+		}
+
+		start, end := findDropSpan(trimmed, recentStart, anchorStart, anchorEnd)
+		// Nothing droppable left: stop rather than spin on the same slice.
+		if start < 0 || start >= recentStart {
 			break
 		}
-		if dropIdx < 0 || dropIdx >= recentStart {
-			break
-		}
-		trimmed = append(trimmed[:dropIdx], trimmed[dropIdx+1:]...)
-		// Adjust recentStart
-		recentStart--
+		trimmed = append(trimmed[:start], trimmed[end:]...)
 		msgsDropped = true
 	}
 

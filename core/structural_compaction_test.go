@@ -189,7 +189,7 @@ func TestDropCheckpoints_PreservesAnchor(t *testing.T) {
 		messages = append(messages, Message{Role: "assistant", Content: strings.Repeat("y", 80)})
 	}
 
-	result := dropOldestCheckpointSummaries(messages, defaultRecentToKeep, 1)
+	result := dropOldestCheckpointSummaries(messages, 0, nil, 1)
 
 	for _, m := range result {
 		if m.Content == "Build the thing" || m.Content == "Starting." {

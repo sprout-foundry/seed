@@ -257,7 +257,13 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 				strategy = "pruner_" + string(ch.agent.pruner.Strategy())
 
 			case ch.agent.llmSummarizer != nil:
-				r := CompactWithLLMSummary(ctx, messages, ch.agent.llmSummarizer, StructuralOptions{ArtifactBlock: ch.agent.compactionArtifacts})
+				r := CompactWithLLMSummary(ctx, messages, ch.agent.llmSummarizer, StructuralOptions{
+					ArtifactBlock:    ch.agent.compactionArtifacts,
+					RecentTailTokens: contextSize / 6,
+					EstimateFn: func(msgs []Message) int {
+						return ch.agent.provider.EstimateTokens(&ChatRequest{Messages: msgs, Tools: ch.agent.executor.GetTools()})
+					},
+				})
 				if r.Strategy != "none" {
 					messages = r.Messages
 					strategy = r.Strategy
@@ -1616,6 +1622,11 @@ func (ch *ConversationHandler) buildCompactInputsWithTarget(messages []Message, 
 		},
 		SubstitutionTargetFraction: ch.agent.substitutionTargetOrDefault(),
 		TargetTokens:               targetTokens,
+		// Size the retained tail by tokens rather than a fixed message count:
+		// one sixth of the window is the recent context the model reasons
+		// from, and a count cannot express that budget (24 messages is 2K
+		// tokens of chat or 200K of tool output).
+		RecentTailTokens: tokenLimit / 6,
 		// Checkpoints / MaskNameFn intentionally omitted — Phase 0 ran
 		// in prepareMessages on the raw slice.
 	}
