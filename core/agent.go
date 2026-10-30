@@ -164,6 +164,14 @@ type Options struct {
 	// rule-based drop/truncate fallback. See the LLMSummarizer doc for the
 	// contract. When nil, seed uses its rule-based compaction only.
 	LLMSummarizer LLMSummarizer
+	// CompactionArtifacts, if non-nil, renders the durable artifact record
+	// (files touched) for a summarized span. Structural compaction calls it
+	// once per pass and appends the result to the summary body, so a
+	// consumer's file manifest survives compaction as derived fact rather
+	// than something the summarizer has to recall. It runs after the layered
+	// merge, so the record appears once even when three summarizer calls
+	// built the body. When nil, summaries carry no artifact record.
+	CompactionArtifacts ArtifactBlockFunc
 	// Pruner, if non-nil, replaces the default rule-based compaction with the
 	// configured pruning strategy (sliding-window / importance / hybrid /
 	// adaptive). The pruner runs alongside the optimizer and LLMSummarizer.
@@ -263,6 +271,11 @@ type Agent struct {
 	// llmSummarizer is the consumer-supplied LLM-summary callback used by
 	// structural compaction. Nil = disabled, fall back to rule-based compaction.
 	llmSummarizer LLMSummarizer
+
+	// compactionArtifacts renders the durable artifact record appended to
+	// structural summaries. Nil = summaries carry no artifact record. See
+	// Options.CompactionArtifacts.
+	compactionArtifacts ArtifactBlockFunc
 
 	// pruner replaces rule-based compaction when non-nil.
 	pruner *ConversationPruner
@@ -372,6 +385,7 @@ func NewAgent(opts Options) (*Agent, error) {
 		compactionTriggerFraction:  opts.CompactionTriggerFraction,
 		substitutionTargetFraction: opts.SubstitutionTargetFraction,
 		llmSummarizer:              opts.LLMSummarizer,
+		compactionArtifacts:        opts.CompactionArtifacts,
 		pruner:                     opts.Pruner,
 		interruptCtx:               interruptCtx,
 		interruptCancel:            interruptCancel,

@@ -218,3 +218,129 @@ func TestDropCheckpoints_PreservesAnchor(t *testing.T) {
 		t.Error("a summary outside the anchor should still be droppable")
 	}
 }
+
+// summaryBody returns the spliced summary message from a compacted history.
+func summaryBody(t *testing.T, msgs []Message) string {
+	t.Helper()
+	for _, m := range msgs {
+		if m.Meta != nil && m.Meta[MetaKeyCheckpoint] == "true" {
+			return m.Content
+		}
+	}
+	t.Fatal("no summary message in compacted history")
+	return ""
+}
+
+// The artifact hook must run once per pass, after the layered merge. Attaching
+// the record from inside the summarizer instead puts one copy per layer into
+// the single merged body, which is why the hook exists.
+func TestCompactWithLLMSummary_ArtifactBlockAppearsOnceAcrossLayers(t *testing.T) {
+	msgs := buildCompactionFixture("Refactor the authentication module.")
+
+	var summarizeCalls, artifactCalls int
+	summarize := func(_ context.Context, _ []Message, hint SummarizerHint) (string, error) {
+		summarizeCalls++
+		return "- layer " + hint.DetailLevel, nil
+	}
+	artifacts := func([]Message) string {
+		artifactCalls++
+		return "Files modified during compacted segment:\n- M pkg/auth.go"
+	}
+
+	res := CompactWithLLMSummary(context.Background(), msgs, summarize, StructuralOptions{ArtifactBlock: artifacts})
+	if res.Strategy != "layered_summary" {
+		t.Fatalf("expected the fixture to take the layered path, got %q", res.Strategy)
+	}
+	if summarizeCalls < 2 {
+		t.Fatalf("expected the layered split to call the summarizer repeatedly, got %d", summarizeCalls)
+	}
+	if artifactCalls != 1 {
+		t.Errorf("expected the artifact hook to run once, ran %d times", artifactCalls)
+	}
+	body := summaryBody(t, res.Messages)
+	if n := strings.Count(body, "Files modified during compacted segment:"); n != 1 {
+		t.Errorf("expected exactly one artifact record in the summary, got %d:\n%s", n, body)
+	}
+}
+
+// buildSinglePathFixture returns a history whose middle is large enough to
+// summarize but below LayeredThreshold, so compaction takes the single-pass
+// path rather than the layered split.
+func buildSinglePathFixture() []Message {
+	msgs := []Message{
+		{Role: "system", Content: "You are a helpful coding assistant."},
+		{Role: "user", Content: "Refactor the authentication module."},
+		{Role: "assistant", Content: "I'll start by exploring the codebase."},
+	}
+	for i := 0; i < 10; i++ {
+		msgs = append(msgs,
+			Message{Role: "user", Content: "middle user turn"},
+			Message{Role: "assistant", Content: "middle assistant turn"},
+		)
+	}
+	for i := 0; i < 12; i++ {
+		msgs = append(msgs,
+			Message{Role: "user", Content: "recent user turn about a different topic"},
+			Message{Role: "assistant", Content: "recent assistant reply"},
+		)
+	}
+	return msgs
+}
+
+// A summarizer that returns nothing must still yield no compaction, and must
+// not invoke the artifact hook at all. A manifest-only body would be treated
+// as a usable summary and spliced in place of the narrative.
+func TestCompactWithLLMSummary_EmptySummaryStaysEmpty(t *testing.T) {
+	msgs := buildSinglePathFixture()
+	summarize := func(context.Context, []Message, SummarizerHint) (string, error) { return "", nil }
+
+	var artifactCalls int
+	artifacts := func([]Message) string {
+		artifactCalls++
+		return "Files modified during compacted segment:\n- M pkg/auth.go"
+	}
+
+	res := CompactWithLLMSummary(context.Background(), msgs, summarize, StructuralOptions{ArtifactBlock: artifacts})
+	if res.Strategy != "none" {
+		t.Fatalf("expected no compaction for an empty summary, got %q", res.Strategy)
+	}
+	if artifactCalls != 0 {
+		t.Errorf("expected the artifact hook to be skipped, ran %d times", artifactCalls)
+	}
+}
+
+// The layered fallback applies the hook on its own path, separate from the
+// merged-layers path. It must still contribute exactly one record.
+func TestCompactWithLLMSummary_LayeredFallbackCarriesOneArtifactBlock(t *testing.T) {
+	msgs := buildCompactionFixture("Refactor the authentication module.")
+	summarize := func(_ context.Context, _ []Message, hint SummarizerHint) (string, error) {
+		if hint.DetailLevel != "" {
+			return "", nil // every layer fails, forcing the fallback
+		}
+		return "- fallback summary", nil
+	}
+	artifacts := func([]Message) string { return "Files modified during compacted segment:\n- M pkg/auth.go" }
+
+	res := CompactWithLLMSummary(context.Background(), msgs, summarize, StructuralOptions{ArtifactBlock: artifacts})
+	if res.Strategy != "single_summary" {
+		t.Fatalf("expected the layered fallback path, got %q", res.Strategy)
+	}
+	body := summaryBody(t, res.Messages)
+	if n := strings.Count(body, "Files modified during compacted segment:"); n != 1 {
+		t.Errorf("expected exactly one artifact record from the fallback, got %d:\n%s", n, body)
+	}
+}
+
+// A nil hook leaves the summary byte-identical to the no-options call.
+func TestCompactWithLLMSummary_NilArtifactBlockIsNoOp(t *testing.T) {
+	msgs := buildCompactionFixture("Refactor the authentication module.")
+	summarize := func(context.Context, []Message, SummarizerHint) (string, error) {
+		return "- did some work", nil
+	}
+
+	withOpt := CompactWithLLMSummary(context.Background(), msgs, summarize, StructuralOptions{})
+	without := CompactWithLLMSummary(context.Background(), msgs, summarize)
+	if got, want := summaryBody(t, withOpt.Messages), summaryBody(t, without.Messages); got != want {
+		t.Errorf("zero-value options changed the summary:\ngot  %q\nwant %q", got, want)
+	}
+}

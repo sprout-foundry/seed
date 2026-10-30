@@ -246,6 +246,7 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 				messages = ch.agent.pruner.Prune(ctx, messages, tokenEstimate, contextSize, PruneCallOptions{
 					Optimizer:     ch.agent.optimizer,
 					Summarizer:    ch.agent.llmSummarizer,
+					ArtifactBlock: ch.agent.compactionArtifacts,
 					Provider:      ch.agent.provider.Info().Model,
 					IsAgenticFlow: true,
 					EstimateFn: func(msgs []Message) int {
@@ -256,7 +257,7 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 				strategy = "pruner_" + string(ch.agent.pruner.Strategy())
 
 			case ch.agent.llmSummarizer != nil:
-				r := CompactWithLLMSummary(ctx, messages, ch.agent.llmSummarizer)
+				r := CompactWithLLMSummary(ctx, messages, ch.agent.llmSummarizer, StructuralOptions{ArtifactBlock: ch.agent.compactionArtifacts})
 				if r.Strategy != "none" {
 					messages = r.Messages
 					strategy = r.Strategy

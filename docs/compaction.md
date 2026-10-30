@@ -119,6 +119,20 @@ Two rules keep repeated compaction from compounding its own loss:
    pass (the merge-into-an-anchor shape) rather than split into three
    layers that would each re-narrate the carried blocks.
 
+### Artifact records
+
+A summary is prose, and prose loses file state first: which paths were
+touched, and how. `StructuralOptions.ArtifactBlock` lets the consumer
+supply that record, which seed appends to the summary body **once per
+pass**, after the layered merge. Attaching the record from inside the
+summarizer instead would put one copy per layer into the single merged
+body — the layered split calls the summarizer three times.
+
+The hook is skipped when the summarizer produced nothing. A body that is
+only an artifact record would otherwise be spliced in place of the
+narrative as if it were a summary, suppressing the rule-based fallback
+that an empty summary is meant to trigger.
+
 Note that `spliceSummary` demotes the anchor's user message to a
 past-tense stub that tells the model to read the summary instead. That
 is deliberate (it stops the model re-reading a stale prompt as a live

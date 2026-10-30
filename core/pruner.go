@@ -75,6 +75,11 @@ type PruneCallOptions struct {
 	// pruner's pipelines.
 	Summarizer LLMSummarizer
 
+	// ArtifactBlock, when non-nil, renders the durable artifact record for a
+	// summarized span. Forwarded to structural compaction so the record
+	// appears once in the summary. May be nil.
+	ArtifactBlock ArtifactBlockFunc
+
 	// Provider names the LLM provider. Currently used only to switch the
 	// importance-based path into the tool-call-aware variant for providers
 	// with strict tool-call/result pairing requirements (Minimax, DeepSeek).
@@ -535,7 +540,7 @@ func (cp *ConversationPruner) pruneHybrid(ctx context.Context, messages []Messag
 	}
 	optimized := opts.Optimizer.OptimizeConversation(messages)
 	if opts.Summarizer != nil {
-		if r := CompactWithLLMSummary(ctx, optimized, opts.Summarizer); r.Strategy != "none" {
+		if r := CompactWithLLMSummary(ctx, optimized, opts.Summarizer, StructuralOptions{ArtifactBlock: opts.ArtifactBlock}); r.Strategy != "none" {
 			optimized = r.Messages
 		}
 	}
@@ -568,7 +573,7 @@ func (cp *ConversationPruner) pruneAdaptive(ctx context.Context, messages []Mess
 		}
 		opt := opts.Optimizer.OptimizeConversation(messages)
 		if opts.Summarizer != nil {
-			if r := CompactWithLLMSummary(ctx, opt, opts.Summarizer); r.Strategy != "none" {
+			if r := CompactWithLLMSummary(ctx, opt, opts.Summarizer, StructuralOptions{ArtifactBlock: opts.ArtifactBlock}); r.Strategy != "none" {
 				opt = r.Messages
 			}
 		}

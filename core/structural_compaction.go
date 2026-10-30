@@ -58,8 +58,16 @@ type StructuralCompactionResult struct {
 //
 // Otherwise returns the compacted slice. The caller is expected to follow up
 // with rule-based Compact() if more reduction is still needed.
-func CompactWithLLMSummary(ctx context.Context, messages []Message, summarizer LLMSummarizer) StructuralCompactionResult {
+//
+// opts is variadic only for source compatibility with the pre-hook signature;
+// at most one value is honored and any beyond the first are ignored.
+func CompactWithLLMSummary(ctx context.Context, messages []Message, summarizer LLMSummarizer, opts ...StructuralOptions) StructuralCompactionResult {
 	noChange := StructuralCompactionResult{Messages: messages, Strategy: "none"}
+
+	var opt StructuralOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
 
 	if summarizer == nil || len(messages) < StructuralMinMessagesToCompact {
 		return noChange
@@ -92,8 +100,12 @@ func CompactWithLLMSummary(ctx context.Context, messages []Message, summarizer L
 	// is all raw history. Once summaries are already present the middle is
 	// consolidated in one pass — the merge-into-an-anchor shape — rather than
 	// split into layers that would each re-narrate the carried blocks.
+	//
+	// middle == raw on this branch (it requires no carried summaries), so the
+	// artifact span compactLayered receives is the same one the single path
+	// uses.
 	if len(carried) == 0 && len(raw) >= LayeredThreshold {
-		return compactLayered(ctx, messages, anchorEnd, recentStart, middle, summarizer)
+		return compactLayered(ctx, messages, anchorEnd, recentStart, middle, summarizer, opt)
 	}
 
 	summaryText, err := summarizer(ctx, raw, SummarizerHint{})
@@ -101,7 +113,7 @@ func CompactWithLLMSummary(ctx context.Context, messages []Message, summarizer L
 		return noChange
 	}
 
-	wrapped := prependCarriedSummaries(wrapStructuralSummary(raw, summaryText, ""), carried)
+	wrapped := prependCarriedSummaries(wrapStructuralSummary(raw, opt.withArtifactBlock(summaryText, raw), ""), carried)
 	compacted := spliceSummary(messages, anchorEnd, recentStart, wrapped)
 	compacted = dropConsecutiveAssistantAfter(compacted, anchorEnd)
 
@@ -116,7 +128,7 @@ func CompactWithLLMSummary(ctx context.Context, messages []Message, summarizer L
 // recent-middle split and merges them into one combined summary message. If
 // every layer fails it falls back to a single whole-middle summary; if that
 // also fails it returns the unchanged input.
-func compactLayered(ctx context.Context, messages []Message, anchorEnd, recentStart int, middle []Message, summarizer LLMSummarizer) StructuralCompactionResult {
+func compactLayered(ctx context.Context, messages []Message, anchorEnd, recentStart int, middle []Message, summarizer LLMSummarizer, opt StructuralOptions) StructuralCompactionResult {
 	noChange := StructuralCompactionResult{Messages: messages, Strategy: "none"}
 
 	layerSize := len(middle) / 3
@@ -146,7 +158,7 @@ func compactLayered(ctx context.Context, messages []Message, anchorEnd, recentSt
 		if err != nil || strings.TrimSpace(fallback) == "" {
 			return noChange
 		}
-		combined = wrapStructuralSummary(middle, fallback, "")
+		combined = wrapStructuralSummary(middle, opt.withArtifactBlock(fallback, middle), "")
 		compacted := spliceSummary(messages, anchorEnd, recentStart, combined)
 		compacted = dropConsecutiveAssistantAfter(compacted, anchorEnd)
 		return StructuralCompactionResult{
@@ -155,6 +167,10 @@ func compactLayered(ctx context.Context, messages []Message, anchorEnd, recentSt
 			Summarized: len(middle),
 		}
 	}
+
+	// One artifact record for the whole layered body: the three layer calls
+	// above cannot each contribute one without triplicating it.
+	combined = opt.withArtifactBlock(combined, middle)
 
 	compacted := spliceSummary(messages, anchorEnd, recentStart, combined)
 	compacted = dropConsecutiveAssistantAfter(compacted, anchorEnd)
