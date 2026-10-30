@@ -129,3 +129,92 @@ func TestDemoteAnchorUserMessage_PreservesShortPromptsAsExcerpt(t *testing.T) {
 		t.Errorf("expected historical framing wrapper, got: %q", out)
 	}
 }
+
+// A middle that already holds compaction summaries is consolidated, not
+// re-condensed: the earlier summary is carried through verbatim and only the
+// raw history beyond it reaches the summarizer. Re-summarizing a summary is
+// what makes a long session lose fidelity with every pass.
+func TestCompactWithLLMSummary_CarriesPriorSummaryForward(t *testing.T) {
+	msgs := buildCompactionFixture("Refactor the auth module to use JWT.")
+	first := CompactWithLLMSummary(context.Background(), msgs, stubSummarizer("- first pass finding"))
+	if first.Strategy == "none" {
+		t.Fatalf("expected the first pass to compact")
+	}
+
+	// Grow the raw history past the recent window so the second pass has a
+	// middle to condense.
+	grown := append([]Message{}, first.Messages...)
+	for i := 0; i < 20; i++ {
+		grown = append(grown, Message{Role: "user", Content: "later question " + strings.Repeat("q", 40)})
+		grown = append(grown, Message{Role: "assistant", Content: "later answer " + strings.Repeat("a", 40)})
+	}
+
+	var sawCarriedSummary bool
+	second := CompactWithLLMSummary(context.Background(), grown, func(_ context.Context, m []Message, _ SummarizerHint) (string, error) {
+		for _, msg := range m {
+			if msg.Meta != nil && msg.Meta[MetaKeyCheckpoint] == "true" {
+				sawCarriedSummary = true
+			}
+		}
+		return "- second pass finding", nil
+	})
+	if second.Strategy == "none" {
+		t.Fatalf("expected the second pass to compact")
+	}
+	if sawCarriedSummary {
+		t.Error("a prior compaction summary reached the summarizer and was re-condensed")
+	}
+	var carried bool
+	for _, m := range second.Messages {
+		if strings.Contains(m.Content, "- first pass finding") {
+			carried = true
+		}
+	}
+	if !carried {
+		t.Error("first-pass summary was dropped instead of carried forward")
+	}
+}
+
+// The anchor is the only verbatim record of what the session was asked to do,
+// so no drop phase may remove it however hard the pressure.
+func TestDropCheckpoints_PreservesAnchor(t *testing.T) {
+	messages := []Message{
+		{Role: "system", Content: "You are helpful."},
+		{Role: "user", Content: "Build the thing"},
+		{Role: "assistant", Content: "Starting."},
+		{Role: "user", Content: "old summary", Meta: map[string]string{MetaKeyCheckpoint: "true"}},
+	}
+	for i := 0; i < 30; i++ {
+		messages = append(messages, Message{Role: "user", Content: strings.Repeat("x", 80)})
+		messages = append(messages, Message{Role: "assistant", Content: strings.Repeat("y", 80)})
+	}
+
+	result := dropOldestCheckpointSummaries(messages, defaultRecentToKeep, 1)
+
+	for _, m := range result {
+		if m.Content == "Build the thing" || m.Content == "Starting." {
+			continue
+		}
+		if m.Role == "system" {
+			continue
+		}
+	}
+	var keptTask bool
+	for _, m := range result {
+		if m.Content == "Build the thing" {
+			keptTask = true
+		}
+	}
+	if !keptTask {
+		t.Error("the opening task statement must survive the checkpoint-drop pass")
+	}
+	var keptOldSummary bool
+	for _, m := range result {
+		if m.Content == "old summary" {
+			keptOldSummary = true
+		}
+	}
+	if keptOldSummary {
+		t.Error("a summary outside the anchor should still be droppable")
+	}
+}

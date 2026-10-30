@@ -734,16 +734,28 @@ func TestDropTurns_DropsCompleteTurns(t *testing.T) {
 		messages = append(messages, Message{Role: "assistant", Content: "recent " + string(rune('b'+i))})
 	}
 
-	targetTokens := roughTokens(messages) - 1200
+	targetTokens := roughTokens(messages) - roughTokens(messages[3:5]) // Turn2's own size
 	result := dropOldestTurns(messages, defaultRecentToKeep, targetTokens)
 
 	if len(result) >= len(messages)-1 {
 		t.Errorf("expected at least 1 turn dropped, got %d (was %d)", len(result), len(messages))
 	}
+	// The opening turn is the task anchor: it stays verbatim however hard the
+	// pressure, because dropping it is what makes a long session forget what
+	// it was asked to do.
 	for _, m := range result {
-		if strings.HasPrefix(m.Content, "Turn1 User ") || strings.HasPrefix(m.Content, "Turn1 Assistant ") {
-			t.Errorf("Turn1 should be entirely dropped, found: %q", m.Content)
+		if strings.HasPrefix(m.Content, "Turn2 User ") || strings.HasPrefix(m.Content, "Turn2 Assistant ") {
+			t.Errorf("Turn2 should be entirely dropped, found: %q", m.Content)
 		}
+	}
+	var keptTurn1 bool
+	for _, m := range result {
+		if strings.HasPrefix(m.Content, "Turn1 User ") {
+			keptTurn1 = true
+		}
+	}
+	if !keptTurn1 {
+		t.Error("Turn1 is the task anchor and must survive the drop pass")
 	}
 }
 
@@ -766,13 +778,25 @@ func TestDropTurns_WithToolChains(t *testing.T) {
 		messages = append(messages, Message{Role: "assistant", Content: "recent " + string(rune('b'+i))})
 	}
 
-	targetTokens := roughTokens(messages) - 200
+	targetTokens := roughTokens(messages) - roughTokens(messages[5:7]) // turn2's own size
 	result := dropOldestTurns(messages, defaultRecentToKeep, targetTokens)
 
+	// The anchor is the opening user message; its tool chain stays attached
+	// to it, so a protected anchor can never orphan a tool result.
 	for _, m := range result {
-		if m.Content == "tool_user_question" || m.Content == "tool_final" ||
-			m.Content == "turn2_question" || m.Content == "turn2_answer" {
+		if m.Content == "turn2_question" || m.Content == "turn2_answer" {
 			t.Errorf("turn message should be dropped: %q", m.Content)
+		}
+	}
+	for _, want := range []string{"tool_user_question", "tool_result", "tool_final"} {
+		var found bool
+		for _, m := range result {
+			if m.Content == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("%q belongs to the task anchor and must survive", want)
 		}
 	}
 }
@@ -1047,9 +1071,14 @@ func TestIdentifyTurnEnd(t *testing.T) {
 
 func TestFindOldestCompleteTurn(t *testing.T) {
 	tests := []struct {
-		name         string
-		msgs         []Message
-		recentStart  int
+		name        string
+		msgs        []Message
+		recentStart int
+		// anchorStart/anchorEnd bound the opening task anchor. The zero
+		// value protects nothing, so cases that do not exercise the anchor
+		// keep their original expectations.
+		anchorStart  int
+		anchorEnd    int
 		wantStart    int
 		wantEnd      int
 		wantSpanning int
@@ -1117,7 +1146,7 @@ func TestFindOldestCompleteTurn(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			start, end, spanning := findOldestCompleteTurn(tt.msgs, tt.recentStart)
+			start, end, spanning := findOldestCompleteTurn(tt.msgs, tt.recentStart, tt.anchorStart, tt.anchorEnd)
 			if start != tt.wantStart || end != tt.wantEnd || spanning != tt.wantSpanning {
 				t.Errorf("expected (%d,%d,%d), got (%d,%d,%d)",
 					tt.wantStart, tt.wantEnd, tt.wantSpanning, start, end, spanning)
@@ -1132,7 +1161,11 @@ func TestFindDropableMessage(t *testing.T) {
 		msgs         []Message
 		recentStart  int
 		protectedEnd int
-		wantIdx      int
+		// anchorStart/anchorEnd bound the opening task anchor. The zero
+		// value protects nothing.
+		anchorStart int
+		anchorEnd   int
+		wantIdx     int
 	}{
 		{
 			name: "skips system messages",
@@ -1196,7 +1229,7 @@ func TestFindDropableMessage(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			idx := findDropableMessage(tt.msgs, tt.recentStart, tt.protectedEnd)
+			idx := findDropableMessage(tt.msgs, tt.recentStart, tt.protectedEnd, tt.anchorStart, tt.anchorEnd)
 			if idx != tt.wantIdx {
 				t.Errorf("expected index %d, got %d", tt.wantIdx, idx)
 			}

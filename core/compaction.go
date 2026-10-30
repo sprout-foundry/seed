@@ -311,6 +311,11 @@ func dropOldestTurns(messages []Message, recentToKeep int, targetTokens int) []M
 		return msgs
 	}
 
+	// The opening task anchor is never droppable (see
+	// dropOldestCheckpointSummaries). Indices inside it never move because
+	// they are never removed, so the range is computed once.
+	anchorStart, anchorEnd := compactionAnchorRange(msgs)
+
 	// Repeatedly drop the oldest complete turn outside the recent zone.
 	for roughTokens(msgs) > targetTokens && len(msgs) > defaultMinMessages {
 		recentStart := len(msgs) - recentToKeep
@@ -319,12 +324,12 @@ func dropOldestTurns(messages []Message, recentToKeep int, targetTokens int) []M
 		}
 
 		// Find the start of the oldest complete turn outside the recent boundary.
-		turnStart, turnEnd, spanningEnd := findOldestCompleteTurn(msgs, recentStart)
+		turnStart, turnEnd, spanningEnd := findOldestCompleteTurn(msgs, recentStart, anchorStart, anchorEnd)
 
 		// No complete turn found — fall back to individual message dropping.
 		if turnStart < 0 {
 			// Try dropping individual non-system messages oldest first.
-			dropIdx := findDropableMessage(msgs, recentStart, spanningEnd)
+			dropIdx := findDropableMessage(msgs, recentStart, spanningEnd, anchorStart, anchorEnd)
 			if dropIdx < 0 {
 				break
 			}
@@ -347,12 +352,19 @@ func dropOldestTurns(messages []Message, recentToKeep int, targetTokens int) []M
 // message. Incomplete turns (lone user messages with no response) are skipped
 // and handled by the individual message fallback in dropOldestTurns.
 //
+// anchorStart/anchorEnd bound the opening task anchor, which is never
+// droppable: a turn overlapping it is skipped.
+//
 // If a turn starts before recentStart but extends past it, the turn cannot be
 // dropped. In that case (-1, -1) is returned and spanningEnd is set to the
 // end index of the spanning turn so the caller can protect those messages.
-func findOldestCompleteTurn(msgs []Message, recentStart int) (startIdx, endIdx, spanningEnd int) {
-	// Scan from index 1 (skip system message at 0) for the oldest user message.
+func findOldestCompleteTurn(msgs []Message, recentStart, anchorStart, anchorEnd int) (startIdx, endIdx, spanningEnd int) {
+	// Scan from index 1 (the system message at 0 is never droppable) for the
+	// oldest user message.
 	for i := 1; i < recentStart && i < len(msgs); i++ {
+		if anchorProtects(i, anchorStart, anchorEnd) {
+			continue
+		}
 		if msgs[i].Role != "user" {
 			continue
 		}
@@ -421,10 +433,15 @@ func identifyTurnEnd(msgs []Message, startIdx int) int {
 // be dropped. Returns the index or -1 if none found.
 // protectedEnd is the exclusive end index of a boundary-spanning turn that
 // must not be touched; 0 means no protection needed.
-func findDropableMessage(msgs []Message, recentStart int, protectedEnd int) int {
+// anchorStart/anchorEnd bound the opening task anchor, which is never
+// droppable.
+func findDropableMessage(msgs []Message, recentStart int, protectedEnd int, anchorStart, anchorEnd int) int {
 	for i := 1; i < recentStart && i < len(msgs); i++ {
 		// Don't drop messages that belong to a boundary-spanning turn.
 		if protectedEnd > 0 && i < protectedEnd {
+			continue
+		}
+		if anchorProtects(i, anchorStart, anchorEnd) {
 			continue
 		}
 		if msgs[i].Role != "system" {
@@ -458,6 +475,43 @@ func DropOldestCheckpointSummaries(messages []Message, targetTokens int) []Messa
 
 // dropOldestCheckpointSummaries is the unexported implementation that accepts
 // a custom recentToKeep boundary.
+// compactionAnchorRange returns the [start, end) span of the opening task
+// anchor: the first genuine user message, plus the assistant reply that made no
+// tool calls when it immediately follows.
+//
+// Synthetic summary messages are not the task statement, so they are skipped
+// when locating the start — a summary spliced into history must stay droppable
+// even when it sits early in the list. start == end means the history carries
+// no anchor (only a system message, or nothing), and nothing is protected
+// beyond the system message the phases already skip by role.
+//
+// The summarizers keep this same span verbatim (compactionAnchorEnd). Every
+// phase that removes or truncates history must agree with them: a drop that
+// eats the anchor leaves the model working from summaries that still claim to
+// have kept the framing, which reads as progressive drift.
+func compactionAnchorRange(messages []Message) (start, end int) {
+	start = -1
+	for i, m := range messages {
+		if m.Role == "user" && !isCheckpointSummary(m) {
+			start = i
+			break
+		}
+	}
+	if start < 0 {
+		return 0, 0
+	}
+	end = start + 1
+	if end < len(messages) && messages[end].Role == "assistant" && len(messages[end].ToolCalls) == 0 {
+		end++
+	}
+	return start, end
+}
+
+// anchorProtects reports whether index i lies inside the opening task anchor.
+func anchorProtects(i, anchorStart, anchorEnd int) bool {
+	return anchorStart < anchorEnd && i >= anchorStart && i < anchorEnd
+}
+
 func dropOldestCheckpointSummaries(messages []Message, recentToKeep int, targetTokens int) []Message {
 	// Work on a copy so we never mutate the original.
 	msgs := make([]Message, len(messages))
@@ -468,6 +522,14 @@ func dropOldestCheckpointSummaries(messages []Message, recentToKeep int, targetT
 		return msgs
 	}
 
+	// The opening task anchor is never droppable. The summarizers already
+	// preserve it verbatim (compactionAnchorEnd), but a drop phase that treats
+	// it as ordinary old history deletes the only verbatim record of what the
+	// session was asked to do — after which the model works from summaries
+	// that still claim to have kept the framing. Indices inside the anchor
+	// never move because they are never removed.
+	anchorStart, anchorEnd := compactionAnchorRange(msgs)
+
 	// Repeatedly drop the oldest checkpoint message outside the recent zone
 	// until we're under targetTokens.
 	for roughTokens(msgs) > targetTokens && len(msgs) > defaultMinMessages {
@@ -477,8 +539,12 @@ func dropOldestCheckpointSummaries(messages []Message, recentToKeep int, targetT
 			recentStart = 1
 		}
 
-		// Find the oldest checkpoint message outside the recent boundary.
+		// Find the oldest checkpoint message outside the recent boundary and
+		// outside the anchor.
 		for i := 0; i < recentStart && i < len(msgs); i++ {
+			if anchorProtects(i, anchorStart, anchorEnd) {
+				continue
+			}
 			if msgs[i].Meta != nil && msgs[i].Meta[MetaKeyCheckpoint] == "true" {
 				dropIdx = i
 				break
@@ -536,6 +602,12 @@ func emergencyTruncateWithTarget(messages []Message, tokenLimit, targetTokens in
 		return trimmed, false
 	}
 
+	// The opening task anchor is never truncated or dropped: it is the only
+	// verbatim record of what the session was asked to do. Without this the
+	// emergency path trimmed the task statement to a head/tail stub and then
+	// removed it outright (Phase 3 always started at index 1).
+	anchorStart, anchorEnd := compactionAnchorRange(trimmed)
+
 	// Phase 2: Trim older user/assistant messages
 	recentStart := len(trimmed) - defaultRecentToKeep
 	if recentStart < 1 {
@@ -543,7 +615,8 @@ func emergencyTruncateWithTarget(messages []Message, tokenLimit, targetTokens in
 	}
 
 	for i := range trimmed {
-		if i >= recentStart || trimmed[i].Role == "system" || trimmed[i].Content == "" {
+		if i >= recentStart || anchorProtects(i, anchorStart, anchorEnd) ||
+			trimmed[i].Role == "system" || trimmed[i].Content == "" {
 			continue
 		}
 		if utf8.RuneCountInString(trimmed[i].Content) > oldMsgMaxChars {
@@ -556,11 +629,20 @@ func emergencyTruncateWithTarget(messages []Message, tokenLimit, targetTokens in
 		return trimmed, msgsDropped
 	}
 
-	// Phase 3: Drop oldest non-system, non-recent messages until under limit
+	// Phase 3: Drop oldest non-system, non-recent, non-anchor messages until
+	// under limit
 	for len(trimmed) > defaultMinMessages+1 && roughTokens(trimmed) > targetTokens {
-		// Find first non-system message that's not in recent section
-		dropIdx := 1
-		if dropIdx >= recentStart {
+		// Find first non-system message that's neither in the recent section
+		// nor part of the anchor.
+		dropIdx := -1
+		for i := 1; i < recentStart && i < len(trimmed); i++ {
+			if anchorProtects(i, anchorStart, anchorEnd) || trimmed[i].Role == "system" {
+				continue
+			}
+			dropIdx = i
+			break
+		}
+		if dropIdx < 0 || dropIdx >= recentStart {
 			break
 		}
 		trimmed = append(trimmed[:dropIdx], trimmed[dropIdx+1:]...)

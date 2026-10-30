@@ -863,6 +863,10 @@ func (cp *ConversationPruner) settleBelowTarget(messages []Message, targetTokens
 	// corrupt the caller's slice.
 	pruned := make([]Message, len(messages))
 	copy(pruned, messages)
+	// The opening task anchor is never droppable here either: this pass runs
+	// on the same history as the drop pipeline and must agree about what is
+	// permanent (see dropOldestCheckpointSummaries).
+	anchorStart, anchorEnd := compactionAnchorRange(pruned)
 	for len(pruned) > cp.minMessagesToKeep && cp.estimateFor(pruned, estimateFn) > targetTokens {
 		recentStart := len(pruned) - cp.recentMessagesToKeep
 		if recentStart < 2 {
@@ -873,9 +877,9 @@ func (cp *ConversationPruner) settleBelowTarget(messages []Message, targetTokens
 		// atomically so no tool call is orphaned from its result. Naive
 		// index-1 dropping would split them and strict providers
 		// (MiniMax/DeepSeek) reject the request outright.
-		turnStart, turnEnd, spanningEnd := findOldestCompleteTurn(pruned, recentStart)
+		turnStart, turnEnd, spanningEnd := findOldestCompleteTurn(pruned, recentStart, anchorStart, anchorEnd)
 		if turnStart < 0 {
-			dropIdx := findDropableMessage(pruned, recentStart, spanningEnd)
+			dropIdx := findDropableMessage(pruned, recentStart, spanningEnd, anchorStart, anchorEnd)
 			if dropIdx < 0 {
 				return pruned
 			}

@@ -78,23 +78,37 @@ func CompactWithLLMSummary(ctx context.Context, messages []Message, summarizer L
 
 	middle := messages[anchorEnd:recentStart]
 
-	if len(middle) >= LayeredThreshold {
+	// Prior compaction summaries head the middle: spliceSummary inserts them
+	// at the anchor boundary, so earlier passes accumulate as a leading run.
+	// They are carried through verbatim and only the raw span beyond them is
+	// summarized — condensing an already-condensed summary compounds its
+	// loss, so a third pass would be a summary of a summary of a summary.
+	carried, raw := splitLeadingSummaries(middle)
+	if len(raw) < StructuralMinMiddleMessages {
+		return noChange
+	}
+
+	// The graduated layered split is for a first compaction, where the middle
+	// is all raw history. Once summaries are already present the middle is
+	// consolidated in one pass — the merge-into-an-anchor shape — rather than
+	// split into layers that would each re-narrate the carried blocks.
+	if len(carried) == 0 && len(raw) >= LayeredThreshold {
 		return compactLayered(ctx, messages, anchorEnd, recentStart, middle, summarizer)
 	}
 
-	summaryText, err := summarizer(ctx, middle, SummarizerHint{})
+	summaryText, err := summarizer(ctx, raw, SummarizerHint{})
 	if err != nil || strings.TrimSpace(summaryText) == "" {
 		return noChange
 	}
 
-	wrapped := wrapStructuralSummary(middle, summaryText, "")
+	wrapped := prependCarriedSummaries(wrapStructuralSummary(raw, summaryText, ""), carried)
 	compacted := spliceSummary(messages, anchorEnd, recentStart, wrapped)
 	compacted = dropConsecutiveAssistantAfter(compacted, anchorEnd)
 
 	return StructuralCompactionResult{
 		Messages:   compacted,
 		Strategy:   "single_summary",
-		Summarized: len(middle),
+		Summarized: len(raw),
 	}
 }
 
@@ -251,6 +265,39 @@ func spliceSummary(messages []Message, anchorEnd, recentStart int, summaryBody s
 	compacted = append(compacted, summary)
 	compacted = append(compacted, messages[recentStart:]...)
 	return compacted
+}
+
+// splitLeadingSummaries splits a compaction middle into the compaction
+// summaries already heading it and the raw history after them. spliceSummary
+// inserts a summary at the anchor boundary, so earlier passes accumulate as a
+// leading run. A summary is recognised by its checkpoint marker rather than
+// its role: the spliced summary is an assistant message, while turn
+// checkpoints are user messages, and both are compaction artifacts.
+func splitLeadingSummaries(middle []Message) (carried, raw []Message) {
+	i := 0
+	for i < len(middle) && middle[i].Meta != nil && middle[i].Meta[MetaKeyCheckpoint] == "true" {
+		i++
+	}
+	return middle[:i], middle[i:]
+}
+
+// prependCarriedSummaries renders earlier compaction summaries ahead of a
+// fresh one, verbatim. Re-narrating them is what compounds the loss across
+// compactions; carrying them through keeps the fidelity floor at one
+// summarization per span. They stay droppable, so the drop pipeline remains
+// the release valve when they grow too many.
+func prependCarriedSummaries(body string, carried []Message) string {
+	if len(carried) == 0 {
+		return body
+	}
+	var b strings.Builder
+	b.WriteString("[Earlier compaction — carried forward unchanged]\n\n")
+	for _, m := range carried {
+		b.WriteString(strings.TrimSpace(m.Content))
+		b.WriteString("\n\n")
+	}
+	b.WriteString(body)
+	return b.String()
 }
 
 // demoteAnchorUserMessage renders the original first user message as a

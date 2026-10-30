@@ -70,6 +70,61 @@ Code that calls checkpoint-substitution APIs from inside `CompactWith`
 when invoked from the loop would double-substitute or operate on
 invalid indices.
 
+## The opening task anchor is never dropped
+
+The opening anchor is the system message plus the first genuine user
+message and the assistant reply that immediately follows it without
+tool calls (`compactionAnchorRange`). It is the only verbatim record of
+what the session was asked to do, so **every** drop and truncate phase
+treats it as permanent:
+
+- Phase 1 (`dropOldestCheckpointSummaries`)
+- Phase 1.5 (`dropOldestTurns` → `findOldestCompleteTurn` /
+  `findDropableMessage`)
+- Phase 2 (`emergencyTruncateWithTarget`, both the trim and the drop
+  loop)
+- the pruner's settle pass
+
+Before this rule, each of those phases scanned from index 1 and would
+happily remove the opening turn first — the summarizers preserved the
+anchor, but the drop pipeline then deleted it, and the model carried on
+from summaries that still claimed to have kept the framing. Synthetic
+summary messages are *not* the task statement, so they are skipped when
+locating the anchor: a summary that sits early in the list stays
+droppable even when it precedes the first genuine user message.
+
+**Known corner — an anchor that is itself the overage.** If the first
+user message alone exceeds the target, protection means the pipeline
+cannot settle and the trigger re-fires. That is the deliberate
+trade-off, and the same mitigations apply as for the short-but-fat
+corner above.
+
+## Structural summarization (`CompactWithLLMSummary`)
+
+`CompactWithLLMSummary` rewrites the middle into one summary message,
+preserving the anchor and the last `StructuralRecentToKeep` messages.
+Two rules keep repeated compaction from compounding its own loss:
+
+1. **Prior summaries are carried forward, not re-summarized.**
+   `spliceSummary` inserts the summary at the anchor boundary, so
+   earlier passes accumulate as a leading run of checkpoint-marked
+   messages. `splitLeadingSummaries` separates that run from the raw
+   history after it; only the raw span is summarized, and the carried
+   blocks are re-emitted verbatim ahead of the new summary. Otherwise a
+   third compaction would be a summary of a summary of a summary.
+   Carried blocks stay checkpoint-marked, so Phase 1 remains the release
+   valve when they grow too many.
+2. **The graduated layered split is for a first compaction.** Once
+   summaries are already present the middle is consolidated in a single
+   pass (the merge-into-an-anchor shape) rather than split into three
+   layers that would each re-narrate the carried blocks.
+
+Note that `spliceSummary` demotes the anchor's user message to a
+past-tense stub that tells the model to read the summary instead. That
+is deliberate (it stops the model re-reading a stale prompt as a live
+instruction), but it means the anchor's *content* is paraphrased after
+the first compaction even though its *position* is permanent.
+
 ## Turn Checkpoints
 
 Turn checkpoints are summaries of completed conversation turns, stored
