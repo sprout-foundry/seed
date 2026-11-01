@@ -392,6 +392,46 @@ func TestAgentStreamHandler_OnDone_RecordsTokens(t *testing.T) {
 	}
 }
 
+// A query's later model calls must not inherit the earlier calls' text or
+// reasoning: each response is filled only from its own stream, and reasoning
+// never lands in Content.
+func TestAgentStreamHandler_OnDone_FillsFromItsOwnStream(t *testing.T) {
+	a, err := NewAgent(Options{
+		Provider: &mockProvider{},
+		Executor: &mockExecutor{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	first := NewAgentStreamHandler(a, a.State())
+	first.OnReasoning("planning the first call")
+	first.OnContent("Let me check.")
+	first.OnDone(&ChatResponse{Choices: []ChatChoice{{Message: Message{Role: "assistant"}}}})
+	msg := first.Response().ToMessage()
+	if msg.Content != "Let me check." {
+		t.Errorf("first content = %q, want the streamed text", msg.Content)
+	}
+	if msg.ReasoningContent != "planning the first call" {
+		t.Errorf("first reasoning = %q, want the streamed reasoning", msg.ReasoningContent)
+	}
+
+	// The second call streams only a tool call.
+	second := NewAgentStreamHandler(a, a.State())
+	second.OnReasoning("now the tool")
+	second.OnDone(&ChatResponse{Choices: []ChatChoice{{Message: Message{
+		Role:      "assistant",
+		ToolCalls: []ToolCall{{ID: "c1", Type: "function", Function: ToolCallFunction{Name: "read"}}},
+	}}}})
+	msg = second.Response().ToMessage()
+	if msg.Content != "" {
+		t.Errorf("tool-only content = %q, want empty", msg.Content)
+	}
+	if msg.ReasoningContent != "now the tool" {
+		t.Errorf("tool-only reasoning = %q, want only its own", msg.ReasoningContent)
+	}
+}
+
 func TestAgentStreamHandler_OnDone_DoesNotAddMessageToState(t *testing.T) {
 	a, err := NewAgent(Options{
 		Provider: &mockProvider{},

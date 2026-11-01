@@ -2,6 +2,7 @@ package core
 
 import (
 	"bytes"
+	"strings"
 	"sync"
 )
 
@@ -51,6 +52,12 @@ type AgentStreamHandler struct {
 	agent    *Agent
 	state    *State
 	response *ChatResponse
+
+	// content and reasoning are what this one stream delivered. The agent's
+	// buffers span the whole query (every model call in it), so the response
+	// is filled from these instead.
+	content   strings.Builder
+	reasoning strings.Builder
 }
 
 // NewAgentStreamHandler creates a new StreamHandler for the given agent.
@@ -68,6 +75,7 @@ func (h *AgentStreamHandler) OnContent(content string) {
 	if content == "" {
 		return
 	}
+	h.content.WriteString(content)
 	h.agent.outputMgr.ContentBuffer().Write([]byte(content))
 	h.agent.outputMgr.PublishOutput(OutputEvent{Type: "content", Content: content, Source: "stream"})
 	h.agent.outputMgr.Flush()
@@ -80,17 +88,18 @@ func (h *AgentStreamHandler) OnReasoning(reasoning string) {
 	if reasoning == "" {
 		return
 	}
+	h.reasoning.WriteString(reasoning)
 	h.agent.outputMgr.ReasoningBuffer().Write([]byte(reasoning))
 	h.agent.outputMgr.PublishOutput(OutputEvent{Type: "reasoning", Content: reasoning, Source: "stream"})
 	h.agent.outputMgr.Flush()
 }
 
 // OnDone handles the end of streaming: records token usage, publishes
-// metrics, and syncs the accumulated streaming buffer content back into the
-// ChatResponse so that finalize() (which reads resp.ToMessage()) returns the
-// same content the buffer accumulated. This eliminates the fragility where
-// provider.ChatStream builds a different response than what OnContent deltas
-// produced.
+// metrics, and fills in what the provider's response left out from what this
+// stream delivered: the content when the response has none, and the reasoning
+// as the message's ReasoningContent. A provider whose ChatStream builds no
+// message text still yields the streamed text. Reasoning stays out of
+// Content, so a reasoning-only reply is still recognised as one.
 func (h *AgentStreamHandler) OnDone(resp *ChatResponse) {
 	if resp == nil {
 		return
@@ -104,22 +113,12 @@ func (h *AgentStreamHandler) OnDone(resp *ChatResponse) {
 		return
 	}
 
-	// Sync accumulated buffer content to the response message.
-	// This ensures finalize() (which reads the last assistant message from
-	// state, populated from resp.ToMessage()) returns the same content that
-	// the streaming buffer accumulated via OnContent deltas.
-	if h.agent.outputMgr != nil {
-		bufContent := h.agent.outputMgr.ContentBuffer().String()
-		bufReasoning := h.agent.outputMgr.ReasoningBuffer().String()
-		if bufContent != "" || bufReasoning != "" {
-			choice := &resp.Choices[0]
-			if choice.Message.Content == "" && bufContent != "" {
-				choice.Message.Content = bufContent
-			}
-			if bufReasoning != "" {
-				choice.Message.Content = bufReasoning + "\n" + choice.Message.Content
-			}
-		}
+	choice := &resp.Choices[0]
+	if choice.Message.Content == "" {
+		choice.Message.Content = h.content.String()
+	}
+	if choice.Message.ReasoningContent == "" {
+		choice.Message.ReasoningContent = h.reasoning.String()
 	}
 
 	if resp.Usage.TotalTokens > 0 {

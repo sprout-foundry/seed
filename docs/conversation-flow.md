@@ -46,7 +46,7 @@ Identical to `ProcessQuery` except the `chatFn` uses `provider.ChatStream()` wit
 **AgentStreamHandler** (`core/streaming.go`):
 - **`OnContent(content)`** — Writes to content buffer, publishes `stream_chunk` (text) + `agent_message` via `OutputManager.PublishOutput()`, calls flush callback.
 - **`OnReasoning(reasoning)`** — Writes to reasoning buffer, publishes `stream_chunk` (reasoning), calls flush callback.
-- **`OnDone(resp)`** — Syncs accumulated buffer content back into the `ChatResponse` (so `finalize()` returns the same content the buffer produced). Records token usage, publishes `metrics_update`.
+- **`OnDone(resp)`** — Fills in what the `ChatResponse` left out from what this one stream delivered: `Content` when the response has none, and `ReasoningContent` from the streamed reasoning. Each model call gets its own handler, so a later call in the same query never inherits an earlier call's text, and reasoning never lands in `Content`. Records token usage, publishes `metrics_update`.
 - **`OnError(err)`** — Publishes `error` event.
 
 After `OnDone`, `runLoop` continues the same dispatch/normalize/execute cycle as the non-streaming path.
