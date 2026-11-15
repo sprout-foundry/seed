@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"regexp"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -43,6 +44,11 @@ type ConversationHandler struct {
 	// finalize() is never reached because runLoop returns early.
 	// Used by finalize() to decide whether to record a turn checkpoint.
 	turnCompleted bool
+
+	// unknownToolNudges counts the replies this turn whose only tool calls,
+	// written as text, named tools that do not exist; each was answered with
+	// the tools there are. After maxUnknownToolNudges the reply stands.
+	unknownToolNudges int
 
 	// tentativeRejectionCount tracks consecutive rejections of tentative
 	// post-tool responses when finish_reason is "stop". After 2 rejections,
@@ -93,6 +99,10 @@ type ConversationHandler struct {
 // continuations before force-finalizing to prevent infinite loops.
 const maxContinuations = 3
 
+// maxUnknownToolNudges bounds how often a turn answers a reply that called
+// only tools that do not exist.
+const maxUnknownToolNudges = 2
+
 func newConversationHandler(a *Agent) *ConversationHandler {
 	ch := &ConversationHandler{
 		agent:             a,
@@ -125,6 +135,7 @@ type chatOperation func(ctx context.Context, req *ChatRequest, iter int) (*ChatR
 func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugName string, chatFn chatOperation) (string, error) {
 	ch.agent.debugLog("[~] %s: %s\n", debugName, query)
 	ch.conversationStart = time.Now()
+	ch.unknownToolNudges = 0
 
 	// Reset streaming buffers
 	a := ch.agent
@@ -752,6 +763,14 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 					a.debugLog("[fallback] Parsed %d tool calls from content\n", len(result.ToolCalls))
 					assistantMsg.ToolCalls = result.ToolCalls
 					assistantMsg.Content = result.CleanedContent
+				} else if len(result.UnknownToolNames) > 0 && ch.unknownToolNudges < maxUnknownToolNudges {
+					// The reply was a call to a tool that does not exist: say so,
+					// with the tools there are, rather than ending the turn on
+					// the call's text.
+					ch.unknownToolNudges++
+					a.debugLog("[fallback] unknown tool %v (nudge %d/%d)\n", result.UnknownToolNames, ch.unknownToolNudges, maxUnknownToolNudges)
+					ch.enqueueTransientMessage(Message{Role: "user", Content: unknownToolMessage(result.UnknownToolNames, a.executor.GetTools())})
+					continue
 				}
 			}
 		}
@@ -1939,4 +1958,16 @@ func sanitizeANSI(content string) string {
 		return content
 	}
 	return ansiRegex.ReplaceAllString(content, "")
+}
+
+// unknownToolMessage tells the model the tools it called do not exist and
+// names the ones that do.
+func unknownToolMessage(unknown []string, tools []Tool) string {
+	names := make([]string, 0, len(tools))
+	for _, t := range tools {
+		names = append(names, t.Function.Name)
+	}
+	sort.Strings(names)
+	return fmt.Sprintf("There is no tool named %s. The tools you can call are: %s. Call one of them as a tool call, or give your final answer.",
+		"`"+strings.Join(unknown, "`, `")+"`", strings.Join(names, ", "))
 }

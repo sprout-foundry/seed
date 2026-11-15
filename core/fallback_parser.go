@@ -27,6 +27,9 @@ type FallbackParser struct {
 type FallbackParseResult struct {
 	ToolCalls      []ToolCall
 	CleanedContent string
+	// UnknownToolNames are the names of calls the content held that are not
+	// registered tools (KnownToolNames refused them), in the order found.
+	UnknownToolNames []string
 }
 
 // NewFallbackParser creates a new FallbackParser with the given options.
@@ -73,11 +76,12 @@ func (fp *FallbackParser) Parse(content string) *FallbackParseResult {
 		}
 	}
 	merged := fp.mergeAndDedupe(blocks)
-	toolCalls := fp.normalize(merged)
+	toolCalls, unknown := fp.normalizeAll(merged)
 	cleaned := fp.cleanContent(content, merged)
 	return &FallbackParseResult{
-		ToolCalls:      toolCalls,
-		CleanedContent: cleaned,
+		ToolCalls:        toolCalls,
+		CleanedContent:   cleaned,
+		UnknownToolNames: unknown,
 	}
 }
 
@@ -288,14 +292,27 @@ func (fp *FallbackParser) mergeAndDedupe(blocks []rawBlock) []rawBlock {
 // ---------------------------------------------------------------------------
 
 func (fp *FallbackParser) normalize(blocks []rawBlock) []ToolCall {
+	toolCalls, _ := fp.normalizeAll(blocks)
+	return toolCalls
+}
+
+// normalizeAll is normalize, also returning the names of calls it refused
+// because they are not registered tools.
+func (fp *FallbackParser) normalizeAll(blocks []rawBlock) ([]ToolCall, []string) {
 	var toolCalls []ToolCall
+	var unknown []string
 	seen := make(map[string]bool)
+	seenUnknown := make(map[string]bool)
 	for _, b := range blocks {
 		for _, tc := range b.parsed {
 			if tc.Function.Name == "" {
 				continue
 			}
 			if fp.knownToolNames != nil && !fp.knownToolNames(tc.Function.Name) {
+				if !seenUnknown[tc.Function.Name] {
+					seenUnknown[tc.Function.Name] = true
+					unknown = append(unknown, tc.Function.Name)
+				}
 				continue
 			}
 			trimmed := strings.TrimSpace(tc.Function.Arguments)
@@ -324,7 +341,7 @@ func (fp *FallbackParser) normalize(blocks []rawBlock) []ToolCall {
 			toolCalls = append(toolCalls, tc)
 		}
 	}
-	return toolCalls
+	return toolCalls, unknown
 }
 
 func syntheticID(name string) string {
