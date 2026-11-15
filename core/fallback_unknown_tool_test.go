@@ -39,6 +39,14 @@ func assistantReply(content string) *ChatResponse {
 	return &ChatResponse{Choices: []ChatChoice{{Message: Message{Role: "assistant", Content: content}}}, Usage: ChatUsage{TotalTokens: 10}}
 }
 
+// stopReply is a reply the way providers send one: finish reason "stop",
+// which is the path the loop's blank, repetition and substance checks run on.
+func stopReply(content string) *ChatResponse {
+	r := assistantReply(content)
+	r.Choices[0].FinishReason = "stop"
+	return r
+}
+
 // qwenUnknownCall is a Qwen-style tool call written as text, to a tool that
 // does not exist (check_background is a parameter of a shell tool, not a tool).
 const qwenUnknownCall = "<tool_call>\n<function=check_background>\n<parameter=session_id>\nbg-1\n</parameter>\n</function>\n</tool_call>"
@@ -51,9 +59,9 @@ func shellTools() []Tool {
 // tools there are, and the turn goes on instead of ending on the call's text.
 func TestFallback_UnknownToolIsAnsweredAndTheTurnGoesOn(t *testing.T) {
 	p := &capturingMP{testMP: testMP{responses: []*ChatResponse{
-		assistantReply(qwenUnknownCall),
-		assistantReply("<tool_call>\n<function=shell>\n<parameter=command>\nls\n</parameter>\n</function>\n</tool_call>"),
-		assistantReply("Done."),
+		stopReply(qwenUnknownCall),
+		stopReply("<tool_call>\n<function=shell>\n<parameter=command>\nls\n</parameter>\n</function>\n</tool_call>"),
+		stopReply("Done."),
 	}}}
 	e := &callingExecutor{tools: shellTools()}
 	a, err := NewAgent(Options{Provider: p, Executor: e})
@@ -116,6 +124,34 @@ func TestFallback_UnknownToolNudgesAreBounded(t *testing.T) {
 	}
 	if len(e.calls) != 0 {
 		t.Fatalf("calls = %v, want none", e.calls)
+	}
+}
+
+// A model polling a background session writes the same call as text each
+// time. Each one is a call to run, not a repeated reply: the loop's
+// repetition check must not end the turn on it.
+func TestFallback_RepeatedTextCallIsRunEachTime(t *testing.T) {
+	poll := "<tool_call>\n<function=shell>\n<parameter=check_background>\nbg-1\n</parameter>\n</function>\n</tool_call>"
+	p := &capturingMP{testMP: testMP{responses: []*ChatResponse{
+		stopReply(poll),
+		stopReply(poll),
+		stopReply(poll),
+		stopReply("The job finished and its tests pass."),
+	}}}
+	e := &callingExecutor{tools: shellTools()}
+	a, err := NewAgent(Options{Provider: p, Executor: e})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reply, err := a.Run(context.Background(), "wait for the background job")
+	if err != nil {
+		t.Fatalf("the turn failed: %v", err)
+	}
+	if len(e.calls) != 3 {
+		t.Fatalf("calls = %v, want the poll run three times", e.calls)
+	}
+	if reply != "The job finished and its tests pass." {
+		t.Fatalf("reply = %q, want the final answer", reply)
 	}
 }
 

@@ -525,6 +525,13 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 
 		case "stop":
 			// "stop" — model completed normally.
+			// A tool call written as text is the fallback parser's to judge
+			// (below), not the guards': a model polling a background session
+			// writes the same call each time, which the repetition check
+			// would reject as a stuck reply and then fail the turn on.
+			if len(assistantMsg.ToolCalls) == 0 && ch.isTextToolCall(assistantMsg.Content) {
+				break
+			}
 			// A DONE-restored narration has already been evaluated by the
 			// post-tool guards during its original turn; suppress the guard
 			// chain for this one message (the blank/repetitive check would
@@ -1716,6 +1723,18 @@ func isBlankContent(content string) bool {
 // continuation rather than finalization.
 func (ch *ConversationHandler) isBlankIteration(content string) bool {
 	return isBlankContent(content)
+}
+
+// isTextToolCall reports whether content is a tool call written as text that
+// the fallback parser will act on: a call to a known tool, or a call to an
+// unknown one while the turn still answers those.
+func (ch *ConversationHandler) isTextToolCall(content string) bool {
+	fp := ch.agent.fallbackParser
+	if fp == nil || !fp.ShouldUseFallback(content, false) {
+		return false
+	}
+	r := fp.Parse(content)
+	return len(r.ToolCalls) > 0 || (len(r.UnknownToolNames) > 0 && ch.unknownToolNudges < maxUnknownToolNudges)
 }
 
 // isRepetitiveContent checks if the current response content is repetitive
