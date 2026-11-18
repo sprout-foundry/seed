@@ -116,4 +116,4 @@ See [roadmap/README.md](./roadmap/README.md) for incomplete work. Completed feat
 7. **Run `make check`** before marking any task complete.
 8. **Max 400 lines per file.** If a file exceeds this, extract logical units into separate files.
 9. **Follow SRP.** Each file should have one clear responsibility; don't mix concerns.
-10. **Code should be self-documenting.** Use clear names and small, focused functions. Add comments only when the *why* isn't obvious from the code.
+10. **Code should be self-documenting.** Use clear names and small, focused functions. Add comments only when the *why* isn't obvious from the code. When you touch old code, trim its comment blocks. Rationale goes in specs and commit messages instead.
