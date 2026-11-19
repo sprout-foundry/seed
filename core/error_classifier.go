@@ -69,11 +69,13 @@ func ClassifyError(err error, provider string) error {
 		}
 	}
 
-	// Client error patterns (4xx).
+	// Client error patterns (4xx), and 501: the server does not offer what
+	// was asked, which a retry cannot change.
 	if containsAny(msg, "bad request", "invalid parameter", "invalid api parameter",
 		"payment required", "not found", "unprocessable", "method not allowed", "conflict",
 		"payload too large", "uri too long", "unsupported media type",
-		"too many fields exceeded", "request entity too large") ||
+		"too many fields exceeded", "request entity too large", "not implemented") ||
+		containsStatusCode(msg, "501") ||
 		containsStatusCode(msg, "400") || containsStatusCode(msg, "402") || containsStatusCode(msg, "403") ||
 		containsStatusCode(msg, "404") || containsStatusCode(msg, "405") ||
 		containsStatusCode(msg, "409") || containsStatusCode(msg, "410") ||

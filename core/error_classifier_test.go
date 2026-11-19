@@ -279,6 +279,26 @@ func TestClassifyError_Transient_Server(t *testing.T) {
 	}
 }
 
+// A server that does not offer what was asked (501) fails at once: a retry
+// cannot change it.
+func TestClassifyError_NotImplementedIsClientError(t *testing.T) {
+	for _, pattern := range []string{
+		"HTTP 501: No model is set up for this request",
+		"status 501",
+		"not implemented",
+	} {
+		t.Run(pattern, func(t *testing.T) {
+			wrapped := classify(errors.New(pattern), "managed")
+			if !IsClientError(wrapped) {
+				t.Errorf("expected ClientError for %q, got %T", pattern, wrapped)
+			}
+			if IsTransient(wrapped) {
+				t.Errorf("%q must not be retried as transient", pattern)
+			}
+		})
+	}
+}
+
 func TestClassifyError_Transient_Default(t *testing.T) {
 	// Patterns that don't match any specific category fall through to default TransientError.
 	patterns := []string{

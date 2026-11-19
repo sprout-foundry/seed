@@ -144,6 +144,6 @@ Defined in `core/errors.go`.
 - **`RateLimitError`** — Provider rate limit hit; retryable.
 - **`ContextOverflowError`** — Context window exceeded; not retryable.
 - **`AuthError`** — Authentication failure; not retryable.
-- **`ClientError`** — Invalid request (4xx); not retryable.
+- **`ClientError`** — Invalid request (4xx) or not implemented (501); not retryable.
 - **`ContentFilteredError`** — Provider content filter blocked response after retry.
 - **`BlankResponseError`** — Model produced consecutive blank/repetitive responses.

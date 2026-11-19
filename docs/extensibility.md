@@ -12,7 +12,7 @@ The `core` package is designed for library integrability: zero external dependen
 - **`RateLimitError`** — provider rate limit (429, quota). Retriable with `RetryAfter` hint.
 - **`ContextOverflowError`** — context window exceeded. Not retriable.
 - **`AuthError`** — authentication failure (401, invalid key). Not retriable.
-- **`ClientError`** — invalid request (4xx). Not retriable.
+- **`ClientError`** — invalid request (4xx), or a server that does not offer what was asked (501). Not retriable.
 - **`ContentFilteredError`** — content filter blocked after retry exhausted.
 - **`BlankResponseError`** — consecutive blank/repetitive responses triggered force-finalize.
 
