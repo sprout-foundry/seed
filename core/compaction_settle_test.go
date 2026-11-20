@@ -248,6 +248,36 @@ done:
 	}
 }
 
+// A configured settle margin settles a proactive pass that far below the
+// trigger, so the conversation grows for longer before the next pass.
+func TestLoopProactivePassSettlesByTheConfiguredMargin(t *testing.T) {
+	provider := &settleTestProvider{
+		info: ProviderInfo{Model: "test", ContextSize: 8000},
+		resp: &ChatResponse{
+			Choices: []ChatChoice{{Message: Message{Role: "assistant", Content: "done"}, FinishReason: "stop"}},
+			Usage:   ChatUsage{PromptTokens: 100, CompletionTokens: 5, TotalTokens: 105},
+		},
+	}
+	a, err := NewAgent(Options{
+		Provider:                  provider,
+		Executor:                  NoopExecutor,
+		Pruner:                    NewConversationPruner(PrunerOptions{Strategy: PruneStrategyAdaptive}),
+		InitialMessages:           settleMessages(38),
+		CompactionTriggerFraction: 0.70,
+		CompactionSettleMargin:    0.25,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Run(context.Background(), "go"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	// (0.70 - 0.25) × 8000 = 3600.
+	if after := roughTokens(provider.lastReqMsgs); after > 3600 {
+		t.Errorf("post-settle request estimate %d must sit at or below 3600", after)
+	}
+}
+
 // TestLoopExhaustedCornerEmitsNoCompactionEvents covers the exhausted
 // corner: a short history whose overage lives entirely inside the protected
 // recent window can never settle (see docs/compaction.md "Known corner").

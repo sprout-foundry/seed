@@ -232,18 +232,19 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 			// Settle target: a proactive compaction pass must land BELOW the
 			// trigger, or the estimate sits over it and the loop re-fires
 			// compaction every iteration (thrash: several auto-compactions
-			// within seconds). A small margin below the trigger — enough room
-			// for a few tool-heavy iterations of growth, no more: drop-based
-			// settling is lossy, so tighten only as far as the thrash fix
-			// requires. The pruner branch always passes it: the pruner's
-			// greedy keep-set has no built-in under-trigger guarantee. The
+			// within seconds). The margin below the trigger is the agent's
+			// settle margin (Options.CompactionSettleMargin): small keeps
+			// more history, larger compacts less often and so rebuilds the
+			// provider's prompt cache less often. The pruner branch always
+			// passes it: the pruner's greedy keep-set has no built-in
+			// under-trigger guarantee. The
 			// Compact branches pass it only when the configured trigger sits
 			// below the pipeline's own derived target (0.85 × window) — the
 			// only configuration where those branches can settle over the
 			// trigger; at the default trigger the derived target already
 			// equals the trigger and behavior stays historical.
 			derivedTarget := int(float64(contextSize) * emergencyTargetFraction)
-			prunerSettleTarget := triggerLimit - int(float64(contextSize)*0.05)
+			prunerSettleTarget := triggerLimit - int(float64(contextSize)*ch.agent.settleMarginOrDefault())
 			if prunerSettleTarget < 1 {
 				prunerSettleTarget = 1
 			}

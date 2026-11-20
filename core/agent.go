@@ -103,6 +103,15 @@ func (a *Agent) triggerFractionOrDefault() float64 {
 	return defaultCompactionTriggerFraction
 }
 
+// settleMarginOrDefault returns the configured compaction settle margin, or
+// the default if unset / out of range.
+func (a *Agent) settleMarginOrDefault() float64 {
+	if a.compactionSettleMargin > 0 && a.compactionSettleMargin < 1.0 {
+		return a.compactionSettleMargin
+	}
+	return defaultCompactionSettleMargin
+}
+
 // substitutionTargetOrDefault returns the configured substitution target
 // fraction (clamped to (0, 1)) or the default if unset / out of range. This is
 // the context share that Phase 0a (checkpoint substitution) aims for when
@@ -146,6 +155,14 @@ type Options struct {
 	// defaultCompactionTriggerFraction (0.85). Set to 1.0 to keep the legacy
 	// "only compact when the estimate already exceeds the window" behavior.
 	CompactionTriggerFraction float64
+	// CompactionSettleMargin is how far below the trigger, as a share of the
+	// context window, a proactive compaction settles. Each compaction rewrites
+	// the conversation after the point it cuts, so a provider's prompt cache is
+	// rebuilt from there on the next request; a deeper settle compacts less
+	// often and keeps the cache warm for longer, at the cost of dropping more
+	// history each time. Valid range is (0, 1); zero uses
+	// defaultCompactionSettleMargin (0.05).
+	CompactionSettleMargin float64
 	// SubstitutionTargetFraction is the share of the model's context window
 	// that Phase 0a (iterative checkpoint substitution) targets when it fires.
 	// When context pressure crosses CompactionTriggerFraction, checkpoints are
@@ -262,6 +279,8 @@ type Agent struct {
 	// above which the chat loop runs proactive compaction. See
 	// Options.CompactionTriggerFraction.
 	compactionTriggerFraction float64
+	// compactionSettleMargin is Options.CompactionSettleMargin.
+	compactionSettleMargin float64
 
 	// substitutionTargetFraction is the target context share that Phase 0a
 	// (checkpoint substitution) aims for when pressure fires. See
@@ -383,6 +402,7 @@ func NewAgent(opts Options) (*Agent, error) {
 		onDiagnostic:               opts.OnDiagnosticCapture,
 		retryConfig:                opts.RetryConfig,
 		compactionTriggerFraction:  opts.CompactionTriggerFraction,
+		compactionSettleMargin:     opts.CompactionSettleMargin,
 		substitutionTargetFraction: opts.SubstitutionTargetFraction,
 		llmSummarizer:              opts.LLMSummarizer,
 		compactionArtifacts:        opts.CompactionArtifacts,

@@ -16,6 +16,10 @@ const (
 	// the trigger must sit below 1.0 to give the loop room to react.
 	defaultCompactionTriggerFraction = 0.85
 
+	// defaultCompactionSettleMargin is how far below the trigger, as a share
+	// of the context window, a proactive compaction settles by default.
+	defaultCompactionSettleMargin = 0.05
+
 	// defaultSubstitutionTargetFraction is the context share that Phase 0a
 	// (iterative checkpoint substitution) targets when pressure fires.
 	// Phase 0a substitutes checkpoint summaries one at a time (oldest first)
