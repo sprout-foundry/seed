@@ -181,6 +181,11 @@ type Options struct {
 	// rule-based drop/truncate fallback. See the LLMSummarizer doc for the
 	// contract. When nil, seed uses its rule-based compaction only.
 	LLMSummarizer LLMSummarizer
+	// ContinuationCompaction, if non-nil, compacts first by a summary the
+	// model writes as a continuation of the live request (see
+	// ContinuationCompaction), falling back to the cascade below when that
+	// pass does not settle the conversation under the trigger.
+	ContinuationCompaction *ContinuationCompaction
 	// CompactionArtifacts, if non-nil, renders the durable artifact record
 	// (files touched) for a summarized span. Structural compaction calls it
 	// once per pass and appends the result to the summary body, so a
@@ -290,6 +295,9 @@ type Agent struct {
 	// llmSummarizer is the consumer-supplied LLM-summary callback used by
 	// structural compaction. Nil = disabled, fall back to rule-based compaction.
 	llmSummarizer LLMSummarizer
+
+	// continuationCompaction is Options.ContinuationCompaction.
+	continuationCompaction *ContinuationCompaction
 
 	// compactionArtifacts renders the durable artifact record appended to
 	// structural summaries. Nil = summaries carry no artifact record. See
@@ -405,6 +413,7 @@ func NewAgent(opts Options) (*Agent, error) {
 		compactionSettleMargin:     opts.CompactionSettleMargin,
 		substitutionTargetFraction: opts.SubstitutionTargetFraction,
 		llmSummarizer:              opts.LLMSummarizer,
+		continuationCompaction:     opts.ContinuationCompaction,
 		compactionArtifacts:        opts.CompactionArtifacts,
 		pruner:                     opts.Pruner,
 		interruptCtx:               interruptCtx,

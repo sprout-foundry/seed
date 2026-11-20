@@ -216,6 +216,10 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 		//
 		// When the trigger fires, the loop cascades through compaction options
 		// in this order of capability:
+		//   0. Continuation summary — if Options.ContinuationCompaction is set,
+		//      the model summarizes in a request that continues the live one
+		//      (cached prefix), settling near its target; the options below
+		//      run only when that pass fails or does not settle under the trigger.
 		//   1. Pruner — if Options.Pruner was provided, its configured strategy
 		//      (adaptive by default) handles everything end-to-end.
 		//   2. LLM summary — if Options.LLMSummarizer was provided, compress
@@ -253,7 +257,20 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 				compactSettleTarget = prunerSettleTarget
 			}
 
+			var summaryUsage *ChatUsage
+			continued := false
+			if cc := ch.agent.continuationCompaction; cc != nil {
+				r, usage, ok := ch.compactByContinuation(ctx, messages, *cc)
+				if usage.PromptTokens > 0 {
+					summaryUsage = &usage
+				}
+				if ok && roughTokens(r.Messages) <= triggerLimit {
+					messages, strategy, continued = r.Messages, r.Strategy, true
+				}
+			}
+
 			switch {
+			case continued:
 			case ch.agent.pruner != nil:
 				messages = ch.agent.pruner.Prune(ctx, messages, tokenEstimate, contextSize, PruneCallOptions{
 					Optimizer:     ch.agent.optimizer,
@@ -314,13 +331,19 @@ func (ch *ConversationHandler) runLoop(ctx context.Context, query string, debugN
 					tokensSaved = tokensBefore - tokensAfter
 				}
 				if len(messages) != beforeCount || tokensSaved > 0 {
-					ch.agent.eventPublisher.Publish(EventTypeCompaction, map[string]interface{}{
+					event := map[string]interface{}{
 						"strategy":            strategy,
 						"messages_before":     beforeCount,
 						"messages_after":      len(messages),
 						"message_count_delta": beforeCount - len(messages),
 						"tokens_saved":        tokensSaved,
-					})
+					}
+					if summaryUsage != nil {
+						event["summary_prompt_tokens"] = summaryUsage.PromptTokens
+						event["summary_cached_tokens"] = summaryUsage.CachedTokens
+						event["summary_output_tokens"] = summaryUsage.CompletionTokens
+					}
+					ch.agent.eventPublisher.Publish(EventTypeCompaction, event)
 				}
 			}
 			// Re-estimate after compaction to get accurate prompt size.
